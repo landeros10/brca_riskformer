@@ -27,7 +27,7 @@ import argparse
 import logging
 
 from src.logger_config import logger_setup
-from src.util import log_training_params
+from src.utils import log_training_params
 
 logger_setup()
 logger = logging.getLogger(__name__)

@@ -8,14 +8,16 @@ Massachusetts General Hospital
 '''
 from __future__ import (print_function, division,
                         absolute_import, unicode_literals)
+from os.path import splitext, basename
+import json
+
 import torch
 import numpy as np
 import pandas as pd
 import random
+from openslide import OpenSlide
 
-from os.path import splitext, basename
-import json
-
+from src.randstainna import RandStainNA
 
 # from shapely.ops import cascaded_union
 # from rtree import index
@@ -36,9 +38,9 @@ import json
 #                "Invasive carcinoma": 3,
 #                "Carcinoma invasive": 3}
 
-# yaml_file = '/home/ubuntu/notebooks/cpc_hist/src/CRC_LAB_randomTrue_n0.yaml'
-# stain_augmentor = RandStainNA(yaml_file, std_hyper=-0.0)
-# stain_normalizer = RandStainNA(yaml_file, std_hyper=-1.0)
+yaml_file = '/home/ubuntu/notebooks/cpc_hist/src/CRC_LAB_randomTrue_n0.yaml'
+stain_augmentor = RandStainNA(yaml_file, std_hyper=-0.0)
+stain_normalizer = RandStainNA(yaml_file, std_hyper=-1.0)
 # # slideObjects = {f: OpenSlide(f) for f in np.load("/home/ubuntu/notebooks/cpc_hist/resources/svs_files.npy")}
 
 # def stain_augmentor_wrapper(image, **kwargs):
@@ -188,22 +190,6 @@ import json
 #     input *= (sigma/input_std)
 #     return input + mu
 
-
-# def read_slide_(file, x, y, in_s, out_s, normalize=False):
-#     # slideObj = slideObjects[file.numpy().decode("utf-8")]
-#     if not isinstance(file, str):
-#         file = file.numpy().decode("utf-8")
-#     slideObj = OpenSlide(file)
-#     x, y = int(x), int(y)
-#     in_s = int(in_s)
-#     out_s = int(out_s)
-#     image = slideObj.read_region((x, y), 0, (in_s, in_s)).convert('RGB')
-#     # image = cv2.resize(image, dsize=(out_s, out_s))
-#     image = image.resize((out_s, out_s))
-#     image = np.array(image).astype(np.uint8)
-#     if normalize:
-#         image = stain_normalizer(image)
-#     return image
 
 
 # def process_image(args):
@@ -706,6 +692,24 @@ import json
 
 ## SVS FILES ##
 
+def read_slide_(file, x, y, in_s, out_s, normalize=False):
+    # slideObj = slideObjects[file.numpy().decode("utf-8")]
+    if not isinstance(file, str):
+        file = file.numpy().decode("utf-8")
+    slideObj = OpenSlide(file)
+    x, y = int(x), int(y)
+    in_s = int(in_s)
+    out_s = int(out_s)
+    image = slideObj.read_region((x, y), 0, (in_s, in_s)).convert('RGB')
+    # image = cv2.resize(image, dsize=(out_s, out_s))
+    image = image.resize((out_s, out_s))
+    image = np.array(image).astype(np.uint8)
+    if normalize:
+        image = stain_normalizer(image)
+    return image
+
+
+
 def collect_patients_svs_files(patient_list_csv, svs_files):
     """
     Collects the svs files that are in the patient list csv
@@ -730,7 +734,6 @@ def collect_patients_svs_files(patient_list_csv, svs_files):
     return filtered
 
 
-
 def log_training_params(logger, params):
     formatted_params = json.dumps(params, indent=4)
     logger.info(f"Training Parameters:")
@@ -750,3 +753,28 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def save_coords_dict(coords_dict: dict, filename: str):
+    """
+    Save a dictionary where keys are filenames (str) and values are np.ndarrays.
+    
+    Args:
+        coords_dict (dict): Dictionary mapping filenames to (N, 2) NumPy arrays.
+        filename (str): Path to the output file (.npz format).
+    """
+    np.savez_compressed(filename, **coords_dict)
+
+
+def load_coords_dict(filename: str) -> dict:
+    """
+    Load a dictionary from a compressed .npz file.
+
+    Args:
+        filename (str): Path to the .npz file.
+
+    Returns:
+        dict: Dictionary where keys are filenames (str) and values are np.ndarrays.
+    """
+    data = np.load(filename, allow_pickle=True)
+    return {key: data[key] for key in data}
