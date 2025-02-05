@@ -10,7 +10,7 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader
 
 from src.logger_config import logger_setup
-from src.data import (get_bbox, bbox_to_coords, filter_coords_mask, open_svs,
+from src.data.data_loading import (get_bbox, bbox_to_coords, filter_coords_mask, open_svs,
                       get_slide_foreground, mask_clean_up_and_resize, coords_to_heatmap,
                       SlideDataset)
 from src.utils import collect_patients_svs_files, save_coords_dict
