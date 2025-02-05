@@ -11,6 +11,7 @@ from skimage.morphology import opening, closing, dilation, square
 from scipy.ndimage import binary_fill_holes
 from skimage.measure import label, regionprops
 from torch.utils.data import Dataset
+import boto3
 
 from histomicstk.segmentation import simple_mask
 from openslide import OpenSlide
@@ -35,6 +36,81 @@ FOREGROUND_CLEANUP_PARAMS = {
     "dil": 1,
     "border": 50
 }
+
+
+def prepare_s3_bucket(bucket_name, file_list):
+    """
+    Prepare S3 bucket for training.
+    
+    Args:
+        bucket_name (str): name of the S3 bucket.
+        file_list (list): List of local file paths to upload.
+    """
+    s3_client = boto3.client("s3")
+    for file_path in file_list:
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            file_name = os.path.basename(file_path)
+            try:
+                s3_client.upload_file(file_path, bucket_name, f"raw/{file_name}")
+                logger.info(f"Uploaded: {file_name} to s3://{bucket_name}/raw/")
+            except Exception as e:
+                logger.error(f"Failed to upload {file_name}: {e}")
+        else:
+            logger.warning(f"Skipping: {file_path} (File not found or invalid)")
+
+
+def wipe_bucket_dir(bucket_name, bucket_prefix):
+    """
+    Deletes all files under a specific prefix in an S3 bucket.
+
+    Args:
+        bucket_name (str): Name of the S3 bucket.
+        bucket_prefix (str): Prefix (directory) to delete.
+    """
+    s3_client = boto3.client("s3")
+    paginator = s3_client.get_paginator("list_objects_v2")
+    pages = paginator.paginate(Bucket=bucket_name, Prefix=bucket_prefix)
+
+    files_deleted = 0
+    for page in pages:
+        if "Contents" in page:
+            for obj in page["Contents"]:
+                s3_client.delete_object(Bucket=bucket_name, Key=obj["Key"])
+                files_deleted += 1
+                logger.debug(f"Deleted: {obj['Key']}")
+
+    if files_deleted == 0:
+        logger.info(f"No files found under s3://{bucket_name}/{bucket_prefix}")
+    else:
+        logger.info(f"Deleted {files_deleted} files under s3://{bucket_name}/{bucket_prefix}")
+
+
+def list_bucket_files(bucket_name, bucket_prefix):
+    """
+    Lists all files under a specific prefix in an S3 bucket.
+
+    Args:
+        bucket_name (str): Name of the S3 bucket.
+        bucket_prefix (str): Prefix (directory) to list.
+
+    Returns:
+        list: List of file paths in S3.
+    """
+    s3_client = boto3.client("s3")
+    paginator = s3_client.get_paginator("list_objects_v2")
+    pages = paginator.paginate(Bucket=bucket_name, Prefix=bucket_prefix)
+
+    file_list = []
+    for page in pages:
+        if "Contents" in page:
+            file_list.extend([obj["Key"] for obj in page["Contents"]])
+
+    if not file_list:
+        logger.warning(f"No files found under s3://{bucket_name}/{bucket_prefix}")
+    else:
+        logger.info(f"Found {len(file_list)} files under s3://{bucket_name}/{bucket_prefix}")
+
+    return file_list
 
 
 def open_svs(svs_file):
