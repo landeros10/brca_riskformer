@@ -107,6 +107,7 @@ def upload_svs_files_to_bucket(
     """
     upload_large_files_to_bucket(s3_client, bucket_name, files_list, prefix=prefix, ext=ext, reupload=reupload)
 
+
 def prepare_riskformer_data(
         s3_client,
         bucket_name,
@@ -143,7 +144,7 @@ def prepare_riskformer_data(
 
 
     # Upload files to S3 to train/test directories
-    for dir_name, data in [("train", train_data), ("test", test_data)]:
+    for dir_name, data in [("raw/train", train_data), ("raw/test", test_data)]:
         if not data:
             logger.debug(f"Skipping upload: No files in {dir_name}.")
             continue
