@@ -1,4 +1,5 @@
 import logging
+import argparse
 import numpy as np
 import time
 import os
@@ -20,7 +21,6 @@ REFERENCE_MAG = 20.0
 DEFAULT_TILING_SIZE = 256
 DEFAULT_FOREGROUND_SIZE = 500
 DEFAULT_TISSUE_PROB = 0.15
-
 TILING_PARAMS = {
     256: {
         "size": 256,
@@ -243,13 +243,20 @@ def extract_features(test_file, coords, model, image_size, crop_size, bs=256):
     return features_array
 
 
-
 def main():
-    # TODO - argparser
-    # tile size
-    # debug
-    # model type
-    # save files
+    parser = argparse.ArgumentParser(description="Data loading script")
+    parser.add_argument("--reference_mag", type=float, default=20.0, help="Reference Obj magnification that all slides should be scaled to")
+    parser.add_argument("--tiling_size", type=int, default=256, help="Tile size")
+    parser.add_argument("--titling_params", type=str, default="/data/resources/tiling_params.json", help="Tiling parameters")
+    parser.add_argument("--thumb_size", type=int, default=500, help="Thumbnail size to use for foreground calc")
+    parser.add_argument("--foreground_params", type=str, default="/data/resources/foreground_params.json", help="HistomicsTK foreground detection parameters")
+    parser.add_argument("--model_type", type=str, default="resnet50", help="Model type")
+
+    args = parser.parse_args()
+
+    logger_setup(debug=args.debug)
+    logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
+
     # TODO - make sure preprocessing functions are prepped to work with s3 buckets
 
     # TODO - load feature extraction model
