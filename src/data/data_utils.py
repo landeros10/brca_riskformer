@@ -363,7 +363,10 @@ def load_slide_paths(slides_list_file):
         raise FileNotFoundError(f"Slide list file not found: {slides_list_file}")
 
 
-def initialize_s3_client(profile_name, return_session=False):
+def initialize_s3_client(
+        profile_name,
+        region_name=None,
+        return_session=False):
     """
     Initialize boto3 session and S3 client.
     
@@ -374,7 +377,7 @@ def initialize_s3_client(profile_name, return_session=False):
         boto3.client: S3 boto3 client.
     """
     try:
-        session = boto3.Session(profile_name=profile_name)
+        session = boto3.Session(profile_name=profile_name, region_name=region_name)
         logger.debug("Created boto3 session")
     except Exception as e:
         logger.error(f"Failed to create boto3 session: {e}")

@@ -1,8 +1,8 @@
 """
 test_sagemaker.py
 """
-# import sagemaker
-# from sagemaker.processing import ScriptProcessor, ProcessingInput, ProcessingOutput
+import sagemaker
+from sagemaker.processing import ScriptProcessor, ProcessingInput, ProcessingOutput
 # from sagemaker.s3 import S3Uploader
 import boto3
 import os
@@ -18,6 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description="Data loading script")
     parser.add_argument("--profile", type=str, default="651340551631_AWSPowerUserAccess", help="AWS profile name")
     parser.add_argument("--bucket", type=str, default="tcga-riskformer-data-2025", help="S3 bucket name")
+    parser.add_argument("--region", type=str, default="us-east-1", help="AWS region")
     parser.add_argument("--input_dir", type=str, default="testing/raw", help="Path to input data")
     parser.add_argument("--output_dir", type=str, default="testing/processed", help="Path to output data")
     parser.add_argument("--filename", type=str, default="input.txt", help="Name of file to process")
@@ -27,21 +28,56 @@ def main():
     logger_setup(debug=args.debug)
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
 
-    s3_client, session = initialize_s3_client(args.profile, return_session=True)
+    # Set up AWS
+    os.environ["AWS_REGION"] = args.region
+    s3_client, session = initialize_s3_client(
+        args.profile,
+        region_name=args.region,
+        return_session=True)
+    logger.debug(f"Using AWS profile: {args.profile}")
+    logger.debug(f"Using AWS region: {args.region}")
     logger.debug("Initialized S3 client.")
-    logger.debug("Creating test input data...")
-    s3_client.put_object(Bucket=args.bucket, Key=f"{args.input_dir}/{args.filename}", Body="Test input data")
+
+    s3_client.put_object(
+        Bucket=args.bucket,
+        Key=f"{args.input_dir}/{args.filename}",
+        Body="Test input data. Hello bug!")
     logger.debug(f"Created s3://{args.bucket}/{args.input_dir}/{args.filename}")
-    testing_files = list_bucket_files(s3_client, args.bucket, prefix=args.input_dir)
-    logger.debug(f"Found {len(testing_files)} files in s3://{args.bucket}/{args.input_dir}/")
-    logger.debug(f"First file: {testing_files[0]}")
-    return
 
     sagemaker_session = sagemaker.Session(boto_session=session)
-    logger.debug(f"Using sagemaker session: {sagemaker_session}")
+    logger.debug(f"Using SageMaker session: {sagemaker_session}")
+    try:
+        role = sagemaker.get_execution_role(sagemaker_session=sagemaker_session)
+        logger.debug(f"Using IAM role from Sagemaker: {role}")
+    except Exception as e:
+        logger.warning(f"Failed to get IAM role from Sagemaker: {e}")
+        role = None
+    
+    processor = ScriptProcessor(
+        role=role,
+        image_uri="763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training:1.9.1-cpu-py38",        command=["python3"],
+        instance_count=1,
+        instance_type="ml.m5.xlarge",
+        sagemaker_session=sagemaker_session,
+    )
+    logger.debug(f"Loaded sagemaker processor: {processor.__dict__}")
 
-    role = sagemaker.get_execution_role()
-    logger.debug(f"Using role: {role}")
+    processor.run(
+        code="test_process.py",
+        inputs=[
+            ProcessingInput(
+                source=f"s3://{args.bucket}/{args.input_dir}/{args.filename}",
+                destination="/opt/ml/processing/input",
+            ),
+        ],
+        outputs=[
+            ProcessingOutput(
+                source="/opt/ml/processing/output",
+                destination=f"s3://{args.bucket}/{args.output_dir}/",
+            )
+        ],
+    )
+    logger.debug(f"Processing job completed and saved to s3://{args.bucket}/{args.output_dir}/")
 
 if __name__ == "__main__":
     main()
