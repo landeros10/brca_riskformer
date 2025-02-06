@@ -13,7 +13,7 @@ from src.data.data_utils import load_slide_paths
 from src.utils import set_seed, collect_patients_svs_files
 
 logger_setup()
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(os.path.basename(__file__))
 logger.setLevel(logging.INFO)
 
 

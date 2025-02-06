@@ -13,7 +13,7 @@ from src.data.data_utils import (get_bbox, bbox_to_coords, filter_coords_mask, o
                       SlideDataset)
 
 logger_setup()
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(os.path.basename(__file__))
 logger.setLevel(logging.INFO)
 
 REFERENCE_MAG = 20.0

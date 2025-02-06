@@ -24,7 +24,7 @@ from src.logger_config import logger_setup
 from src.utils import read_slide_
 
 logger_setup()
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(os.path.basename(__file__))
 logger.setLevel(logging.INFO)
 
 FOREGROUND_THRESH_PARAMS = {
