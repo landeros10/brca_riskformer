@@ -1,9 +1,7 @@
 import logging
 import numpy as np
-import pandas as pd
 import time
 import os
-from os.path import join
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 
@@ -13,17 +11,10 @@ from src.logger_config import logger_setup
 from src.data.data_utils import (get_bbox, bbox_to_coords, filter_coords_mask, open_svs,
                       get_slide_foreground, mask_clean_up_and_resize, coords_to_heatmap,
                       SlideDataset)
-from src.utils import collect_patients_svs_files, save_coords_dict
 
 logger_setup()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-RESOURCE_DIR = '/data/resources'
-SVS_FILES = np.load(join(RESOURCE_DIR, "svs_files.npy"))
-PATIENT_FILES = [join(RESOURCE_DIR, "n0samples.csv"), join(RESOURCE_DIR, "n1samples.csv")]
-SLIDES_PRS = sum((collect_patients_svs_files(f, SVS_FILES) for f in PATIENT_FILES), [])
-SLIDES_PRS_DATA = pd.concat([pd.read_csv(f) for f in PATIENT_FILES], ignore_index=True)
 
 REFERENCE_MAG = 20.0
 DEFAULT_TILING_SIZE = 256
@@ -237,13 +228,7 @@ def main():
     # model type
     # save files
 
-    # Load Slides and Collect Sample Points
-    test_files = [f.replace("./resources", "/data/resources") for f in SLIDES_PRS]
-    all_coords, all_heatmaps = get_all_samplepoints(test_files, TILING_PARAMS[256], return_heatmap=True, parallel=True)
-    save_file = join(os.path.dirname(PATIENT_FILES[0]), "n0n1_sample_coords.npz")
-    save_coords_dict(all_coords, save_file)
-
-    # TODO - load model
+    # TODO - load feature extraction model
 
     # TODO - go through slides and convert patches to features using all_coords
     pass

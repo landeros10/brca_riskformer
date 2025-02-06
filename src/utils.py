@@ -16,8 +16,14 @@ import numpy as np
 import pandas as pd
 import random
 from openslide import OpenSlide
+import logging
 
 from src.randstainna import RandStainNA
+from src.logger_config import logger_setup
+
+logger_setup()
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # from shapely.ops import cascaded_union
 # from rtree import index
@@ -719,18 +725,23 @@ def collect_patients_svs_files(patient_list_csv, svs_files):
         svs_files (iterable): list of svs files
 
     Returns:
-        filtered (list): list of svs files that are in the patient csv
+        filtered (dict): dictionary of svs files that are in the patient list csv
     """
     svs_files_df = pd.read_csv(patient_list_csv)
+    svs_files_df = svs_files_df.iloc[:, 1:]
+
     ids_odx = set(svs_files_df.slide)
 
-    filtered = []
+    filtered = {}
     for file in svs_files:
+        file = file.replace("./resources", "/data/resources")
         if file.endswith(".txt"):
             continue
         id_name = splitext(basename(file))[0]
         if id_name in ids_odx:
-            filtered.append(file)
+            patient_data = svs_files_df[svs_files_df.slide == id_name].iloc[0].to_dict()
+            cleaned_data = {k: (None if pd.isna(v) else v) for k, v in patient_data.items()}
+            filtered[file] = cleaned_data
     return filtered
 
 
@@ -747,6 +758,7 @@ def set_seed(seed):
     Args:
         seed (int): seed to set
     """
+    logger.info(f"Setting seed to {seed}")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

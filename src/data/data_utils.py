@@ -4,6 +4,8 @@ created: 2/25/2025
 '''
 import logging
 import time
+import json
+import os
 
 import numpy as np
 from PIL import Image
@@ -339,6 +341,29 @@ def get_slide_foreground(slideObj, size=None, **kwargs):
     """
     foreground = get_slide_thumb(slideObj, size=size)
     return get_hist_foreground(foreground, **kwargs)
+
+
+def load_slide_paths(slides_list_file):
+    """
+    Load slide paths from a list of slides.
+
+    Args:
+        slides_list_file (str): json file containing the list of slides.
+
+    Returns:
+        slides_dict (dict): dictionary of slide paths.
+    """
+    if os.path.isfile(slides_list_file):
+        with open(slides_list_file, "r") as f:
+            slides_dict = json.load(f)
+
+        if not slides_dict:
+            logger.error(f"No slides found in {slides_list_file}")
+            raise ValueError(f"No slides found in {slides_list_file}")
+        return slides_dict
+    else:
+        logger.error(f"Slide list file not found: {slides_list_file}")
+        raise FileNotFoundError(f"Slide list file not found: {slides_list_file}")
 
 
 # TODO improve slide dataloading
