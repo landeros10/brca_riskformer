@@ -1,8 +1,10 @@
 import os
-import io
 import logging
 import argparse
+import time
 import boto3
+import botocore
+import botocore.config
 import pandas as pd
 import numpy as np
 
@@ -47,51 +49,83 @@ def wipe_bucket_dir(s3_client, bucket_name, bucket_prefix=""):
 
 def list_bucket_files(s3_client, bucket_name, bucket_prefix=""):
     """
-    Lists all files under a specific prefix in an S3 bucket.
+    Get a list of all files in an S3 bucket under a given prefix.
 
     Args:
         s3_client (boto3.client): S3 boto3 client.
         bucket_name (str): Name of the S3 bucket.
-        bucket_prefix (str): Prefix (directory) to list.
+        bucket_prefix (str): S3 prefix (folder) to list objects from.
 
     Returns:
-        list: List of file paths in S3.
-    """
-    
+        dict: {file_name: file_size_in_bytes} for all files in S3.
+    """            
+    existing_files = {}
     paginator = s3_client.get_paginator("list_objects_v2")
 
     try:
         pages = paginator.paginate(Bucket=bucket_name, Prefix=bucket_prefix)
-        file_list = [obj["Key"] for page in pages if "Contents" in page for obj in page["Contents"]]
-        if not file_list:
+        for page in pages:
+            if "Contents" in page:
+                for obj in page.get("Contents", []):
+                    existing_files[obj["Key"]] = obj["Size"]
+        if not existing_files:
             logger.debug(f"No files found in s3://{bucket_name}/{bucket_prefix}")
-        return file_list
-
     except Exception as e:
         logger.error(f"Failed to list files in s3://{bucket_name}/{bucket_prefix}: {e}")
-        return None
+    return existing_files
 
 
 def process_svs_foregrounds(svs_files):
     pass
 
 
-def upload_svs_files_to_bucket(s3_client, bucket_name, file_list, prefix="raw", ext=".svs"):
+def upload_svs_files_to_bucket(
+        s3_client,
+        bucket_name, 
+        file_list, 
+        prefix="raw", 
+        ext=".svs",
+        reupload=False):
     """
-    Prepare S3 bucket for training.
-    
+    Uploads SVS files to an S3 bucket using optimized multipart uploads.
+        
     Args:
         s3_client (boto3.client): S3 boto3 client.
-        bucket_name (str): name of the S3 bucket.
-        preifx (str): prefix to upload files to.
+        bucket_name (str): Name of the S3 bucket.
         file_list (list): List of local file paths to upload.
+        prefix (str): S3 prefix where files will be uploaded.
+        ext (str): File extension filter (default: ".svs").
     """
+    # setup multipart upload for 100 MB files
+    config = boto3.s3.transfer.TransferConfig(
+        multipart_threshold=20 * 1024 * 1024,
+        multipart_chunksize=20 * 1024 * 1024,
+        max_concurrency=5,
+        use_threads=True,
+    )
+    logger.debug(f"Using multipart_threshold: {(config.multipart_threshold)/(1024*1024):.2f}MB, chunk size: {(config.multipart_chunksize)/(1024*1024):.2f}MB, max concurrency: {config.max_concurrency}")
+    
+    existing_files = list_bucket_files(s3_client, bucket_name, prefix)
+    start_time = time.time()
+    count = 0
+    total_files = len(file_list)
     for file_path in file_list:
         if os.path.exists(file_path) and os.path.isfile(file_path) and file_path.endswith(ext):
             file_name = os.path.basename(file_path)
+            s3_key = f"{prefix}/{file_name}"
+            local_size = os.path.getsize(file_path)
+
+            if not reupload and s3_key in existing_files and existing_files[s3_key] == local_size:                
+                count += 1
+                total_time_str = time.strftime("%M:%S", time.gmtime((time.time() - start_time)))
+                logger.debug(f"({total_time_str}) ({count}/{total_files}) Skipping: {file_name}")
+                continue
+            
             try:
-                s3_client.upload_file(file_path, bucket_name, f"{prefix}/{file_name}")
-                logger.debug(f"Uploaded: {file_name} to s3://{bucket_name}/{prefix}/")
+                count += 1
+                s3_client.upload_file(file_path, bucket_name, f"{prefix}/{file_name}", Config=config)
+                total_time_str = time.strftime("%M:%S", time.gmtime((time.time() - start_time)))
+                logger.debug(f"({total_time_str}) ({count}/{total_files}) Uploaded: {file_name} to s3://{bucket_name}/{prefix}/")
             except Exception as e:
                 logger.error(f"Failed to upload {file_name}: {e}")
         else:
@@ -166,7 +200,13 @@ def clear_riskformer_bucket(s3_client, bucket_name):
     return True
 
 
-def prepare_riskformer_data(s3_client, bucket_name, svs_paths_file, test_split_ratio=0.2):
+def prepare_riskformer_data(
+        s3_client,
+        bucket_name,
+        svs_paths_file,
+        test_split_ratio=0.2,
+        split_params={},
+        reupload=False):
     """
     Prepare S3 bucket for training.
     
@@ -184,7 +224,11 @@ def prepare_riskformer_data(s3_client, bucket_name, svs_paths_file, test_split_r
         logger.error(f"Failed to load SVS files: {e}")
         return False
     try:
-        train_data, test_data = split_riskformer_data(svs_paths_data_dict, test_split_ratio=test_split_ratio)
+        train_data, test_data = split_riskformer_data(
+            svs_paths_data_dict,
+            test_split_ratio=test_split_ratio,
+            **split_params
+        )
         logger.info(f"Split data into {len(train_data)} training samples and {len(test_data)} testing samples.")
     except Exception as e:
         logger.error(f"Failed to split data: {e}")
@@ -199,7 +243,7 @@ def prepare_riskformer_data(s3_client, bucket_name, svs_paths_file, test_split_r
         try:
             s3_client.put_object(Bucket=bucket_name, Key=f"{dir_name}/")
             logger.info(f"Created s3://{bucket_name}/{dir_name}/")
-            upload_svs_files_to_bucket(s3_client, bucket_name, list(data.keys()), prefix=dir_name)
+            upload_svs_files_to_bucket(s3_client, bucket_name, list(data.keys()), prefix=dir_name, reupload=reupload)
             logger.info(f"Uploaded {len(data)} files to s3://{bucket_name}/{dir_name}/")
         except Exception as e:
             logger.error(f"Failed to create s3://{bucket_name}/{dir_name}/: {e}")
@@ -225,7 +269,8 @@ def initialize_s3_client(profile_name):
         return
     
     try:
-        s3_client = session.client("s3")
+        boto_config = botocore.config.Config(max_pool_connections=50)
+        s3_client = session.client("s3", config=boto_config, use_ssl=False)
         logger.debug("Created S3 client")
         logger.debug(f"Available buckets: {s3_client.list_buckets().get('Buckets')}")
     except Exception as e:
@@ -239,9 +284,12 @@ def main():
     parser = argparse.ArgumentParser(description="Data loading script")
     parser.add_argument("--profile", type=str, default="651340551631_AWSPowerUserAccess", help="AWS profile name")
     parser.add_argument("--bucket", type=str, default="tcga-riskformer-data-2025", help="S3 bucket name")
-    parser.add_argument("--wipe-bucket", action="store_true", help="Wipe bucket before uploading data")
+    parser.add_argument("--wipe_bucket", action="store_true", help="Wipe bucket before uploading data")
+    parser.add_argument("--reupload", action="store_true", help="Reupload files even if they exist")
     parser.add_argument("--svs_paths_file", type=str, default="/data/resources/riskformer_slides.json", help="Path to slides list")
-    parser.add_argument("--split_ratio", type=float, default=0.8, help="Train/test split ratio")
+    parser.add_argument("--test_split_ratio", type=float, default=0.2, help="Train/test split ratio")
+    parser.add_argument("--label_var", type=str, default="odx85", help="Variable name to use as label")
+    parser.add_argument("--positive_label", type=str, default="H", help="Positive label value")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
 
@@ -265,7 +313,14 @@ def main():
             return
 
     # Upload SVS files to S3 bucket
-    success = prepare_riskformer_data(s3_client, bucket_name, args.svs_paths_file)
+    success = prepare_riskformer_data(
+        s3_client,
+        bucket_name,
+        svs_paths_file=args.svs_paths_file,
+        test_split_ratio=args.test_split_ratio,
+        split_params={"label_var": args.label_var, "positive_label": args.positive_label},
+        reupload=args.reupload,
+    )
     if not success:
         logger.error("Failed to upload training and test data.")
         return
