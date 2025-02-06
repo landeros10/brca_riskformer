@@ -1,3 +1,6 @@
+'''
+data_loading.py
+'''
 import os
 import logging
 import argparse
@@ -8,10 +11,7 @@ from src.logger_config import logger_setup
 from src.data.data_utils import (load_slide_paths, list_bucket_files, wipe_bucket_dir, initialize_s3_client,
                                  upload_large_files_to_bucket)
 from src.utils import set_seed, collect_patients_svs_files
-
-logger_setup()
 logger = logging.getLogger(os.path.basename(__file__))
-logger.setLevel(logging.INFO)
 
 
 def process_svs_foregrounds(svs_files):
@@ -145,7 +145,7 @@ def prepare_riskformer_data(
     # Upload files to S3 to train/test directories
     for dir_name, data in [("train", train_data), ("test", test_data)]:
         if not data:
-            logger.warning(f"Skipping upload: No files in {dir_name}.")
+            logger.debug(f"Skipping upload: No files in {dir_name}.")
             continue
         try:
             s3_client.put_object(Bucket=bucket_name, Key=f"{dir_name}/")
@@ -173,8 +173,7 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
 
     args = parser.parse_args()
-    if args.debug:
-        logger.setLevel(logging.DEBUG)
+    logger_setup(debug=args.debug)
 
     set_seed(args.seed) 
 

@@ -1,4 +1,5 @@
 '''
+data_utils.py
 author: landeros10
 created: 2/25/2025
 '''
@@ -22,10 +23,7 @@ import boto3
 import botocore
 
 from src.logger_config import logger_setup
-
-logger_setup()
 logger = logging.getLogger(os.path.basename(__file__))
-logger.setLevel(logging.INFO)
 
 FOREGROUND_THRESH_PARAMS = {
     "fraction": 0.10,
@@ -366,13 +364,13 @@ def load_slide_paths(slides_list_file):
         raise FileNotFoundError(f"Slide list file not found: {slides_list_file}")
 
 
-def initialize_s3_client(profile_name):
+def initialize_s3_client(profile_name, return_session=False):
     """
     Initialize boto3 session and S3 client.
     
     Args:
         profile_name (str): AWS profile name.
-    
+        return_session (bool): Return boto3 session if True.
     Returns:
         boto3.client: S3 boto3 client.
     """
@@ -391,6 +389,8 @@ def initialize_s3_client(profile_name):
     except Exception as e:
         logger.error(f"Failed to create S3 client: {e}")
         return
+    if return_session:
+        return s3_client, session
     return s3_client
 
 
