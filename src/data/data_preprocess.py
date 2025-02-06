@@ -227,6 +227,7 @@ def main():
     # debug
     # model type
     # save files
+    # TODO - make sure preprocessing functions are prepped to work with s3 buckets
 
     # TODO - load feature extraction model
 

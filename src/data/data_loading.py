@@ -142,6 +142,30 @@ def split_riskformer_data(svs_paths_data_dict, label_var="odx85", positive_label
     return train_data, test_data
 
 
+def clear_riskformer_bucket(s3_client, bucket_name):
+    """
+    Clear all files in the S3 bucket.
+
+    Args:
+        s3_client (boto3.client): S3 boto3 client.
+        bucket_name (str): Name of the S3 bucket.
+    
+    Returns:
+        bool: True if successful, False otherwise.
+    """
+    files = list_bucket_files(s3_client, bucket_name)
+    if files is None:
+        logger.warning(f"Skipping bucket cleanup: Failed to list files in s3://{bucket_name}/")
+        return False
+    elif len(files) > 0:
+        logger.info(f"Found {len(files)} files in s3://{bucket_name}/")
+        success = wipe_bucket_dir(s3_client, bucket_name)
+        if not success:
+            logger.error(f"Cannot proceed. Files not deleted from s3://{bucket_name}/")
+            return False
+    return True
+
+
 def prepare_riskformer_data(s3_client, bucket_name, svs_paths_file, test_split_ratio=0.2):
     """
     Prepare S3 bucket for training.
@@ -152,31 +176,19 @@ def prepare_riskformer_data(s3_client, bucket_name, svs_paths_file, test_split_r
         svs_paths_file (str): JSON file containing SVS file paths.
         split_ratio (float): Proportion of files to use for training (default: 0.8).
     """
-    
-    # Wipe existing files in the bucket if any
-    files = list_bucket_files(s3_client, bucket_name)
-    if files is None:
-        logger.warning(f"Skipping bucket cleanup: Failed to list files in s3://{bucket_name}/")
-    elif len(files) > 0:
-        logger.info(f"Found {len(files)} files in s3://{bucket_name}/")
-        success = wipe_bucket_dir(s3_client, bucket_name)
-        if not success:
-            logger.error(f"Cannot proceed. Files not deleted from s3://{bucket_name}/")
-            return
-    
     # Split train/test
     try:
         svs_paths_data_dict = load_slide_paths(svs_paths_file)
         logger.info(f"Loaded {len(svs_paths_data_dict)} SVS files.")
     except Exception as e:
         logger.error(f"Failed to load SVS files: {e}")
-        return
+        return False
     try:
         train_data, test_data = split_riskformer_data(svs_paths_data_dict, test_split_ratio=test_split_ratio)
         logger.info(f"Split data into {len(train_data)} training samples and {len(test_data)} testing samples.")
     except Exception as e:
         logger.error(f"Failed to split data: {e}")
-        return
+        return False
 
 
     # Upload files to S3 to train/test directories
@@ -191,7 +203,8 @@ def prepare_riskformer_data(s3_client, bucket_name, svs_paths_file, test_split_r
             logger.info(f"Uploaded {len(data)} files to s3://{bucket_name}/{dir_name}/")
         except Exception as e:
             logger.error(f"Failed to create s3://{bucket_name}/{dir_name}/: {e}")
-            return
+            return False
+    return True
     
 
 def initialize_s3_client(profile_name):
@@ -226,10 +239,11 @@ def main():
     parser = argparse.ArgumentParser(description="Data loading script")
     parser.add_argument("--profile", type=str, default="651340551631_AWSPowerUserAccess", help="AWS profile name")
     parser.add_argument("--bucket", type=str, default="tcga-riskformer-data-2025", help="S3 bucket name")
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--split_ratio", type=float, default=0.8, help="Train/test split ratio")
+    parser.add_argument("--wipe-bucket", action="store_true", help="Wipe bucket before uploading data")
     parser.add_argument("--svs_paths_file", type=str, default="/data/resources/riskformer_slides.json", help="Path to slides list")
+    parser.add_argument("--split_ratio", type=float, default=0.8, help="Train/test split ratio")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
 
     args = parser.parse_args()
     if args.debug:
@@ -242,9 +256,20 @@ def main():
     if s3_client is None:
         logger.error("Failed to initialize S3 client.")
         return
+    
+    # Clear bucket
+    if args.wipe_bucket:
+        success = clear_riskformer_bucket(s3_client, bucket_name)
+        if not success:
+            logger.error("Failed to clear bucket.")
+            return
 
     # Upload SVS files to S3 bucket
-    prepare_riskformer_data(s3_client, bucket_name, args.svs_paths_file)
+    success = prepare_riskformer_data(s3_client, bucket_name, args.svs_paths_file)
+    if not success:
+        logger.error("Failed to upload training and test data.")
+        return
+
 
 if __name__ == "__main__":
     main()
