@@ -18,10 +18,7 @@ import pandas as pd
 import random
 from openslide import OpenSlide
 import logging
-
 from src.randstainna import RandStainNA
-from src.logger_config import logger_setup
-
 logger = logging.getLogger(__name__)
 
 # from shapely.ops import cascaded_union

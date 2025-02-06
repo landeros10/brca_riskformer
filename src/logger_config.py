@@ -27,5 +27,6 @@ def logger_setup(debug=False):
     )
 
     if debug:
+        root_logger.info("Setting up debugging for 'src' modules.")
         logging.getLogger("src").setLevel(logging.DEBUG)
         root_logger.debug("Debugging enabled for 'src' modules.")

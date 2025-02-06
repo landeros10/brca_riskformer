@@ -174,7 +174,7 @@ def main():
 
     args = parser.parse_args()
     logger_setup(debug=args.debug)
-    logger.debug("Debug mode enabled.")
+    logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
 
     set_seed(args.seed) 
 
