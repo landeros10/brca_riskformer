@@ -9,6 +9,7 @@ Massachusetts General Hospital
 from __future__ import (print_function, division,
                         absolute_import, unicode_literals)
 from os.path import splitext, basename
+import os
 import json
 
 import torch

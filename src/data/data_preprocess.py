@@ -4,13 +4,15 @@ import time
 import os
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
+from openslide import OpenSlide
 
-from torch.utils.data import DataLoader
+from torch.utils.data import Dataset, DataLoader
 
 from src.logger_config import logger_setup
 from src.data.data_utils import (get_bbox, bbox_to_coords, filter_coords_mask, open_svs,
                       get_slide_foreground, mask_clean_up_and_resize, coords_to_heatmap,
                       SlideDataset)
+from src.utils import read_slide_
 
 logger_setup()
 logger = logging.getLogger(os.path.basename(__file__))
@@ -33,6 +35,29 @@ TILING_PARAMS = {
         "p_foreground": 0.25
     }
 }
+
+# TODO improve slide dataloading
+class SlideDataset(Dataset):
+    def __init__(self, slide_path, coords, transform, image_size, crop_size):
+        self.slide_path = slide_path
+        self.coords = coords
+        self.transform = transform
+        self.image_size = image_size
+        self.crop_size = crop_size
+        self.slideObj = OpenSlide(slide_path)
+
+    def __len__(self):
+        return len(self.coords)
+
+    def __getitem__(self, idx):
+        x, y = self.coords[idx]
+        image = read_slide_(self.slide_path, x, y, self.crop_size, self.image_size)
+        image = image.resize((self.image_size, self.image_size))
+        transformed_image = self.transform(image)
+        return transformed_image
+
+    def close_slide(self):
+        self.slideObj.close()
 
 
 def get_mask_samplepoints(foreground_mask, slide_metadata, tiling_params, reference_mag=REFERENCE_MAG):

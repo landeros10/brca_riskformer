@@ -16,12 +16,10 @@ from skimage.morphology import opening, closing, dilation, square
 from scipy.ndimage import binary_fill_holes
 from skimage.measure import label, regionprops
 from openslide import OpenSlide
-from torch.utils.data import Dataset
 
 from histomicstk.segmentation import simple_mask
 
 from src.logger_config import logger_setup
-from src.utils import read_slide_
 
 logger_setup()
 logger = logging.getLogger(os.path.basename(__file__))
@@ -366,25 +364,3 @@ def load_slide_paths(slides_list_file):
         raise FileNotFoundError(f"Slide list file not found: {slides_list_file}")
 
 
-# TODO improve slide dataloading
-class SlideDataset(Dataset):
-    def __init__(self, slide_path, coords, transform, image_size, crop_size):
-        self.slide_path = slide_path
-        self.coords = coords
-        self.transform = transform
-        self.image_size = image_size
-        self.crop_size = crop_size
-        self.slideObj = OpenSlide(slide_path)
-
-    def __len__(self):
-        return len(self.coords)
-
-    def __getitem__(self, idx):
-        x, y = self.coords[idx]
-        image = read_slide_(self.slide_path, x, y, self.crop_size, self.image_size)
-        image = image.resize((self.image_size, self.image_size))
-        transformed_image = self.transform(image)
-        return transformed_image
-
-    def close_slide(self):
-        self.slideObj.close()
