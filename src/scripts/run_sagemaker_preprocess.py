@@ -1,17 +1,20 @@
-"""
-test_sagemaker.py
-"""
+'''
+run_sagemaker_preprocess.py
+
+Run a preprocessing job on SageMaker.
+Author: landeros10
+Created: 2025-02-05
+'''
+import os
+import logging
+import argparse
 import sagemaker
 from sagemaker.processing import ScriptProcessor, ProcessingInput, ProcessingOutput
-# from sagemaker.s3 import S3Uploader
-import boto3
-import os
-import argparse
-import logging
 
 from src.logger_config import logger_setup
-from src.data.data_utils import initialize_s3_client, list_bucket_files
+from src.data.data_utils import initialize_s3_client
 logger = logging.getLogger(__name__)
+
 
 def main():
     # set up arg parsing
@@ -19,9 +22,8 @@ def main():
     parser.add_argument("--profile", type=str, default="651340551631_AWSPowerUserAccess", help="AWS profile name")
     parser.add_argument("--bucket", type=str, default="tcga-riskformer-data-2025", help="S3 bucket name")
     parser.add_argument("--region", type=str, default="us-east-1", help="AWS region")
-    parser.add_argument("--input_dir", type=str, default="testing/raw", help="Path to input data")
-    parser.add_argument("--output_dir", type=str, default="testing/processed", help="Path to output data")
-    parser.add_argument("--filename", type=str, default="input.txt", help="Name of file to process")
+    parser.add_argument("--input_dir", type=str, default="raw", help="Path to input data")
+    parser.add_argument("--output_dir", type=str, default="processed", help="Path to output data")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     args = parser.parse_args()
 
