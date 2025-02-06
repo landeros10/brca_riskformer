@@ -2,14 +2,11 @@ import os
 import logging
 import argparse
 import time
-import boto3
-import botocore
-import botocore.config
-import pandas as pd
 import numpy as np
 
 from src.logger_config import logger_setup
-from src.data.data_utils import load_slide_paths
+from src.data.data_utils import (load_slide_paths, list_bucket_files, wipe_bucket_dir, initialize_s3_client,
+                                 upload_large_files_to_bucket)
 from src.utils import set_seed, collect_patients_svs_files
 
 logger_setup()
@@ -17,119 +14,8 @@ logger = logging.getLogger(os.path.basename(__file__))
 logger.setLevel(logging.INFO)
 
 
-def wipe_bucket_dir(s3_client, bucket_name, bucket_prefix=""):
-    """
-    Deletes all files under a specific prefix in an S3 bucket.
-
-    Args:
-        s3_client (boto3.client): S3 boto3 client.
-        bucket_name (str): Name of the S3 bucket.
-        bucket_prefix (str): Prefix (directory) to delete.
-    """
-    paginator = s3_client.get_paginator("list_objects_v2")
-    files_deleted = 0
-    try:
-        pages = paginator.paginate(Bucket=bucket_name, Prefix=bucket_prefix)
-        for page in pages:
-            if "Contents" in page:
-                try:
-                    objects = [{"Key": obj["Key"]} for obj in page["Contents"]]
-                    s3_client.delete_objects(Bucket=bucket_name, Delete={"Objects": objects})
-                    files_deleted += len(objects)
-                    logger.debug(f"Deleted {len(objects)} files")
-                except Exception as e:
-                    logger.error(f"Failed to delete files in page {page}: {e}")
-                    return False
-        logger.debug(f"Deleted {files_deleted} files under s3://{bucket_name}/{bucket_prefix}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to delete files under s3://{bucket_name}/{bucket_prefix}: {e}")
-        return False
-
-
-def list_bucket_files(s3_client, bucket_name, bucket_prefix=""):
-    """
-    Get a list of all files in an S3 bucket under a given prefix.
-
-    Args:
-        s3_client (boto3.client): S3 boto3 client.
-        bucket_name (str): Name of the S3 bucket.
-        bucket_prefix (str): S3 prefix (folder) to list objects from.
-
-    Returns:
-        dict: {file_name: file_size_in_bytes} for all files in S3.
-    """            
-    existing_files = {}
-    paginator = s3_client.get_paginator("list_objects_v2")
-
-    try:
-        pages = paginator.paginate(Bucket=bucket_name, Prefix=bucket_prefix)
-        for page in pages:
-            if "Contents" in page:
-                for obj in page.get("Contents", []):
-                    existing_files[obj["Key"]] = obj["Size"]
-        if not existing_files:
-            logger.debug(f"No files found in s3://{bucket_name}/{bucket_prefix}")
-    except Exception as e:
-        logger.error(f"Failed to list files in s3://{bucket_name}/{bucket_prefix}: {e}")
-    return existing_files
-
-
 def process_svs_foregrounds(svs_files):
     pass
-
-
-def upload_svs_files_to_bucket(
-        s3_client,
-        bucket_name, 
-        file_list, 
-        prefix="raw", 
-        ext=".svs",
-        reupload=False):
-    """
-    Uploads SVS files to an S3 bucket using optimized multipart uploads.
-        
-    Args:
-        s3_client (boto3.client): S3 boto3 client.
-        bucket_name (str): Name of the S3 bucket.
-        file_list (list): List of local file paths to upload.
-        prefix (str): S3 prefix where files will be uploaded.
-        ext (str): File extension filter (default: ".svs").
-    """
-    # setup multipart upload for 100 MB files
-    config = boto3.s3.transfer.TransferConfig(
-        multipart_threshold=20 * 1024 * 1024,
-        multipart_chunksize=20 * 1024 * 1024,
-        max_concurrency=5,
-        use_threads=True,
-    )
-    logger.debug(f"Using multipart_threshold: {(config.multipart_threshold)/(1024*1024):.2f}MB, chunk size: {(config.multipart_chunksize)/(1024*1024):.2f}MB, max concurrency: {config.max_concurrency}")
-    
-    existing_files = list_bucket_files(s3_client, bucket_name, prefix)
-    start_time = time.time()
-    count = 0
-    total_files = len(file_list)
-    for file_path in file_list:
-        if os.path.exists(file_path) and os.path.isfile(file_path) and file_path.endswith(ext):
-            file_name = os.path.basename(file_path)
-            s3_key = f"{prefix}/{file_name}"
-            local_size = os.path.getsize(file_path)
-
-            if not reupload and s3_key in existing_files and existing_files[s3_key] == local_size:                
-                count += 1
-                total_time_str = time.strftime("%M:%S", time.gmtime((time.time() - start_time)))
-                logger.debug(f"({total_time_str}) ({count}/{total_files}) Skipping: {file_name}")
-                continue
-            
-            try:
-                count += 1
-                s3_client.upload_file(file_path, bucket_name, f"{prefix}/{file_name}", Config=config)
-                total_time_str = time.strftime("%M:%S", time.gmtime((time.time() - start_time)))
-                logger.debug(f"({total_time_str}) ({count}/{total_files}) Uploaded: {file_name} to s3://{bucket_name}/{prefix}/")
-            except Exception as e:
-                logger.error(f"Failed to upload {file_name}: {e}")
-        else:
-            logger.warning(f"Skipping: {file_path} (File not found or invalid)")
 
 
 def split_riskformer_data(svs_paths_data_dict, label_var="odx85", positive_label="H", test_split_ratio=0.2):
@@ -200,6 +86,27 @@ def clear_riskformer_bucket(s3_client, bucket_name):
     return True
 
 
+def upload_svs_files_to_bucket(
+        s3_client,
+        bucket_name, 
+        files_list,
+        prefix="raw", 
+        ext="",
+        reupload=False,
+    ):
+    """
+    Upload SVS files to S3 bucket.
+
+    Args:
+        s3_client (boto3.client): S3 boto3 client.
+        bucket_name (str): Name of the S3 bucket.
+        files_list (list): List of file paths to upload.
+        prefix (str): S3 key prefix.
+        ext (str): File extension to filter files.
+        reupload (bool): Reupload files even if they exist.
+    """
+    upload_large_files_to_bucket(s3_client, bucket_name, files_list, prefix=prefix, ext=ext, reupload=reupload)
+
 def prepare_riskformer_data(
         s3_client,
         bucket_name,
@@ -250,34 +157,6 @@ def prepare_riskformer_data(
             return False
     return True
     
-
-def initialize_s3_client(profile_name):
-    """
-    Initialize boto3 session and S3 client.
-    
-    Args:
-        profile_name (str): AWS profile name.
-    
-    Returns:
-        boto3.client: S3 boto3 client.
-    """
-    try:
-        session = boto3.Session(profile_name=profile_name)
-        logger.debug("Created boto3 session")
-    except Exception as e:
-        logger.error(f"Failed to create boto3 session: {e}")
-        return
-    
-    try:
-        boto_config = botocore.config.Config(max_pool_connections=50)
-        s3_client = session.client("s3", config=boto_config, use_ssl=False)
-        logger.debug("Created S3 client")
-        logger.debug(f"Available buckets: {s3_client.list_buckets().get('Buckets')}")
-    except Exception as e:
-        logger.error(f"Failed to create S3 client: {e}")
-        return
-    return s3_client
-
 
 def main():
     # set up arg parsing
