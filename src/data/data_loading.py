@@ -173,10 +173,8 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
 
     args = parser.parse_args()
-    logger.info(f"setting up debug mode: {args.debug}")
     logger_setup(debug=args.debug)
     logger.debug("Debug mode enabled.")
-    return
 
     set_seed(args.seed) 
 
