@@ -22,9 +22,7 @@ import logging
 from src.randstainna import RandStainNA
 from src.logger_config import logger_setup
 
-logger_setup()
-logger = logging.getLogger(os.path.basename(__file__))
-logger.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 # from shapely.ops import cascaded_union
 # from rtree import index

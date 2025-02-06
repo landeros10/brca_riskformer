@@ -11,10 +11,7 @@ import logging
 
 from src.logger_config import logger_setup
 from src.data.data_utils import initialize_s3_client 
-
-logger_setup()
-logger = logging.getLogger(os.path.basename(__file__))
-logger.setLevel(logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 def main():
     # set up arg parsing

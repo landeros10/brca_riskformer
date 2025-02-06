@@ -10,8 +10,8 @@ import numpy as np
 from src.logger_config import logger_setup
 from src.data.data_utils import (load_slide_paths, list_bucket_files, wipe_bucket_dir, initialize_s3_client,
                                  upload_large_files_to_bucket)
-from src.utils import set_seed, collect_patients_svs_files
-logger = logging.getLogger(os.path.basename(__file__))
+from src.utils import set_seed
+logger = logging.getLogger(__name__)
 
 
 def process_svs_foregrounds(svs_files):
@@ -173,7 +173,10 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
 
     args = parser.parse_args()
+    logger.info(f"setting up debug mode: {args.debug}")
     logger_setup(debug=args.debug)
+    logger.debug("Debug mode enabled.")
+    return
 
     set_seed(args.seed) 
 

@@ -22,8 +22,7 @@ from histomicstk.segmentation import simple_mask
 import boto3
 import botocore
 
-from src.logger_config import logger_setup
-logger = logging.getLogger(os.path.basename(__file__))
+logger = logging.getLogger(__name__)
 
 FOREGROUND_THRESH_PARAMS = {
     "fraction": 0.10,

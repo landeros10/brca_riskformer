@@ -6,9 +6,7 @@ import argparse
 import logging
 
 from src.logger_config import logger_setup
-logger_setup()
-logger = logging.getLogger(os.path.basename(__file__))
-logger.setLevel(logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 
 def preprocessor(data):

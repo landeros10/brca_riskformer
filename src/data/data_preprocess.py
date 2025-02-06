@@ -14,9 +14,7 @@ from src.data.data_utils import (get_bbox, bbox_to_coords, filter_coords_mask, o
                       SlideDataset)
 from src.utils import read_slide_
 
-logger_setup()
-logger = logging.getLogger(os.path.basename(__file__))
-logger.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
 REFERENCE_MAG = 20.0
 DEFAULT_TILING_SIZE = 256
