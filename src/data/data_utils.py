@@ -172,6 +172,25 @@ def open_svs(svs_file):
     return slideObj, metadata
 
 
+def get_crop_size(slide_metadata, tiling_config):
+    """
+    Get crop size for the slide based on desired tilsize in the reference magnification.
+    
+    Args:
+        slide_metadata (dict): dictionary of slide metadata.
+        tiling_config (dict): dictionary of tiling parameters.
+    
+    Returns:
+        crop_size (int): size of the crop in pixels.
+    """
+    slide_mag = slide_metadata["mag"]
+    tile_size = tiling_config.get("size", DEFAULT_TILING_CONFIG["size"])
+    reference_mag = tiling_config.get("reference_mag", DEFAULT_TILING_CONFIG["reference_mag"])
+    crop_size = np.around(float(tile_size) * (slide_mag / reference_mag))
+    return int(crop_size)
+
+
+
 def get_svs_thumb(svs_file, size=None):
     """
     Get low-level thumbnail of the SVS file.
