@@ -4,10 +4,13 @@ import yaml
 import os
 
 import torch
+from transformers import AutoModel
 
 from src.logger_config import logger_setup
 from src.data.data_preprocess import (get_svs_samplepoints, SingleSlideDataset,
-                                      TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema)
+                                      TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema,
+                                      load_model)
+from src.data.data_utils import initialize_s3_client
 logger = logging.getLogger(__name__)
 
 def log_config(config, tag):
@@ -59,6 +62,24 @@ def load_preprocessing_configs(args):
         "foreground_cleanup_config": foreground_cleanup_config,
     }
 
+
+def download_model_from_s3(bucket_name, model_key, local_model_path="opt/ml/model"):
+    """Download a model from S3 to a local path."""
+    s3_client = initialize_s3_client(profile_name="xtn", region_name="us-east-1", return_session=False)
+    local_model_path = os.path.join(local_model_path, os.path.basename(model_key))
+
+    logger.info(f"Downloading model from S3: s3://{bucket_name}/{model_key} to {local_model_path}")
+    s3_client.download_file(bucket_name, model_key, local_model_path)
+    return local_model_path
+
+
+def load_feature_extractor(model_type, local_model_path):
+    """Load a feature extractor from a local model path."""
+    model = load_model(model_type, local_model_path)
+    model.eval()
+    return model
+
+
 def main():
     parser = argparse.ArgumentParser(description="Preprocessing pipeline for SVS slides in SageMaker")
     parser.add_argument("--input_filename", type=str, required=True, help="Input filename")
@@ -67,8 +88,9 @@ def main():
     parser.add_argument("--tiling_config", type=str, required=False, help="Tiling parameters YAML file")
     parser.add_argument("--foreground_config", type=str, required=False, help="Foreground detection YAML file")
     parser.add_argument("--foreground_cleanup_config", type=str, required=False, help="Foreground cleanup YAML file")
-    parser.add_argument("--model_type", type=str, default="resnet50", help="Model type")
 
+    parser.add_argument("--model_bucket", type=str, required=True, help="S3 bucket for model artifacts")
+    parser.add_argument("--model_key", type=str, required=True, help="S3 key for model artifacts")
     args = parser.parse_args()
 
     logger_setup(debug=args.debug)
@@ -87,24 +109,22 @@ def main():
         return_heatmap=False,
     )
 
+    # Log cuda availability and set proper device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
+
+    model, transform = load_model(args.model_type, device)
+
     # Create dataset object
-    transform_func = None
+    transform = None
     dataset = SingleSlideDataset(
         slide_obj=slide_obj,
         slide_metadata=metadata,
         sample_coords=sample_coords,
         sample_size=sample_size,
         output_size=preprocessing_params["tiling_config"]["size"],
-        transform=transform_func
+        transform=transform
     )
-
-    # Log cuda availability and set proper device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
-
-    model = load_model(args.model_type, device)
-
-
 
     # TODO - go through slides and convert patches to features using all_coords
     pass

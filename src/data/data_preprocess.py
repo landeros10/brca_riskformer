@@ -19,6 +19,9 @@ from PIL import Image
 import torch
 from torchvision import transforms # type: ignore
 from torch.utils.data import Dataset, DataLoader
+import timm # type: ignore
+from timm.data import resolve_data_config # type: ignore
+from timm.data.transforms_factory import create_transform # type: ignore
 
 from src.logger_config import logger_setup
 from src.data.data_utils import (open_svs, get_slide_samplepoints, get_crop_size,
@@ -184,28 +187,69 @@ def get_all_samplepoints(
     return all_coords, all_heatmaps
 
 
-def load_dino_model(model_path, device):
+def load_dino_model(model_path):
     # model_path = join(RESOURCE_DIR, "ViT", 'vit256_small_dino.pth')        
-        
-    device256 = torch.device('cuda:0')
-    model256 = get_vit256(pretrained_weights=model_path, device=device256)
-    return model256.to(device)
+    return None
+    # model256 = get_vit256(pretrained_weights=model_path, device=device256)
+    # return model256.to(device)
 
-def load_model(model_type, device):
-    if model_type == "dino":
-        model_path = "/opt/ml/processing/input/ViT/vit256_small_dino.pth"
-        model = load_dino_model(model_path, device)
 
+def load_uni_model(model_path):
+    """ Load the UNI2-h model with predefined timm_kwargs"""
+    # pretrained=True needed to load UNI weights (and download weights for the first time)
+    # using UNI2-h as example
+    timm_kwargs = {
+    'img_size': 224, 
+    'patch_size': 14, 
+    'depth': 24,
+    'num_heads': 24,
+    'init_values': 1e-5, 
+    'embed_dim': 1536,
+    'mlp_ratio': 2.66667*2,
+    'num_classes': 0, 
+    'no_embed_class': True,
+    'mlp_layer': timm.layers.SwiGLUPacked, 
+    'act_layer': torch.nn.SiLU, 
+    'reg_tokens': 8, 
+    'dynamic_img_size': True
+    }
+    model = timm.create_model(
+        "hf-hub:MahmoodLab/UNI2-h",
+        pretrained=True,
+        **timm_kwargs)
     
+    transform = create_transform(
+        **resolve_data_config(model.pretrained_cfg, model=model)
+        )
+    
+    # Transform description from timm.data.transforms_factory
+    # transform = transforms.Compose(
+    # [
+    # transforms.Resize(224),
+    # transforms.CenterCrop(224),
+    # transforms.ToTensor(),
+    # transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    # ]
+    # )    
+    return model, transform
+
+def load_model(model_type, model_path):
+    if model_type == "dino":
+        model, transform = load_dino_model(model_path)
+
+    elif model_type == "uni":
+        model, transform = None
+
     elif model_type == "resnet50":
-        model = None
+        model, transform = None
 
     elif model_type == "resnet101":
-        model = None
-    
+        model, transform = None
+
     else:
         raise ValueError(f"Invalid model type: {model_type}")
 
+    return model, transform
 
 def extract_features(test_file, coords, model, image_size, crop_size, bs=256):
     # TODO review this function
