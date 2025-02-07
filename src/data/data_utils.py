@@ -30,7 +30,7 @@ class ForegroundConfigSchema(BaseModel):
     fraction: float = Field(default=0.10, description="Fraction of the image to use for foreground sampling.")
     bandwidth: int = Field(default=2, description="Bandwidth of the Gaussian kernel to use for foreground estimation.")
     min_tissue_prob: float = Field(default=0.05, description="Minimum tissue probability to consider a pixel as foreground.")
-    min_foreground_ratio: float = Field(defasult=0.15, description="Minimum foreground/background ratio in slide.")
+    min_foreground_ratio: float = Field(default=0.15, description="Minimum foreground/background ratio in slide.")
 
 
 class ForegroundCleanupConfigSchema(BaseModel):
