@@ -22,7 +22,8 @@ from torch.utils.data import Dataset, DataLoader
 
 from src.logger_config import logger_setup
 from src.data.data_utils import (open_svs, get_slide_samplepoints, get_crop_size,
-                                 sample_slide)
+                                 sample_slide,
+                                 TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema)
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +182,29 @@ def get_all_samplepoints(
     
     logger.info(f"Finished processing all slides in {time.time() - start_time:.2f}s")
     return all_coords, all_heatmaps
+
+
+def load_dino_model(model_path, device):
+    # model_path = join(RESOURCE_DIR, "ViT", 'vit256_small_dino.pth')        
+        
+    device256 = torch.device('cuda:0')
+    model256 = get_vit256(pretrained_weights=model_path, device=device256)
+    return model256.to(device)
+
+def load_model(model_type, device):
+    if model_type == "dino":
+        model_path = "/opt/ml/processing/input/ViT/vit256_small_dino.pth"
+        model = load_dino_model(model_path, device)
+
+    
+    elif model_type == "resnet50":
+        model = None
+
+    elif model_type == "resnet101":
+        model = None
+    
+    else:
+        raise ValueError(f"Invalid model type: {model_type}")
 
 
 def extract_features(test_file, coords, model, image_size, crop_size, bs=256):

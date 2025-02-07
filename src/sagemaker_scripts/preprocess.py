@@ -3,9 +3,11 @@ import argparse
 import yaml
 import os
 
+import torch
+
 from src.logger_config import logger_setup
-from src.data.data_utils import (TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema)
-from src.data.data_preprocess import get_svs_samplepoints
+from src.data.data_preprocess import (get_svs_samplepoints, SingleSlideDataset,
+                                      TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema)
 logger = logging.getLogger(__name__)
 
 def log_config(config, tag):
@@ -86,12 +88,23 @@ def main():
     )
 
     # Create dataset object
+    transform_func = None
     dataset = SingleSlideDataset(
+        slide_obj=slide_obj,
+        slide_metadata=metadata,
+        sample_coords=sample_coords,
+        sample_size=sample_size,
+        output_size=preprocessing_params["tiling_config"]["size"],
+        transform=transform_func
     )
 
+    # Log cuda availability and set proper device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
+
+    model = load_model(args.model_type, device)
 
 
-    # TODO - load feature extraction model
 
     # TODO - go through slides and convert patches to features using all_coords
     pass

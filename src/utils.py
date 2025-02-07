@@ -16,7 +16,7 @@ import torch
 import numpy as np
 import pandas as pd
 import random
-from openslide import OpenSlide
+from openslide import OpenSlide # type: ignore
 import logging
 from src.randstainna import RandStainNA
 
