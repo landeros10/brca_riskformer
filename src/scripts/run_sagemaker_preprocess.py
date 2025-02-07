@@ -12,7 +12,7 @@ import sagemaker
 from sagemaker.processing import ScriptProcessor, ProcessingInput, ProcessingOutput
 
 from src.logger_config import logger_setup
-from src.data.data_utils import initialize_s3_client
+from src.data.data_utils import initialize_s3_client, load_slide_paths
 logger = logging.getLogger(__name__)
 
 
@@ -24,6 +24,12 @@ def main():
     parser.add_argument("--region", type=str, default="us-east-1", help="AWS region")
     parser.add_argument("--input_dir", type=str, default="raw", help="Path to input data")
     parser.add_argument("--output_dir", type=str, default="processed", help="Path to output data")
+    parser.add_argument("--svs_paths_file", type=str, default="/data/resources/riskformer_slides.json", help="Path to slides list")
+    parser.add_argument("--tiling_config", type=str, default="./tiling_config.yaml", help="Tiling parameters YAML file")
+    parser.add_argument("--foreground_config", type=str, default="./foreground_config.yaml", help="Foreground detection YAML file")
+    parser.add_argument("--foreground_cleanup_config", type=str, default="./foreground_cleanup.yaml", help="Foreground cleanup YAML file")
+    parser.add_argument("--model_type", type=str, default="resnet50", help="Model type")
+    
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     args = parser.parse_args()
 
@@ -39,12 +45,6 @@ def main():
     logger.debug(f"Using AWS profile: {args.profile}")
     logger.debug(f"Using AWS region: {args.region}")
     logger.debug("Initialized S3 client.")
-
-    s3_client.put_object(
-        Bucket=args.bucket,
-        Key=f"{args.input_dir}/{args.filename}",
-        Body="Test input data. Hello bug!")
-    logger.debug(f"Created s3://{args.bucket}/{args.input_dir}/{args.filename}")
 
     sagemaker_session = sagemaker.Session(boto_session=session)
     logger.debug(f"Using SageMaker session: {sagemaker_session}")
@@ -62,23 +62,35 @@ def main():
         instance_type="ml.m5.xlarge",
         sagemaker_session=sagemaker_session,
     )
-    logger.debug(f"Loaded sagemaker processor: {processor.__dict__}")
+    logger.debug(f"Loaded SageMaker processor with config: {vars(processor)}")
 
-    processor.run(
-        code="test_process.py",
-        inputs=[
-            ProcessingInput(
-                source=f"s3://{args.bucket}/{args.input_dir}/{args.filename}",
-                destination="/opt/ml/processing/input",
-            ),
-        ],
-        outputs=[
-            ProcessingOutput(
-                source="/opt/ml/processing/output",
-                destination=f"s3://{args.bucket}/{args.output_dir}/",
-            )
-        ],
-    )
+    svs_files = load_slide_paths(args.svs_paths_file)
+    for svs_file in svs_files:
+        processor.run(
+            code="sagemaker_scripts/preprocess.py",
+            inputs=[
+                ProcessingInput(
+                    source=f"s3://{args.bucket}/{args.input_dir}/{svs_file}",
+                    destination="/opt/ml/processing/input/",
+                ),
+                ProcessingInput(source=args.tiling_config, destination=f"/opt/ml/processing/input/"),
+                ProcessingInput(source=args.foreground_config, destination="/opt/ml/processing/input/"),
+                ProcessingInput(source=args.foreground_cleanup_config, destination="/opt/ml/processing/input/"),
+            ],
+            arguments=[
+                "--input_file", f"/opt/ml/processing/input/{svs_file}",
+                "--output_dir", "/opt/ml/processing/output",
+                "--tiling_config", f"/opt/ml/processing/input/{os.path.basename(args.tiling_config)}",
+                "--foreground_config", f"/opt/ml/processing/input/{os.path.basename(args.foreground_config)}",
+                "--foreground_cleanup_config", f"/opt/ml/processing/input/{os.path.basename(args.foreground_cleanup_config)}",
+            ],
+            outputs=[
+                ProcessingOutput(
+                    source="/opt/ml/processing/output",
+                    destination=f"s3://{args.bucket}/{args.output_dir}/",
+                )
+            ],
+        )
     logger.debug(f"Processing job completed and saved to s3://{args.bucket}/{args.output_dir}/")
 
 if __name__ == "__main__":

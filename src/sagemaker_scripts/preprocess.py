@@ -1,28 +1,77 @@
 import logging
 import argparse
+import yaml
+import os
 
 from src.logger_config import logger_setup
+from src.data.data_utils import (TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema)
 logger = logging.getLogger(__name__)
 
-def main():
-    parser = argparse.ArgumentParser(description="Data loading script")
-    parser.add_argument("--profile", type=str, default="651340551631_AWSPowerUserAccess", help="AWS profile name")
-    parser.add_argument("--bucket", type=str, default="tcga-riskformer-data-2025", help="S3 bucket name")
-    parser.add_argument("--region", type=str, default="us-east-1", help="AWS region")
-    parser.add_argument("--input_dir", type=str, default="testing/raw", help="Path to input data")
-    parser.add_argument("--output_dir", type=str, default="testing/processed", help="Path to output data")
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+def log_config(config, tag):
+    """ Logs the configuration parameters.
+    
+    Args:
+        config (dict): configuration parameters.
+        tag (str): tag for the configuration.
+    """
+    logger.info(f"{tag} configuration:" + "=" * 20)
+    for key, value in config.items():
+        logger.info(f"{key}: {value}")
 
-    parser.add_argument("--sagemaker_image", type=str, default="763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training:1.9.1-cpu-py38", help="Sagemaker image")
-    parser.add_argument("--sagemaker_instance", type=str, default="ml.m5.xlarge", help="Sagemaker instance type")
-    parser.add_argument("--sagemaker_instance_count", type=int, default=1, help="Sagemaker instance count")
+def load_yaml_config(config_path, schema):
+    """Load a YAML config file and validate it against a schema."""
+    if not config_path or not os.path.isfile(config_path):
+        logger.warning(f"Config file {config_path} not found or not provided. Using defaults.")
+        return schema().dict()
+
+    try:
+        with open(config_path, "r") as f:
+            yaml_config = yaml.safe_load(f)
+            if not isinstance(yaml_config, dict):
+                logger.warning(f"Invalid YAML format in {config_path}. Using defaults.")
+                return schema().dict()
+    except Exception as e:
+        logger.warning(f"Failed to load YAML config {config_path}. Error: {e}. Using defaults.")
+        return schema().dict()
+    try:
+        return schema(**yaml_config).dict()
+    except Exception as e:
+        logger.warning(f"Invalid values in {config_path}. Using defaults. Error: {e}")
+        return schema().dict()
+    
+
+def load_preprocessing_configs(args):
+    tiling_config = load_yaml_config(args.tiling_config, TilingConfigSchema)
+    foreground_config = load_yaml_config(args.foreground_config, ForegroundConfigSchema)
+    foreground_cleanup_config = load_yaml_config(args.foreground_cleanup_config, ForegroundCleanupConfigSchema)
+    
+    log_config(tiling_config, "Tiling Parameters")
+    log_config(foreground_config, "Foreground Detection Parameters")
+    log_config(foreground_cleanup_config, "Foreground Cleanup Parameters")
+
+    return {
+        "tiling_config": tiling_config,
+        "foreground_config": foreground_config,
+        "foreground_cleanup_config": foreground_cleanup_config,
+    }
+
+def main():
+    parser = argparse.ArgumentParser(description="Preprocessing pipeline for SVS slides in SageMaker")
+    parser.add_argument("--input_filename", type=str, required=True, help="Input filename")
+    parser.add_argument("--output_dir", type=str, default="/opt/ml/processing/output", help="Output directory")
+    
+    parser.add_argument("--tiling_config", type=str, required=False, help="Tiling parameters YAML file")
+    parser.add_argument("--foreground_config", type=str, required=False, help="Foreground detection YAML file")
+    parser.add_argument("--foreground_cleanup_config", type=str, required=False, help="Foreground cleanup YAML file")
+    parser.add_argument("--model_type", type=str, default="resnet50", help="Model type")
 
     args = parser.parse_args()
 
     logger_setup(debug=args.debug)
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
+    logger.debug(f"Input filename: {args.input_filename}")
 
-    # TODO - make sure preprocessing functions are prepped to work with s3 buckets
+    preprocessing_params = load_preprocessing_configs(args)
 
     # TODO - load feature extraction model
 
