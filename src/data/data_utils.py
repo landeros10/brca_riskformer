@@ -17,8 +17,8 @@ from skimage.filters import threshold_triangle
 from skimage.morphology import opening, closing, dilation, square
 from scipy.ndimage import binary_fill_holes
 from skimage.measure import label, regionprops
-from openslide import OpenSlide
-from histomicstk.segmentation import simple_mask
+from openslide import OpenSlide # type: ignore
+from histomicstk.segmentation import simple_mask # type: ignore
 
 import boto3
 import botocore
