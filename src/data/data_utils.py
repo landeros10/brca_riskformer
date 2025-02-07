@@ -443,7 +443,6 @@ def get_slide_samplepoints(slideObj, metadata, tiling_config, foreground_config,
     return coords, heatmap
 
 
-
 def load_slide_paths(slides_list_file):
     """
     Load slide paths from a list of slides.
@@ -452,7 +451,8 @@ def load_slide_paths(slides_list_file):
         slides_list_file (str): json file containing the list of slides.
 
     Returns:
-        slides_dict (dict): dictionary of slide paths.
+        slides_dict (dict): dictionary where 
+        the keys are slide paths (str) and the values are metadata dictionaries
     """
     if slides_list_file or os.path.isfile(slides_list_file):
         with open(slides_list_file, "r") as f:
