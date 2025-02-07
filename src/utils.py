@@ -19,6 +19,7 @@ import random
 from openslide import OpenSlide
 import logging
 from src.randstainna import RandStainNA
+
 logger = logging.getLogger(__name__)
 
 # from shapely.ops import cascaded_union
@@ -693,23 +694,6 @@ stain_normalizer = RandStainNA(yaml_file, std_hyper=-1.0)
 #     return weight_hash
 
 ## SVS FILES ##
-
-def read_slide_(file, x, y, in_s, out_s, normalize=False):
-    # slideObj = slideObjects[file.numpy().decode("utf-8")]
-    if not isinstance(file, str):
-        file = file.numpy().decode("utf-8")
-    slideObj = OpenSlide(file)
-    x, y = int(x), int(y)
-    in_s = int(in_s)
-    out_s = int(out_s)
-    image = slideObj.read_region((x, y), 0, (in_s, in_s)).convert('RGB')
-    # image = cv2.resize(image, dsize=(out_s, out_s))
-    image = image.resize((out_s, out_s))
-    image = np.array(image).astype(np.uint8)
-    if normalize:
-        image = stain_normalizer(image)
-    return image
-
 
 
 def collect_patients_svs_files(patient_list_csv, svs_files):

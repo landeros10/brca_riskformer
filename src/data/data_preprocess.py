@@ -7,44 +7,90 @@ Created: 2025-02-05
 '''
 import logging
 import argparse
-import numpy as np
+
 import time
 import os
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 
+import numpy as np
+from PIL import Image
+
+import torch
+from torchvision import transforms # type: ignore
 from torch.utils.data import Dataset, DataLoader
 
 from src.logger_config import logger_setup
-from src.data.data_utils import (open_svs, get_slide_samplepoints, get_crop_size)
-from src.utils import read_slide_
+from src.data.data_utils import (open_svs, get_slide_samplepoints, get_crop_size,
+                                 sample_slide)
 
 logger = logging.getLogger(__name__)
 
 
 class SingleSlideDataset(Dataset):
-    def __init__(self, slide_path, coords, transform, image_size, crop_size):
-        self.slide_path = slide_path
-        self.coords = coords
+    """
+    PyTorch dataset for a single slide at specified sample points.
+    
+    Args:
+        slide_obj (openslide.OpenSlide): OpenSlide object of the slide.
+        slide_metadata (dict): metadata of the slide.
+        sample_coords (np.ndarray): array of sample coordinates. Shape (N, 2).
+        sample_size (int): size of square patch to sample.
+        output_size (int): size of the output images.
+        transform (callable, optional): transform to apply to the images. Must return a tensor.
+        
+    Example:
+        dataset = SingleSlideDataset(slide_obj, slide_metadata, sample_coords, sample_size, output_size)
+        first_image = dataset[0]
+    """
+    def __init__(
+            self,
+            slide_obj,
+            slide_metadata: dict,
+            sample_coords: np.ndarray,
+            sample_size: int,
+            output_size: int,
+            transform=None,
+        ):
+        self.slide_obj = slide_obj
+        self.slide_metadata = slide_metadata
+        self.sample_coords = sample_coords
+        self.sample_size = sample_size
+        self.output_size = output_size
         self.transform = transform
-        self.image_size = image_size
-        self.crop_size = crop_size
-        self.slide_data = open_svs(slide_path)
-        self.slide_obj = self.slide_data[0]
-        self.slide_metadata = self.slide_data[1]
+        self.to_tensor = transforms.ToTensor()
 
     def __len__(self):
-        return len(self.coords)
+        return len(self.sample_coords)
 
     def __getitem__(self, idx):
-        x, y = self.coords[idx]
-        image = read_slide_(self.slide_path, x, y, self.crop_size, self.image_size)
-        image = image.resize((self.image_size, self.image_size))
-        transformed_image = self.transform(image)
-        return transformed_image
+        x, y = self.sample_coords[idx]
+        image = self.sample_slide(x, y)
 
-    def close_slide(self):
-        self.slide_obj.close()
+        if self.transform:
+            image = self.transform(image)
+        else:
+            image = self.to_tensor(image) # (C, H, W), scaled to [0, 1]
+
+        return image
+
+    def sample_slide(self, x, y):
+        """
+        Samples a slide at the given coordinates.
+        
+        Args:
+            x (int): x coordinate of the sample.
+            y (int): y coordinate of the sample.
+        
+        Returns:
+            image (PIL.Image): sampled image.
+        """
+        image = sample_slide(self.slide_obj, x, y, self.sample_size)
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(image)
+        
+        image = image.resize((self.output_size, self.output_size), Image.BILINEAR)
+        return image
 
 
 def get_svs_samplepoints(svs_file, tiling_config, foreground_config, foreground_cleanup_config, return_heatmap=False):
@@ -59,19 +105,22 @@ def get_svs_samplepoints(svs_file, tiling_config, foreground_config, foreground_
         return_heatmap (bool): whether to return heatmap of the sampling points.
     
     Returns:
-        coords (np.ndarray): array of coordinates. Shape (N, 2).
+        sampling_coords (np.ndarray): array of coordinates. Shape (N, 2).
+        sampling_size (int): size of the sampling points.
+        slide_obj (openslide.OpenSlide): OpenSlide object of the SVS file.
+        metadata (dict): metadata of the SVS file.
         heatmap (np.ndarray): heatmap of the sampling points. Shape (H, W). None if not requested.
     """
     if not os.path.isfile(svs_file):
         logger.error(f"SVS file not found: {svs_file}")
         return np.empty((0, 2), dtype=int), None
     
-    slideObj, metadata = open_svs(svs_file)
-    crop_size = get_crop_size(metadata, tiling_config)
+    slide_obj, metadata = open_svs(svs_file)
+    sampling_size = get_crop_size(metadata, tiling_config)
     logger.debug(f"Processing slide:\n{svs_file}")
     try:
-        coords, heatmap = get_slide_samplepoints(
-            slideObj, metadata,
+        sampling_coords, heatmap = get_slide_samplepoints(
+            slide_obj, metadata,
             tiling_config,
             foreground_config,
             foreground_cleanup_config,
@@ -81,7 +130,7 @@ def get_svs_samplepoints(svs_file, tiling_config, foreground_config, foreground_
         logger.error(f"Failed to process slide: {svs_file}\n{e}")
         return (np.empty((0, 2), dtype=int), None)
 
-    return coords, crop_size, heatmap
+    return sampling_coords, sampling_size, slide_obj, metadata, heatmap
 
 
 def get_all_samplepoints(

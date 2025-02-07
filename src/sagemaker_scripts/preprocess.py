@@ -77,7 +77,7 @@ def main():
     preprocessing_params = load_preprocessing_configs(args)
 
     # Collect sample points for svs file
-    coords, crop_size, _ = get_svs_samplepoints(
+    sample_coords, sample_size, slide_obj, metadata, _ = get_svs_samplepoints(
         args.input_filename,
         preprocessing_params["tiling_config"],
         preprocessing_params["foreground_config"],
@@ -87,11 +87,6 @@ def main():
 
     # Create dataset object
     dataset = SingleSlideDataset(
-        args.input_filename,
-        coords=coords,
-        transform=transform,
-        image_size=preprocessing_params["tiling_config"]["size"],
-        crop_size=crop_size,
     )
 
 

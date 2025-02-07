@@ -11,13 +11,14 @@ from pydantic import BaseModel, Field
 
 import numpy as np
 from PIL import Image
+import openslide # type: ignore
+from openslide import OpenSlide # type: ignore
 from skimage import color
 from skimage.transform import resize, rescale
 from skimage.filters import threshold_triangle
 from skimage.morphology import opening, closing, dilation, square
 from scipy.ndimage import binary_fill_holes
 from skimage.measure import label, regionprops
-from openslide import OpenSlide # type: ignore
 from histomicstk.segmentation import simple_mask # type: ignore
 
 import boto3
@@ -53,6 +54,110 @@ class TilingConfigSchema(BaseModel):
 DEFAULT_FOREGROUND_CONFIG = ForegroundConfigSchema().dict()
 DEFAULT_FOREGROUND_CLEANUP_CONFIG = ForegroundCleanupConfigSchema().dict()
 DEFAULT_TILING_CONFIG = TilingConfigSchema().dict()
+
+
+def open_svs(svs_file):
+    """
+    Open SVS file and extract metadata.
+    
+    Args:
+        svs_file (str): path to SVS file.
+    
+    Returns:
+        slideObj (OpenSlide): OpenSlide object.
+        metadata (dict): dictionary of metadata.
+
+    Raises:
+        openslide.OpenSlideError: if the SVS file cannot be opened.
+        FileNotFoundError: if the SVS file is not found.
+    """
+    try:
+        if not os.path.isfile(svs_file):
+            raise FileNotFoundError(f"SVS file not found: {svs_file}")
+
+        slideObj = OpenSlide(svs_file)
+        try:
+            mag = float(slideObj.properties["aperio.AppMag"].replace(",", "."))
+        except Exception as e:
+            logger.warning(f"Could not parse magnification from SVS file {svs_file}: {e}")
+            mag = DEFAULT_TILING_CONFIG["reference_mag"]
+        
+        try:
+            full_dims = np.array(slideObj.level_dimensions[0]).astype(float)[::-1] # (rows, cols)
+        except Exception as e:
+            logger.warning(f"Failed to extract slide dimensions: {e}")
+            full_dims = (0, 0)
+
+        metadata = {
+            "file": svs_file,
+            "mag": mag,
+            "full_dims": full_dims,
+        }
+        return slideObj, metadata
+
+    except openslide.OpenSlideError as e:
+        logger.error(f"Failed to open SVS file {svs_file}: {e}")
+        raise
+    except FileNotFoundError as e:
+        logger.error(f"File {svs_file} not found: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise
+
+
+def sample_slide(slide_obj, x, y, sample_size):
+    """
+    Samples a slide at the given coordinates and returns a PIL image.
+    
+    Args:
+        slide_obj (openslide.OpenSlide): slide object
+        x (int): x coordinate of the sample
+        y (int): y coordinate of the sample
+        sample_size (int): size of the sample
+
+    Returns:
+        image (PIL.Image): sampled image
+    
+    Raises:
+        ValueError: if slide_obj is not a valid SVS file path or OpenSlide object
+        TypeError: if slide_obj is not an OpenSlide object or SVS file path
+    """
+    try:
+        if isinstance(slide_obj, str):
+            slide_obj, _ = open_svs(slide_obj)
+        if not isinstance(slide_obj, OpenSlide):
+            raise TypeError("slide_obj must be an OpenSlide object or valid SVS file path")
+        
+        x, y, sample_size = map(int, (x, y, sample_size))
+        width, height = slide_obj.level_dimensions[0]
+        if sample_size < 16 or sample_size > min(width, height):
+            logger.warning(f"Adjusting sample_size from {sample_size} to fit within valid range (16, {min(width, height)})")
+        sample_size = max(16, min(sample_size, width, height))
+
+        if not (0 <= x < width and 0 <= y < height):
+            logger.warning(f"Coordinates ({x}, {y}) are out of bounds for slide size ({width}, {height}). Adjusting.")
+            x, y = np.clip([x, y], 0, [width - sample_size, height - sample_size])
+        image = slide_obj.read_region((x, y), 0, (sample_size, sample_size)).convert('RGB')
+
+        if image.size != (sample_size, sample_size):
+            logger.warning(f"Sampled image size {image.size}, expected ({sample_size}, {sample_size})")
+            padded_image = Image.new('RGB', (sample_size, sample_size), (255, 255, 255))
+            paste_x = (sample_size - image.size[0]) // 2
+            paste_y = (sample_size - image.size[1]) // 2
+            padded_image.paste(image, (paste_x, paste_y))  # Center pad
+            image = padded_image
+        return image
+    
+    except (TypeError, ValueError) as e:
+        logger.error(f"Error sampling slide: {e}")
+        raise
+    except openslide.OpenSlideError as e:
+        logger.error(f"OpenSlide error: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise
 
 
 def get_bbox(mask):
@@ -147,29 +252,6 @@ def coords_to_heatmap(coords, f, size, shape):
         window = heatmap[ri:(ri + sc_size), ci:(ci + sc_size)]
         heatmap[ri:(ri + sc_size), ci:(ci + sc_size)] = window + 1.0
     return heatmap
-
-
-def open_svs(svs_file):
-    """
-    Open SVS file and extract metadata.
-    
-    Args:
-        svs_file (str): path to SVS file.
-    
-    Returns:
-        slideObj (OpenSlide): OpenSlide object.
-        metadata (dict): dictionary of metadata.
-    """
-    slideObj = OpenSlide(svs_file)
-    mag = float(slideObj.properties["aperio.AppMag"].replace(",", "."))
-    full_dims = np.array(slideObj.level_dimensions[0]).astype(float)[::-1] # (rows, cols)
-
-    metadata = {
-        "file": svs_file,
-        "mag": mag,
-        "full_dims": full_dims,
-    }
-    return slideObj, metadata
 
 
 def get_crop_size(slide_metadata, tiling_config):
@@ -417,7 +499,7 @@ def get_mask_samplepoints(foreground_mask, slide_metadata, tiling_config):
 
     if len(coords) > 0:
         logger.debug(f"Generated {len(coords)} sampling coords")
-        coords = coords[:, [1, 0]]
+        coords = coords[:, [1, 0]] # (x, y) -> (col, row)
     else:
         logger.warning(f"No sampling coords could be generated for slide: {slide_metadata['file']}")
         coords = np.empty((0, 2), dtype=int)
