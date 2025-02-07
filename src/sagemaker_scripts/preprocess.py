@@ -5,6 +5,7 @@ import os
 
 from src.logger_config import logger_setup
 from src.data.data_utils import (TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema)
+from src.data.data_preprocess import get_svs_samplepoints
 logger = logging.getLogger(__name__)
 
 def log_config(config, tag):
@@ -17,6 +18,7 @@ def log_config(config, tag):
     logger.info(f"{tag} configuration:" + "=" * 20)
     for key, value in config.items():
         logger.info(f"{key}: {value}")
+
 
 def load_yaml_config(config_path, schema):
     """Load a YAML config file and validate it against a schema."""
@@ -71,7 +73,28 @@ def main():
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
     logger.debug(f"Input filename: {args.input_filename}")
 
+    # keys: "tiling_config", "foreground_config", "foreground_cleanup_config"
     preprocessing_params = load_preprocessing_configs(args)
+
+    # Collect sample points for svs file
+    coords, crop_size, _ = get_svs_samplepoints(
+        args.input_filename,
+        preprocessing_params["tiling_config"],
+        preprocessing_params["foreground_config"],
+        preprocessing_params["foreground_cleanup_config"],
+        return_heatmap=False,
+    )
+
+    # Create dataset object
+    dataset = SingleSlideDataset(
+        args.input_filename,
+        coords=coords,
+        transform=transform,
+        image_size=preprocessing_params["tiling_config"]["size"],
+        crop_size=crop_size,
+    )
+
+
 
     # TODO - load feature extraction model
 

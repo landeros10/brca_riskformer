@@ -16,12 +16,13 @@ from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 
 from src.logger_config import logger_setup
-from src.data.data_utils import (open_svs, get_slide_samplepoints)
+from src.data.data_utils import (open_svs, get_slide_samplepoints, get_crop_size)
 from src.utils import read_slide_
 
 logger = logging.getLogger(__name__)
 
-class SingleSlide(Dataset):
+
+class SingleSlideDataset(Dataset):
     def __init__(self, slide_path, coords, transform, image_size, crop_size):
         self.slide_path = slide_path
         self.coords = coords
@@ -66,6 +67,7 @@ def get_svs_samplepoints(svs_file, tiling_config, foreground_config, foreground_
         return np.empty((0, 2), dtype=int), None
     
     slideObj, metadata = open_svs(svs_file)
+    crop_size = get_crop_size(metadata, tiling_config)
     logger.debug(f"Processing slide:\n{svs_file}")
     try:
         coords, heatmap = get_slide_samplepoints(
@@ -79,7 +81,7 @@ def get_svs_samplepoints(svs_file, tiling_config, foreground_config, foreground_
         logger.error(f"Failed to process slide: {svs_file}\n{e}")
         return (np.empty((0, 2), dtype=int), None)
 
-    return coords, heatmap
+    return coords, crop_size, heatmap
 
 
 def get_all_samplepoints(
@@ -137,7 +139,7 @@ def extract_features(test_file, coords, model, image_size, crop_size, bs=256):
     use_cpu = next(model.parameters()).device.type == "cpu"
 
     # TODO - replace lambda func
-    # dataset = SlideDataset(test_file, coords, lambda x: x, image_size, crop_size)
+    # dataset = SingleSlideDataset(test_file, coords, lambda x: x, image_size, crop_size)
     # dataloader = DataLoader(dataset, batch_size=bs, num_workers=1)
 
     # features = []
