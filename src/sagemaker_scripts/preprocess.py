@@ -65,7 +65,7 @@ def load_preprocessing_configs(args):
 
 def download_model_from_s3(bucket_name, model_key, local_model_path="opt/ml/model"):
     """Download a model from S3 to a local path."""
-    s3_client = initialize_s3_client(profile_name="xtn", region_name="us-east-1", return_session=False)
+    s3_client = initialize_s3_client()
     local_model_path = os.path.join(local_model_path, os.path.basename(model_key))
 
     logger.info(f"Downloading model from S3: s3://{bucket_name}/{model_key} to {local_model_path}")

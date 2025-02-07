@@ -8,38 +8,15 @@ import time
 import numpy as np
 
 from src.logger_config import logger_setup
-from src.data.data_utils import (load_slide_paths, list_bucket_files, wipe_bucket_dir, initialize_s3_client,
-                                 upload_large_files_to_bucket)
+from src.data.data_utils import (load_slide_paths,
+                                 initialize_s3_client,
+                                 upload_large_files_to_bucket, wipe_bucket)
 from src.utils import set_seed
 logger = logging.getLogger(__name__)
 
 
 def process_svs_foregrounds(svs_files):
     pass
-
-
-def clear_riskformer_bucket(s3_client, bucket_name):
-    """
-    Clear all files in the S3 bucket.
-
-    Args:
-        s3_client (boto3.client): S3 boto3 client.
-        bucket_name (str): Name of the S3 bucket.
-    
-    Returns:
-        bool: True if successful, False otherwise.
-    """
-    files = list_bucket_files(s3_client, bucket_name)
-    if files is None:
-        logger.warning(f"Skipping bucket cleanup: Failed to list files in s3://{bucket_name}/")
-        return False
-    elif len(files) > 0:
-        logger.info(f"Found {len(files)} files in s3://{bucket_name}/")
-        success = wipe_bucket_dir(s3_client, bucket_name)
-        if not success:
-            logger.error(f"Cannot proceed. Files not deleted from s3://{bucket_name}/")
-            return False
-    return True
 
 
 def upload_svs_files_to_bucket(
@@ -120,7 +97,6 @@ def main():
 
     set_seed(args.seed) 
 
-    bucket_name = "tcga-riskformer-data-2025"
     s3_client = initialize_s3_client(args.profile)
     if s3_client is None:
         logger.error("Failed to initialize S3 client.")
@@ -128,7 +104,7 @@ def main():
     
     # Clear bucket
     if args.wipe_bucket:
-        success = clear_riskformer_bucket(s3_client, bucket_name)
+        success = wipe_bucket(s3_client, args.bucket)
         if not success:
             logger.error("Failed to clear bucket.")
             return
@@ -136,7 +112,7 @@ def main():
     # Upload SVS files to S3 bucket
     success = prepare_riskformer_data(
         s3_client,
-        bucket_name,
+        args.bucket,
         svs_paths_file=args.svs_paths_file,
         reupload=args.reupload,
     )

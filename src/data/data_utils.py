@@ -631,6 +631,30 @@ def wipe_bucket_dir(s3_client, bucket_name, bucket_prefix=""):
         return False
 
 
+def wipe_bucket(s3_client, bucket_name):
+    """
+    Clear all files in the S3 bucket.
+
+    Args:
+        s3_client (boto3.client): S3 boto3 client.
+        bucket_name (str): Name of the S3 bucket.
+    
+    Returns:
+        bool: True if successful, False otherwise.
+    """
+    files = list_bucket_files(s3_client, bucket_name)
+    if files is None:
+        logger.warning(f"Skipping bucket cleanup: Failed to list files in s3://{bucket_name}/")
+        return False
+    elif len(files) > 0:
+        logger.info(f"Found {len(files)} files in s3://{bucket_name}/")
+        success = wipe_bucket_dir(s3_client, bucket_name)
+        if not success:
+            logger.error(f"Cannot proceed. Files not deleted from s3://{bucket_name}/")
+            return False
+    return True
+
+
 def list_bucket_files(s3_client, bucket_name, bucket_prefix=""):
     """
     Get a list of all files in an S3 bucket under a given prefix.
