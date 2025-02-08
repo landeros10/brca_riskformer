@@ -7,6 +7,7 @@ import logging
 import time
 import json
 import os
+import uuid
 from pydantic import BaseModel, Field
 
 import numpy as np
@@ -683,11 +684,32 @@ def list_bucket_files(s3_client, bucket_name, bucket_prefix=""):
     return existing_files
 
 
+def generate_s3_key(file_path, separator="::"):
+    """
+    Generate a unique s3 key using a short UUID, the preceeding directory name,
+    and the base name of the file.
+    
+    Args:
+        file_path (str): path to the file.
+        separator (str): separator between the directory name and the base name of the file.
+        
+    Returns:
+        str: unique S3 key.
+    """
+    base_name = os.path.basename(file_path)
+    dir_name = os.path.basename(os.path.dirname(file_path))
+    short_uuid = uuid.uuid4().hex[:6]
+
+    key = f"{short_uuid}{separator}{dir_name}{separator}{base_name}"
+    return key
+
+
 def upload_large_files_to_bucket(
         s3_client,
         bucket_name, 
         files_list,
-        prefix="raw", 
+        file_names=None,
+        prefix="raw",
         ext="",
         reupload=False,
         threshold=20 * 1024 * 1024,
@@ -700,6 +722,7 @@ def upload_large_files_to_bucket(
         s3_client (boto3.client): S3 boto3 client.
         bucket_name (str): Name of the S3 bucket.
         files_list (list): List of file paths to upload.
+        file_names (list): List of file names to use in S3.
         prefix (str): S3 key prefix.
         ext (str): File extension to filter files.
         reupload (bool): Reupload files even if they exist.
@@ -720,11 +743,14 @@ def upload_large_files_to_bucket(
     start_time = time.time()
     count = 0
     total_files = len(files_list)
-    for file_path in files_list:
+    if file_names is None or len(file_names) != len(files_list):
+        file_names = [generate_s3_key(file_path) for file_path in files_list]
+        logger.warning("file_names not provided or length mismatch. Using base names of files_list.")
+
+    for file_path, file_name in zip(files_list, file_names):
         file_exists = os.path.exists(file_path) and os.path.isfile(file_path)
 
         if file_exists and (not ext or file_path.endswith(ext)):
-            file_name = os.path.basename(file_path)
             s3_key = f"{prefix}/{file_name}"
             local_size = os.path.getsize(file_path)
 

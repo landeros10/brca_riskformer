@@ -213,11 +213,8 @@ def load_uni_model(model_path):
     'reg_tokens': 8, 
     'dynamic_img_size': True
     }
-    model = timm.create_model(
-        "hf-hub:MahmoodLab/UNI2-h",
-        pretrained=True,
-        **timm_kwargs)
-    
+    model = timm.create_model(**timm_kwargs)
+    model.load_state_dict(torch.load(os.path.join(local_dir, "pytorch_model.bin"), map_location="cpu"), strict=True)
     transform = create_transform(
         **resolve_data_config(model.pretrained_cfg, model=model)
         )
