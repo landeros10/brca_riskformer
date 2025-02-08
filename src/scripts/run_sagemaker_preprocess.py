@@ -28,8 +28,13 @@ def main():
     parser.add_argument("--tiling_config", type=str, default="./tiling_config.yaml", help="Tiling parameters YAML file")
     parser.add_argument("--foreground_config", type=str, default="./foreground_config.yaml", help="Foreground detection YAML file")
     parser.add_argument("--foreground_cleanup_config", type=str, default="./foreground_cleanup.yaml", help="Foreground cleanup YAML file")
+
     parser.add_argument("--model_type", type=str, default="resnet50", help="Model type")
     
+    # same file to upload models to bucket can be used to extract available model names 
+    # and assume which files were uploaded to the bucket
+    parser.add_argument("--models_file", type=str, default="/data/resources/preprocessing_models.json", help="Path to models list")
+
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     args = parser.parse_args()
 

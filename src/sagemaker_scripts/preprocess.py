@@ -73,9 +73,18 @@ def download_model_from_s3(bucket_name, model_key, local_model_path="opt/ml/mode
     return local_model_path
 
 
-def load_feature_extractor(model_type, local_model_path):
+def load_feature_extractor(model_bucket, model_key):
     """Load a feature extractor from a local model path."""
-    model = load_model(model_type, local_model_path)
+    
+    # TODO
+    local_model_path = download_model_from_s3(model_bucket, model_key)
+
+    model_key_dir = os.path.dirname(model_key)
+
+    # TODO - check the model_key to find its parent directory
+    # look up all the json files in that directory. load each one into {basename(json_file}: loaded_json}
+    # config_files = 
+    
     model.eval()
     return model
 
@@ -113,7 +122,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    model, transform = load_model(args.model_type, device)
+    model, transform = load_feature_extractor(args.model_bucket, args.model_key)
 
     # Create dataset object
     transform = None

@@ -18,13 +18,16 @@ def upload_models(s3_client, models_info, bucket_name):
     for model_type, model_info in models_info.items():
         model_path = model_info.get("model_path")
         model_arch = model_info.get("arch")
-        if not model_path or not model_arch or not os.path.exists(model_path) or not os.path.isfile(model_path):
-            logger.error(f"Provided model info is incorrectly configured. Skipping upload.")
+        if not model_path or not model_arch:
+            logger.error(f"Model info for {model_type} is missing model_path or arch. Skipping upload.")
+            continue
+            
+        if not os.path.exists(model_path) or not os.path.isfile(model_path):
+            logger.error(f"Provided model path is invalid. Skipping upload.")
             continue
 
         prefix = f"{model_type}/{model_arch}"
         upload_large_files_to_bucket(s3_client, bucket_name, [model_path], file_names=["model.pth"], prefix=prefix)
-
 
         for config_name, config in model_info.items():
             if config_name in ["model_path", "arch"]:
@@ -36,9 +39,9 @@ def upload_models(s3_client, models_info, bucket_name):
 
             file_name = f"{config_name}.json"
             temp_file_path = os.path.join("/tmp", file_name)
+            with open(temp_file_path, "w") as f:
+                json.dump(config, f)
             try:
-                with open(temp_file_path, "w") as f:
-                    json.dump(config, f)
                 s3_client.upload_file(temp_file_path, bucket_name, f"{prefix}/{file_name}")
                 logger.info(f"Uploaded {file_name} to {bucket_name}/{prefix}/{file_name}")
             except Exception as e:
