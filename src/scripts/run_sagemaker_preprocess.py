@@ -12,7 +12,8 @@ import sagemaker
 from sagemaker.processing import ScriptProcessor, ProcessingInput, ProcessingOutput
 
 from src.logger_config import logger_setup
-from src.data.data_utils import initialize_s3_client, load_slide_paths
+from src.aws_utils import initialize_s3_client
+from src.utils import load_slide_paths
 logger = logging.getLogger(__name__)
 
 

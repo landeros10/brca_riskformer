@@ -13,23 +13,19 @@ import os
 import json
 import yaml
 from multiprocessing import Pool, cpu_count
-from tqdm import tqdm
 from pydantic import BaseModel, Field
 
 import numpy as np
-from PIL import Image
 
 import torch
 from torchvision import transforms # type: ignore
-from torch.utils.data import Dataset, DataLoader
 import timm # type: ignore
 from timm.data import resolve_data_config # type: ignore
 from timm.data.transforms_factory import create_transform # type: ignore
 from src.randstainna import RandStainNA
 
 from src.logger_config import logger_setup
-from src.data.data_utils import (open_svs, get_slide_samplepoints, get_crop_size,
-                                 extract_slide_image)
+from src.data.data_utils import (open_svs, get_slide_samplepoints,)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +58,7 @@ class TilingConfigSchema(BaseModel):
     patch_foreground_ratio: float = Field(default=0.5, description="Minimum fraction of foreground pixels in a tile.")
     reference_mag: float = Field(default=20.0, description="Reference magnification level for tiling.")
 
+
 class DefaultUni2hConfig(BaseModel):
     model_name: str = Field(default="vit_giant_patch14_224", description="UNI2-h model name")
     img_size: int = Field(default=224, description="Image size")
@@ -85,81 +82,15 @@ DEFAULT_TILING_CONFIG = TilingConfigSchema().dict()
 DEFAULT_UNI_CONFIG = DefaultUni2hConfig().dict()
 
 
-class SingleSlideDataset(Dataset):
-    """
-    PyTorch dataset for a single slide at specified sample points.
-    
-    Args:
-        slide_obj (openslide.OpenSlide): OpenSlide object of the slide.
-        slide_metadata (dict): metadata of the slide.
-        sample_coords (np.ndarray): array of sample coordinates. Shape (N, 2).
-        sample_size (int): size of square patch to sample.
-        output_size (int): size of the output images.
-        transform (callable, optional): transform to apply to the images. Must return a tensor.
-        
-    Example:
-        dataset = SingleSlideDataset(slide_obj, slide_metadata, sample_coords, sample_size, output_size)
-        first_image = dataset[0]
-    """
-    def __init__(
-            self,
-            slide_obj,
-            slide_metadata: dict,
-            sample_coords: np.ndarray,
-            sample_size: int,
-            output_size: int,
-            transform=None,
-        ):
-        self.slide_obj = slide_obj
-        self.slide_metadata = slide_metadata
-        self.sample_coords = sample_coords
-        self.sample_size = sample_size
-        self.output_size = output_size
-        self.transform = transform
-        self.to_tensor = transforms.ToTensor()
-
-    def __len__(self):
-        return len(self.sample_coords)
-
-    def __getitem__(self, idx):
-        x, y = self.sample_coords[idx]
-        image = self.sample_slide(x, y)
-
-        if self.transform:
-            image = self.transform(image)
-        else:
-            image = self.to_tensor(image) # (C, H, W), scaled to [0, 1]
-
-        return image
-
-    def sample_slide(self, x, y):
-        """
-        Samples a slide at the given coordinates.
-        
-        Args:
-            x (int): x coordinate of the sample.
-            y (int): y coordinate of the sample.
-        
-        Returns:
-            image (PIL.Image): sampled image.
-        """
-        image = extract_slide_image(self.slide_obj, x, y, self.sample_size)
-        if isinstance(image, np.ndarray):
-            image = Image.fromarray(image)
-        
-        image = image.resize((self.output_size, self.output_size), Image.BILINEAR)
-        return image
-
-
-def get_svs_samplepoints(svs_file, tiling_config, foreground_config, foreground_cleanup_config, return_heatmap=False):
+def get_svs_samplepoints(svs_file, foreground_config, foreground_cleanup_config, tiling_config, return_heatmap=False):
     """
     Extracts sampling points from the SVS file based on the foreground mask.
     
     Args:
         svs_file (str): path to SVS file.
-        tiling_config (dict): dictionary of tiling parameters.
-        foreground_config (dict): dictionary of foreground parameters.
-        foreground_cleanup_config (dict): dictionary of foreground cleanup parameters.
+        foreground_config (ForegroundConfigSchema): histopathology foreground detection parameters.
+        foreground_cleanup_config (ForegroundCleanupConfigSchema): foreground cleanup parameters.
+        tiling_config (TilingConfigSchema): whole-slide sampling parameters.
         return_heatmap (bool): whether to return heatmap of the sampling points.
     
     Returns:
@@ -172,92 +103,36 @@ def get_svs_samplepoints(svs_file, tiling_config, foreground_config, foreground_
     if not os.path.isfile(svs_file):
         logger.error(f"SVS file not found: {svs_file}")
         return np.empty((0, 2), dtype=int), None
-    
+
     slide_obj, metadata = open_svs(svs_file, default_mag=DEFAULT_TILING_CONFIG["reference_mag"])
-
-    slide_mag = metadata.get("mag", DEFAULT_TILING_CONFIG["reference_mag"])
-    tile_size = tiling_config.get("size", DEFAULT_TILING_CONFIG["size"])
-    reference_mag = tiling_config.get("reference_mag", DEFAULT_TILING_CONFIG["reference_mag"])
-    sampling_size = get_crop_size(slide_mag, reference_mag, tile_size)
-
-
+    logger.debug(f"Successfully opened slide: {svs_file}")
     logger.debug(f"Processing slide:\n{svs_file}")
     try:
         sampling_coords, heatmap = get_slide_samplepoints(
             slide_obj,
             slide_metadata=metadata,
-            thumb_size=foreground_config.get("thumb_size", DEFAULT_FOREGROUND_CONFIG["thumb_size"]),
-            fraction=foreground_config.get("sampling_fraction", DEFAULT_FOREGROUND_CONFIG["sampling_fraction"]),
-            min_tissue_prob=foreground_config.get("min_tissue_prob", DEFAULT_FOREGROUND_CONFIG["min_tissue_prob"]),
-            bandwidth=foreground_config.get("bandwidth", DEFAULT_FOREGROUND_CONFIG["bandwidth"]),
-            min_foreground_ratio=foreground_config.get("min_foreground_ratio", DEFAULT_FOREGROUND_CONFIG["min_foreground_ratio"]),
-            opening_kernel=foreground_cleanup_config.get("opening_kernel", DEFAULT_FOREGROUND_CLEANUP_CONFIG["opening_kernel"]),
-            edge_margin=foreground_cleanup_config.get("edge_margin", DEFAULT_FOREGROUND_CLEANUP_CONFIG["edge_margin"]),
-            max_width_ratio=foreground_cleanup_config.get("max_width_ratio", DEFAULT_FOREGROUND_CLEANUP_CONFIG["max_width_ratio"]),
-            max_height_ratio=foreground_cleanup_config.get("max_height_ratio", DEFAULT_FOREGROUND_CLEANUP_CONFIG["max_height_ratio"]),
-            square_fill_kernel=foreground_cleanup_config.get("square_fill_kernel", DEFAULT_FOREGROUND_CLEANUP_CONFIG["square_fill_kernel"]),
-            square_dilation_kernel=foreground_cleanup_config.get("square_dilation_kernel", DEFAULT_FOREGROUND_CLEANUP_CONFIG["square_dilation_kernel"]),
-            tile_size=tiling_config.get("tile_size", DEFAULT_TILING_CONFIG["tile_size"]),
-            reference_mag=tiling_config.get("reference_mag", DEFAULT_TILING_CONFIG["reference_mag"]),
-            tile_overlap=tiling_config.get("tile_overlap", DEFAULT_TILING_CONFIG["tile_overlap"]),
-            patch_foreground_ratio=tiling_config.get("patch_foreground_ratio", DEFAULT_TILING_CONFIG["patch_foreground_ratio"]),
+            thumb_size=foreground_config.thumb_size,
+            sampling_fraction=foreground_config.sampling_fraction,
+            min_tissue_prob=foreground_config.min_tissue_prob,
+            bandwidth=foreground_config.bandwidth,
+            min_foreground_ratio=foreground_config.min_foreground_ratio,
+            opening_kernel=foreground_cleanup_config.opening_kernel,
+            square_fill_kernel=foreground_cleanup_config.square_fill_kernel,
+            square_dilation_kernel=foreground_cleanup_config.square_dilation_kernel,
+            edge_margin=foreground_cleanup_config.edge_margin,
+            max_width_ratio=foreground_cleanup_config.max_width_ratio,
+            max_height_ratio=foreground_cleanup_config.max_height_ratio,
+            tile_size=tiling_config.tile_size,
+            tile_overlap=tiling_config.tile_overlap,
+            patch_foreground_ratio=tiling_config.patch_foreground_ratio,
+            reference_mag=tiling_config.reference_mag,
             return_heatmap=False,
         )
     except Exception as e:
         logger.error(f"Failed to process slide: {svs_file}\n{e}")
         return (np.empty((0, 2), dtype=int), None)
 
-    return sampling_coords, sampling_size, slide_obj, metadata, heatmap
-
-
-def get_all_samplepoints(
-        svs_files,
-        tiling_config,
-        foreground_config,
-        foreground_cleanup_config,
-        return_heatmap=False,
-        parallel=False,
-    ):
-    """
-    Get sampling points for all SVS files in the list svs_files.
-
-    Args:
-        svs_files (list): list of SVS file paths.
-        tiling_config (dict): dictionary of tiling parameters.
-        foreground_config (dict): dictionary of foreground parameters.
-        foreground_cleanup_config (dict): dictionary of foreground cleanup parameters.
-        return_heatmap (bool): whether to return heatmap of the sampling points.
-    
-    Returns:
-        all_coords (dict): dictionary of sampling points for each SVS file.
-        all_heatmaps (dict): dictionary of heatmaps for the sampling points. Empty dict if not requested.
-    """
-
-    start_time = time.time()
-    num_workers = min(cpu_count(), len(svs_files))
-    logger.info(f"Processing {len(svs_files)} slides using {min(cpu_count(), len(svs_files))} workers.")
-
-    all_coords = {}
-    all_heatmaps = {}
-
-    if parallel:
-        with Pool(num_workers) as pool:
-            results = list(tqdm(
-                pool.starmap(get_svs_samplepoints, [(f, tiling_config, foreground_config, foreground_cleanup_config, return_heatmap) for f in svs_files]),
-                total=len(svs_files),
-            ))
-    else:
-        results = []
-        for f in tqdm(svs_files):
-            results.append(get_svs_samplepoints(f, tiling_config, foreground_config, foreground_cleanup_config, return_heatmap)) 
-
-    for svs_file, (coords, heatmap) in zip(svs_files, results):
-        all_coords[svs_file] = coords
-        if return_heatmap:
-            all_heatmaps[svs_file] = heatmap
-    
-    logger.info(f"Finished processing all slides in {time.time() - start_time:.2f}s")
-    return all_coords, all_heatmaps
+    return sampling_coords, slide_obj, metadata, heatmap
 
 
 def load_dino_model(model_path):
@@ -382,6 +257,7 @@ def load_model_from_path(model_type, model_path, config_files):
         model, transform = load_resnet_model(model_path, config_files, "50")
 
     return model, transform
+
 
 def extract_features(test_file, coords, model, image_size, crop_size, bs=256):
     # TODO review this function

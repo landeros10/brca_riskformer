@@ -7,10 +7,11 @@ import torch
 from transformers import AutoModel
 
 from src.logger_config import logger_setup
-from src.data.data_preprocess import (get_svs_samplepoints, SingleSlideDataset,
+from src.data.data_preprocess import (get_svs_samplepoints, load_model_from_path,
                                       TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema,
-                                      load_model_from_path)
-from src.data.data_utils import initialize_s3_client
+                                      )
+from src.data.datasets import SingleSlideDataset
+from src.aws_utils import initialize_s3_client
 logger = logging.getLogger(__name__)
 
 MODEL_EXTS = [".pth", ".bin", ".pt"]
@@ -23,6 +24,13 @@ def log_config(config, tag):
         config (dict): configuration parameters.
         tag (str): tag for the configuration.
     """
+    if not isinstance(config, dict):
+        try:
+            config = config.dict()
+        except Exception as e:
+            logger.warning(f"Failed to load config dict. Error: {e}")
+            raise e
+
     logger.info(f"{tag} configuration:" + "=" * 20)
     for key, value in config.items():
         logger.info(f"{key}: {value}")
@@ -32,22 +40,22 @@ def load_yaml_config(config_path, schema):
     """Load a YAML config file and validate it against a schema."""
     if not config_path or not os.path.isfile(config_path):
         logger.warning(f"Config file {config_path} not found or not provided. Using defaults.")
-        return schema().dict()
+        return schema()
 
     try:
         with open(config_path, "r") as f:
             yaml_config = yaml.safe_load(f)
             if not isinstance(yaml_config, dict):
                 logger.warning(f"Invalid YAML format in {config_path}. Using defaults.")
-                return schema().dict()
+                return schema()
     except Exception as e:
         logger.warning(f"Failed to load YAML config {config_path}. Error: {e}. Using defaults.")
-        return schema().dict()
+        return schema()
     try:
         return schema(**yaml_config).dict()
     except Exception as e:
         logger.warning(f"Invalid values in {config_path}. Using defaults. Error: {e}")
-        return schema().dict()
+        return schema()
     
 
 def load_preprocessing_configs(args):
