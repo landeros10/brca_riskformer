@@ -174,4 +174,5 @@ cython_debug/
 *.h5
 *.hdf5
 *.pt
-/models/*
+models/
+testing/
