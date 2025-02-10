@@ -10,8 +10,11 @@ import argparse
 
 import time
 import os
+import json
+import yaml
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
+from pydantic import BaseModel, Field
 
 import numpy as np
 from PIL import Image
@@ -29,6 +32,22 @@ from src.data.data_utils import (open_svs, get_slide_samplepoints, get_crop_size
                                  TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema)
 
 logger = logging.getLogger(__name__)
+
+class DefaultUni2hConfig(BaseModel):
+    model_name: str = Field(default="vit_giant_patch14_224", description="UNI2-h model name")
+    img_size: int = Field(default=224, description="Image size")
+    patch_size: int = Field(default=14, description="ViT patch size")
+    depth: int = Field(default=24, description="ViT depth")
+    num_heads: int = Field(default=24, description="ViT number of heads")
+    init_values: float = Field(default=1e-5, description="ViT init values")
+    embed_dim: int = Field(default=1536, description="ViT embedding dimension")
+    mlp_ratio: float = Field(default=2.66667*2, description="ViT MLP ratio")
+    num_classes: int = Field(default=0, description="Number of classes")
+    no_embed_class: bool = Field(default=True, description="No embed class")
+    mlp_layer: str = Field(default="timm.layers.SwiGLUPacked", description="MLP layer")
+    act_layer: str = Field(default="torch.nn.SiLU", description="Activation layer")
+    reg_tokens: int = Field(default=8, description="Number of reg tokens")
+    dynamic_img_size: bool = Field(default=True, description="Dynamic image size")
 
 
 class SingleSlideDataset(Dataset):
@@ -194,57 +213,119 @@ def load_dino_model(model_path):
     # return model256.to(device)
 
 
-def load_uni_model(model_path):
-    """ Load the UNI2-h model with predefined timm_kwargs"""
-    # pretrained=True needed to load UNI weights (and download weights for the first time)
-    # using UNI2-h as example
-    timm_kwargs = {
-    'img_size': 224, 
-    'patch_size': 14, 
-    'depth': 24,
-    'num_heads': 24,
-    'init_values': 1e-5, 
-    'embed_dim': 1536,
-    'mlp_ratio': 2.66667*2,
-    'num_classes': 0, 
-    'no_embed_class': True,
-    'mlp_layer': timm.layers.SwiGLUPacked, 
-    'act_layer': torch.nn.SiLU, 
-    'reg_tokens': 8, 
-    'dynamic_img_size': True
-    }
-    model = timm.create_model(**timm_kwargs)
-    model.load_state_dict(torch.load(os.path.join(local_dir, "pytorch_model.bin"), map_location="cpu"), strict=True)
-    transform = create_transform(
-        **resolve_data_config(model.pretrained_cfg, model=model)
-        )
+def load_uni_model(model_path, config_files):
+    """ Load the UNI2-h model with predefined timm_kwargs.
+    Default timm_kwargs are loaded from DefaultUni2hConfig. Default transform:
+        # transforms.Resize(224),
+        # transforms.CenterCrop(224),
+        # transforms.ToTensor(),
+        # transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+
+    Args:
+        model_path (str): path to the model file.
+        config_files (dict): dictionary of config files.
     
-    # Transform description from timm.data.transforms_factory
-    # transform = transforms.Compose(
-    # [
-    # transforms.Resize(224),
-    # transforms.CenterCrop(224),
-    # transforms.ToTensor(),
-    # transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-    # ]
-    # )    
+    Returns:
+        model: loaded model.
+        transform: image transform.
+    """
+    model_name = "hf-hub:MahmoodLab/UNI2-h"
+    model = None
+    transform = None
+    timm_kwargs = {}
+    for config_name, config_path in config_files.items():
+        if "timm" in config_name:
+            try:
+                if config_path.endswith(".json"):
+                    with open(config_path, "r") as f:
+                        timm_kwargs = json.load(f)
+                elif config_path.endswith(".yaml"):
+                    with open(config_path, "r") as f:
+                        timm_kwargs = yaml.safe_load(f)
+                else:
+                    logger.warning(f"Unexpected config file type : {config_path}. Using defaults.")
+            except Exception as e:
+                logger.warning(f"Failed to load config file {config_path}. Error: {e}. Using defaults.")
+    
+    if not timm_kwargs:
+        logger.debug("No valid config files given. Using default timm_kwargs.")
+        timm_kwargs = DefaultUni2hConfig().dict().copy()
+    else:
+        default_config =  DefaultUni2hConfig().dict()
+        default_config.update(timm_kwargs)
+        timm_kwargs = default_config.copy()
+    
+    try:
+        model = timm.create_model(**timm_kwargs)
+        model.load_state_dict(
+            torch.load(model_path, map_location="cpu"),
+            strict=True
+            )
+        transform = transforms.Compose(
+            [
+                transforms.Resize(224),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ]
+        )
+        
+    except Exception as e:
+        logger.warning(f"Failed to load UNI2-h mode with given kwargs: {e}")
+        raise e
+
+    if model is not None:
+        transform = create_transform(
+            **resolve_data_config(model.pretrained_cfg, model=model)
+            )
+
     return model, transform
 
-def load_model(model_type, model_path):
-    if model_type == "dino":
-        model, transform = load_dino_model(model_path)
 
-    elif model_type == "uni":
-        model, transform = None
+def load_resnet_model(model_path, config_files, resnet_type):
+    """ Load a pre-trained ResNet model with parameters defined in config_files.
+    
+    Args:
+        model_path (str): path to the model file."""
+    model = None
+    transform = None
+    try:
+        model = timm.create_model(f'resnet{resnet_type}', pretrained=True)
+        if model_path and os.path.isfile(model_path):
+            model.load_state_dict(torch.load(model_path, map_location="cpu"), strict=False)
+            logger.info(f"Loaded ResNet{resnet_type} model weights from {model_path}")
+        else:
+            logger.info("Using pre-trained ResNet model weights.")
+        transform = create_transform(**resolve_data_config({}, model=model))
+            
+    except Exception as e:
+        logger.error(f"Failed to load ResNet{resnet_type} model: {e}")
+        raise e
+    return model, transform
 
-    elif model_type == "resnet50":
-        model, transform = None
 
-    elif model_type == "resnet101":
-        model, transform = None
+def load_model_from_path(model_type, model_path, config_files):
+    model = None
+    transform = None
+    model_type = model_type.lower().strip()
+
+    if model_type == "uni":
+        if model_path is None:
+            logger.error("Cannot load UNI2-h model without pre-downloaded model.")
+            raise ValueError("Model path is None, must be given for UNI2-h feature extractor.")
+        model, transform = load_uni_model(model_path, config_files)
+
+    elif model_type.startswith("resnet"):
+        resnet_version = model_type.replace("resnet", "").strip()
+        if resnet_version not in ["50", "101"]:
+            logger.warning("Unsupported ResNet version. Defaulting to ResNet50.")
+            resnet_version = "50"
+        
+        model, transform = load_resnet_model(model_path, config_files, resnet_version)
 
     else:
-        raise ValueError(f"Invalid model type: {model_type}")
+        logger.warning("Model type not supported. Using ResNet50 as default.")
+        model, transform = load_resnet_model(model_path, config_files, "50")
 
     return model, transform
 

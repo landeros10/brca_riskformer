@@ -30,9 +30,6 @@ def main():
     parser.add_argument("--foreground_cleanup_config", type=str, default="./foreground_cleanup.yaml", help="Foreground cleanup YAML file")
 
     parser.add_argument("--model_type", type=str, default="resnet50", help="Model type")
-    
-    # same file to upload models to bucket can be used to extract available model names 
-    # and assume which files were uploaded to the bucket
     parser.add_argument("--models_file", type=str, default="/data/resources/preprocessing_models.json", help="Path to models list")
 
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
@@ -81,6 +78,10 @@ def main():
                 ProcessingInput(source=args.tiling_config, destination=f"/opt/ml/processing/input/"),
                 ProcessingInput(source=args.foreground_config, destination="/opt/ml/processing/input/"),
                 ProcessingInput(source=args.foreground_cleanup_config, destination="/opt/ml/processing/input/"),
+                ProcessingInput(
+                    source = f"s3://{args.bucket}/{args.model_dir}/",
+                    destination = "/opt/ml/processing/model/"
+                )
             ],
             arguments=[
                 "--input_file", f"/opt/ml/processing/input/{svs_file}",
@@ -88,6 +89,8 @@ def main():
                 "--tiling_config", f"/opt/ml/processing/input/{os.path.basename(args.tiling_config)}",
                 "--foreground_config", f"/opt/ml/processing/input/{os.path.basename(args.foreground_config)}",
                 "--foreground_cleanup_config", f"/opt/ml/processing/input/{os.path.basename(args.foreground_cleanup_config)}",
+                "--model_dir", "/opt/ml/processing/model/",
+                "--model_type", model_type,
             ],
             outputs=[
                 ProcessingOutput(

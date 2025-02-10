@@ -15,6 +15,9 @@ from src.utils import set_seed
 logger = logging.getLogger(__name__)
 
 def upload_models(s3_client, models_info, bucket_name):
+    # TODO - create json file that will work with this and upload the UNI model path and config files.
+    # TODO - needs to allow for NO model path and NO config files if resnet (using defaults)
+
     for model_type, model_info in models_info.items():
         model_path = model_info.get("model_path")
         model_arch = model_info.get("arch")

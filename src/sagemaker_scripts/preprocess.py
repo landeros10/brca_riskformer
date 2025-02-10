@@ -9,9 +9,12 @@ from transformers import AutoModel
 from src.logger_config import logger_setup
 from src.data.data_preprocess import (get_svs_samplepoints, SingleSlideDataset,
                                       TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema,
-                                      load_model)
+                                      load_model_from_path)
 from src.data.data_utils import initialize_s3_client
 logger = logging.getLogger(__name__)
+
+MODEL_EXTS = [".pth", ".bin", ".pt"]
+CONFIG_EXTS = [".json", ".yaml", ".yml"]
 
 def log_config(config, tag):
     """ Logs the configuration parameters.
@@ -63,34 +66,73 @@ def load_preprocessing_configs(args):
     }
 
 
-def download_model_from_s3(bucket_name, model_key, local_model_path="opt/ml/model"):
-    """Download a model from S3 to a local path."""
-    s3_client = initialize_s3_client()
-    local_model_path = os.path.join(local_model_path, os.path.basename(model_key))
+def find_model_files(model_dir):
+    """
+    Find model and config files in the given directory.
+    Args:
+        model_dir (str): The directory to search for model and config files.
+        
+    Returns:
+        tuple: A tuple containing the model path and a dictionary of config files."""
+    model_path = None
+    config_files = {}
 
-    logger.info(f"Downloading model from S3: s3://{bucket_name}/{model_key} to {local_model_path}")
-    s3_client.download_file(bucket_name, model_key, local_model_path)
-    return local_model_path
+    if not os.path.exists(model_dir) or not os.path.isdir(model_dir):
+        logger.error(f"Model directory '{model_dir}' does not exist or is not a directory.")
+        return model_path, config_files
+
+    # Scan local directory for model and config files
+    for file in os.listdir(model_dir):
+        file_path = os.path.join(model_dir, file)
+        if os.path.isfile(file_path):
+            if file.endswith(tuple(MODEL_EXTS)) and model_path is None:
+                model_path = file_path
+            elif file.endswith(tuple(MODEL_EXTS)):
+                logger.warning(f"Found multiple model files. Using: {model_path}, ignoring: {file_path}")
+            elif file.endswith(tuple(CONFIG_EXTS)):
+                config_name = os.path.splitext(file)[0]
+                config_files[config_name] = file_path
+            else:
+                logger.warning(f"Found unexpected file type: {file}")
+
+    # Ensure a model file is found
+    if model_path is None:
+        logger.error(f"No valid model file found in {model_dir}")
+
+    if not config_files:
+        logger.warning("No model config files found! Using default model config.")
+
+    return model_path, config_files
 
 
-def load_feature_extractor(model_bucket, model_key):
-    """Load a feature extractor from a local model path."""
-    
-    # TODO
-    local_model_path = download_model_from_s3(model_bucket, model_key)
+def load_feature_extractor(model_dir, model_type):
+    """
+    Load the feature extractor model from a local directory.
 
-    model_key_dir = os.path.dirname(model_key)
+    Args:
+        model_dir (str): The local directory containing the model and config files.
+        model_type (str): The model type.
 
-    # TODO - check the model_key to find its parent directory
-    # look up all the json files in that directory. load each one into {basename(json_file}: loaded_json}
-    # config_files = 
-    
-    model.eval()
-    return model
+    Returns:
+        model: The loaded model.
+    """
+    model = None
+    transform = None
+    model_path, config_files = find_model_files(model_dir)
+    if model_path is None:
+        logger.error("No model file found in the specified directory.")
+
+    # Load model
+    try:
+        model, transform = load_model_from_path(model_type, model_path, config_files)
+    except Exception as e:
+        logger.error(f"Failed to load model from {model_path}. Error: {e}")
+    return model, transform
 
 
 def main():
     parser = argparse.ArgumentParser(description="Preprocessing pipeline for SVS slides in SageMaker")
+    parser.add_argument("--profile", type=str, default="651340551631_AWSPowerUserAccess", help="AWS profile name")
     parser.add_argument("--input_filename", type=str, required=True, help="Input filename")
     parser.add_argument("--output_dir", type=str, default="/opt/ml/processing/output", help="Output directory")
     
@@ -98,8 +140,8 @@ def main():
     parser.add_argument("--foreground_config", type=str, required=False, help="Foreground detection YAML file")
     parser.add_argument("--foreground_cleanup_config", type=str, required=False, help="Foreground cleanup YAML file")
 
-    parser.add_argument("--model_bucket", type=str, required=True, help="S3 bucket for model artifacts")
-    parser.add_argument("--model_key", type=str, required=True, help="S3 key for model artifacts")
+    parser.add_argument("--model_dir", type=str, required=True, help="local dir for model artifact and config files")
+    parser.add_argument("--model_type", type=str, default="resnet50", help="Model type")
     args = parser.parse_args()
 
     logger_setup(debug=args.debug)
@@ -122,10 +164,20 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    model, transform = load_feature_extractor(args.model_bucket, args.model_key)
+
+    # Initialize s3 client
+    s3_client = initialize_s3_client()
+    if s3_client is None:
+        logger.error("Failed to initialize S3 client.")
+        return
+
+    # Load feature extraction model
+    model, transform = load_feature_extractor(args.model_dir, args.model_type)
+    if model is None:
+        logger.error("Failed to load feature extraction model.")
+        return
 
     # Create dataset object
-    transform = None
     dataset = SingleSlideDataset(
         slide_obj=slide_obj,
         slide_metadata=metadata,
