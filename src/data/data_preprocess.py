@@ -25,13 +25,42 @@ from torch.utils.data import Dataset, DataLoader
 import timm # type: ignore
 from timm.data import resolve_data_config # type: ignore
 from timm.data.transforms_factory import create_transform # type: ignore
+from src.randstainna import RandStainNA
 
 from src.logger_config import logger_setup
 from src.data.data_utils import (open_svs, get_slide_samplepoints, get_crop_size,
-                                 sample_slide,
-                                 TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema)
+                                 extract_slide_image)
 
 logger = logging.getLogger(__name__)
+
+yaml_file = '/home/ubuntu/notebooks/cpc_hist/src/CRC_LAB_randomTrue_n0.yaml'
+stain_augmentor = RandStainNA(yaml_file, std_hyper=-0.0)
+stain_normalizer = RandStainNA(yaml_file, std_hyper=-1.0)
+
+
+class ForegroundConfigSchema(BaseModel):
+    thumb_size: int = Field(default=500, description="Size of the thumbnail to use for foreground.")
+    sampling_fraction: float = Field(default=0.10, description="Fraction of the image to use for foreground sampling.")
+    bandwidth: int = Field(default=2, description="Bandwidth of the Gaussian kernel to use for foreground estimation.")
+    min_tissue_prob: float = Field(default=0.05, description="Minimum tissue probability to consider a pixel as foreground.")
+    min_foreground_ratio: float = Field(default=0.15, description="Minimum foreground/background ratio in slide.")
+
+
+class ForegroundCleanupConfigSchema(BaseModel):
+    opening_kernel: int = Field(default=3, description="Size of the structuring element to use for opening foreground mask.")
+    square_fill_kernel: int = Field(default=15, description="Size of the structuring element to use for closing foreground mask.")
+    square_dilation_kernel: int = Field(default=1, description="Size of the structuring element to use for final dilation of foreground mask.")
+    edge_margin: int = Field(default=50, description="Size of the border to consider for aberrant regions.")
+    max_width_ratio: float = Field(default=0.9, description="Percentage of the mask width covered to consider as aberrant.")
+    max_height_ratio: float = Field(default=0.75, description="Percentage of the mask height covered to consider as aberrant.")
+
+
+# This was designed for images taken at (1/4) resolution of 20X
+class TilingConfigSchema(BaseModel):
+    tile_size: int = Field(default=256, description="Size of the tile to extract from the slide.")
+    tile_overlap: float = Field(default=0.75, description="Overlap between tiles.")
+    patch_foreground_ratio: float = Field(default=0.5, description="Minimum fraction of foreground pixels in a tile.")
+    reference_mag: float = Field(default=20.0, description="Reference magnification level for tiling.")
 
 class DefaultUni2hConfig(BaseModel):
     model_name: str = Field(default="vit_giant_patch14_224", description="UNI2-h model name")
@@ -48,6 +77,12 @@ class DefaultUni2hConfig(BaseModel):
     act_layer: str = Field(default="torch.nn.SiLU", description="Activation layer")
     reg_tokens: int = Field(default=8, description="Number of reg tokens")
     dynamic_img_size: bool = Field(default=True, description="Dynamic image size")
+
+
+DEFAULT_FOREGROUND_CONFIG = ForegroundConfigSchema().dict()
+DEFAULT_FOREGROUND_CLEANUP_CONFIG = ForegroundCleanupConfigSchema().dict()
+DEFAULT_TILING_CONFIG = TilingConfigSchema().dict()
+DEFAULT_UNI_CONFIG = DefaultUni2hConfig().dict()
 
 
 class SingleSlideDataset(Dataset):
@@ -108,7 +143,7 @@ class SingleSlideDataset(Dataset):
         Returns:
             image (PIL.Image): sampled image.
         """
-        image = sample_slide(self.slide_obj, x, y, self.sample_size)
+        image = extract_slide_image(self.slide_obj, x, y, self.sample_size)
         if isinstance(image, np.ndarray):
             image = Image.fromarray(image)
         
@@ -138,16 +173,35 @@ def get_svs_samplepoints(svs_file, tiling_config, foreground_config, foreground_
         logger.error(f"SVS file not found: {svs_file}")
         return np.empty((0, 2), dtype=int), None
     
-    slide_obj, metadata = open_svs(svs_file)
-    sampling_size = get_crop_size(metadata, tiling_config)
+    slide_obj, metadata = open_svs(svs_file, default_mag=DEFAULT_TILING_CONFIG["reference_mag"])
+
+    slide_mag = metadata.get("mag", DEFAULT_TILING_CONFIG["reference_mag"])
+    tile_size = tiling_config.get("size", DEFAULT_TILING_CONFIG["size"])
+    reference_mag = tiling_config.get("reference_mag", DEFAULT_TILING_CONFIG["reference_mag"])
+    sampling_size = get_crop_size(slide_mag, reference_mag, tile_size)
+
+
     logger.debug(f"Processing slide:\n{svs_file}")
     try:
         sampling_coords, heatmap = get_slide_samplepoints(
-            slide_obj, metadata,
-            tiling_config,
-            foreground_config,
-            foreground_cleanup_config,
-            return_heatmap=return_heatmap,
+            slide_obj,
+            slide_metadata=metadata,
+            thumb_size=foreground_config.get("thumb_size", DEFAULT_FOREGROUND_CONFIG["thumb_size"]),
+            fraction=foreground_config.get("sampling_fraction", DEFAULT_FOREGROUND_CONFIG["sampling_fraction"]),
+            min_tissue_prob=foreground_config.get("min_tissue_prob", DEFAULT_FOREGROUND_CONFIG["min_tissue_prob"]),
+            bandwidth=foreground_config.get("bandwidth", DEFAULT_FOREGROUND_CONFIG["bandwidth"]),
+            min_foreground_ratio=foreground_config.get("min_foreground_ratio", DEFAULT_FOREGROUND_CONFIG["min_foreground_ratio"]),
+            opening_kernel=foreground_cleanup_config.get("opening_kernel", DEFAULT_FOREGROUND_CLEANUP_CONFIG["opening_kernel"]),
+            edge_margin=foreground_cleanup_config.get("edge_margin", DEFAULT_FOREGROUND_CLEANUP_CONFIG["edge_margin"]),
+            max_width_ratio=foreground_cleanup_config.get("max_width_ratio", DEFAULT_FOREGROUND_CLEANUP_CONFIG["max_width_ratio"]),
+            max_height_ratio=foreground_cleanup_config.get("max_height_ratio", DEFAULT_FOREGROUND_CLEANUP_CONFIG["max_height_ratio"]),
+            square_fill_kernel=foreground_cleanup_config.get("square_fill_kernel", DEFAULT_FOREGROUND_CLEANUP_CONFIG["square_fill_kernel"]),
+            square_dilation_kernel=foreground_cleanup_config.get("square_dilation_kernel", DEFAULT_FOREGROUND_CLEANUP_CONFIG["square_dilation_kernel"]),
+            tile_size=tiling_config.get("tile_size", DEFAULT_TILING_CONFIG["tile_size"]),
+            reference_mag=tiling_config.get("reference_mag", DEFAULT_TILING_CONFIG["reference_mag"]),
+            tile_overlap=tiling_config.get("tile_overlap", DEFAULT_TILING_CONFIG["tile_overlap"]),
+            patch_foreground_ratio=tiling_config.get("patch_foreground_ratio", DEFAULT_TILING_CONFIG["patch_foreground_ratio"]),
+            return_heatmap=False,
         )
     except Exception as e:
         logger.error(f"Failed to process slide: {svs_file}\n{e}")

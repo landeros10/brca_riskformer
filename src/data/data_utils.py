@@ -25,46 +25,10 @@ from histomicstk.segmentation import simple_mask # type: ignore
 import boto3
 import botocore
 
-from src.randstainna import RandStainNA
-
 logger = logging.getLogger(__name__)
 
-yaml_file = '/home/ubuntu/notebooks/cpc_hist/src/CRC_LAB_randomTrue_n0.yaml'
-stain_augmentor = RandStainNA(yaml_file, std_hyper=-0.0)
-stain_normalizer = RandStainNA(yaml_file, std_hyper=-1.0)
 
-
-class ForegroundConfigSchema(BaseModel):
-    thumb_size: int = Field(default=500, description="Size of the thumbnail to use for foreground.")
-    fraction: float = Field(default=0.10, description="Fraction of the image to use for foreground sampling.")
-    bandwidth: int = Field(default=2, description="Bandwidth of the Gaussian kernel to use for foreground estimation.")
-    min_tissue_prob: float = Field(default=0.05, description="Minimum tissue probability to consider a pixel as foreground.")
-    min_foreground_ratio: float = Field(default=0.15, description="Minimum foreground/background ratio in slide.")
-
-
-class ForegroundCleanupConfigSchema(BaseModel):
-    open: int = Field(default=3, description="Size of the structuring element to use for opening foreground mask.")
-    fill: int = Field(default=15, description="Size of the structuring element to use for closing foreground mask.")
-    dil: int = Field(default=1, description="Size of the structuring element to use for final dilation of foreground mask.")
-    border: int = Field(default=50, description="Size of the border to consider for aberrant regions.")
-    width_percentage: float = Field(default=0.9, description="Percentage of the mask width covered to consider as aberrant.")
-    height_percentage: float = Field(default=0.25, description="Percentage of the mask height covered to consider as aberrant.")
-
-
-# This was designed for images taken at (1/4) resolution of 20X
-class TilingConfigSchema(BaseModel):
-    size: int = Field(default=256, description="Size of the tile to extract from the slide.")
-    overlap: float = Field(default=0.75, description="Overlap between tiles.")
-    p_foreground: float = Field(default=0.5, description="Minimum fraction of foreground pixels in a tile.")
-    reference_mag: float = Field(default=20.0, description="Reference magnification level for tiling.")
-
-
-DEFAULT_FOREGROUND_CONFIG = ForegroundConfigSchema().dict()
-DEFAULT_FOREGROUND_CLEANUP_CONFIG = ForegroundCleanupConfigSchema().dict()
-DEFAULT_TILING_CONFIG = TilingConfigSchema().dict()
-
-
-def open_svs(svs_file):
+def open_svs(svs_file, default_mag=20.0):
     """
     Open SVS file and extract metadata.
     
@@ -87,9 +51,12 @@ def open_svs(svs_file):
         try:
             mag = float(slideObj.properties["aperio.AppMag"].replace(",", "."))
         except Exception as e:
-            logger.warning(f"Could not parse magnification from SVS file {svs_file}: {e}")
-            mag = DEFAULT_TILING_CONFIG["reference_mag"]
-        
+            try:
+                mag = float(slideObj.properties.get("openslide.objective-power", default_mag))
+            except Exception as e:
+                logger.warning(f"Could not parse magnification from SVS file {svs_file}, using default mag {default_mag}: {e}")
+                mag = default_mag
+
         try:
             full_dims = np.array(slideObj.level_dimensions[0]).astype(float)[::-1] # (rows, cols)
         except Exception as e:
@@ -105,16 +72,16 @@ def open_svs(svs_file):
 
     except openslide.OpenSlideError as e:
         logger.error(f"Failed to open SVS file {svs_file}: {e}")
-        raise
+        raise e
     except FileNotFoundError as e:
         logger.error(f"File {svs_file} not found: {e}")
-        raise
+        raise e
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
-        raise
+        raise e
 
 
-def sample_slide(slide_obj, x, y, sample_size):
+def extract_slide_image(slide_obj, x, y, sample_size):
     """
     Samples a slide at the given coordinates and returns a PIL image.
     
@@ -262,24 +229,6 @@ def coords_to_heatmap(coords, f, size, shape):
     return heatmap
 
 
-def get_crop_size(slide_metadata, tiling_config):
-    """
-    Get crop size for the slide based on desired tilsize in the reference magnification.
-    
-    Args:
-        slide_metadata (dict): dictionary of slide metadata.
-        tiling_config (dict): dictionary of tiling parameters.
-    
-    Returns:
-        crop_size (int): size of the crop in pixels.
-    """
-    slide_mag = slide_metadata["mag"]
-    tile_size = tiling_config.get("size", DEFAULT_TILING_CONFIG["size"])
-    reference_mag = tiling_config.get("reference_mag", DEFAULT_TILING_CONFIG["reference_mag"])
-    crop_size = np.around(float(tile_size) * (slide_mag / reference_mag))
-    return int(crop_size)
-
-
 def get_svs_thumb(svs_file, size=None):
     """
     Get low-level thumbnail of the SVS file.
@@ -314,20 +263,35 @@ def get_slide_thumb(slideObj, size=None):
     return image
 
 
-def get_hist_foreground(image, foreground_config):
+def get_crop_size(slide_mag, tile_size, reference_mag):
+    """
+    Get crop size for the slide based on desired tilsize in the reference magnification.
+    
+    Args:
+        slide_mag (float): magnification of the slide.
+        tile_size (int): size of the tile in pixels.
+        reference_mag (float): reference magnification.
+    
+    Returns:
+        crop_size (int): size of the crop in pixels.
+    """
+    crop_size = np.around(float(tile_size) * (slide_mag / reference_mag))
+    return int(crop_size)
+
+
+def get_hist_foreground(image, fraction, min_tissue_prob, bandwidth, min_foreground_ratio):
     """ Take RGB image (H x W x C) and produce foreground mask using publicly
     available histomicsTK library.
 
     Args:
         image (np.ndarray): RGB image. Shape (H, W, C).
-        foreground_config (dict): dictionary of foreground detection parameters.
+        fraction (float): fraction of the image to sample.
+        min_tissue_prob (float): minimum tissue probability.
+        bandwidth (float): bandwidth for the Gaussian kernel to estimate foreground boundary.
+        min_foreground_ratio (float): minimum foreground ratio in the whole slide image.
     Returns:
         mask (np.ndarray): binary mask of the foreground. Shape (H, W).
     """
-    fraction = foreground_config.get("fraction", DEFAULT_FOREGROUND_CONFIG["fraction"])
-    bandwidth = foreground_config.get("bandwidth", DEFAULT_FOREGROUND_CONFIG["bandwidth"])
-    min_tissue_prob = foreground_config.get("min_tissue_prob", DEFAULT_FOREGROUND_CONFIG["min_tissue_prob"])
-    min_foreground_ratio = foreground_config.get("min_foreground_ratio", DEFAULT_FOREGROUND_CONFIG["min_foreground_ratio"])
 
     if isinstance(image, Image.Image):
         shape = image.size[::-1]
@@ -358,15 +322,15 @@ def get_hist_foreground(image, foreground_config):
     return mask
 
 
-def remove_large_horizontal_regions(mask, width_percentage, height_percentage):
+def remove_large_horizontal_regions(mask, max_width_ratio, max_height_ratio):
     """
     Remove regions that are wider than a given percentage of the mask width
     and shorter than a given percentage of the mask height.
 
     Args:
         mask (np.ndarray): binary mask of the foreground. Shape (H, W).
-        width_percentage (float): percentage of mask width to consider as wide.
-        height_percentage (float): percentage of mask height to consider as short.
+        max_width_ratio (float): percentage of mask width to consider as too wide.
+        max_height_ratio (float): percentage of mask height to consider too tall.
     
     Returns:
         mask (np.ndarray): binary cleaned mask. Shape (H, W).
@@ -377,7 +341,7 @@ def remove_large_horizontal_regions(mask, width_percentage, height_percentage):
         region_width = maxc - minc
         region_height = maxr - minr
 
-        if region_width > width_percentage * mask.shape[1] and region_height < height_percentage * mask.shape[0]:
+        if region_width > max_width_ratio * mask.shape[1] and region_height > max_height_ratio * mask.shape[0]:
             labeled[labeled == region.label] = 0
 
     return labeled > 0
@@ -385,8 +349,14 @@ def remove_large_horizontal_regions(mask, width_percentage, height_percentage):
 
 def mask_clean_up_and_resize(
         mask: np.ndarray,
-        foreground_cleanup_config,
-        shape: tuple = None
+        opening_kernel: int,
+        edge_margin: int,
+        max_width_ratio: float,
+        max_height_ratio: float,
+        square_fill_kernel: int,
+        square_dilation_kernel: int,
+        reshape_size: tuple = None,
+
 ):
     """
     Cleans up binary mask by removing aberrant regions, filling holes.
@@ -394,20 +364,19 @@ def mask_clean_up_and_resize(
 
     Args:
         mask (np.ndarray): binary mask of the foreground. Shape (H, W).
-        foreground_cleanup_config (dict): dictionary of foreground cleanup parameters.
-        shape (tuple): shape to resize the mask to.
-        border (int): size of border to remove.
-    
+        opening_kernel (int): size of the kernel to use for opening the mask.
+        edge_margin (int): margin to remove from the edges of the mask.
+        max_width_ratio (float): percentage of mask width to consider as too wide.
+        max_height_ratio (float): percentage of mask height to consider too tall.
+        square_fill_kernel (int): size of the kernel to use for closing the mask.
+        square_dilation_kernel (int): size of the kernel to use for dilation.
+        reshape_size (tuple): shape to resize the mask to. If None, no resizing is done.
+
     Returns:
         mask (np.ndarray): cleaned mask. Shape (H, W).
     """
-    open = foreground_cleanup_config.get("open", DEFAULT_FOREGROUND_CLEANUP_CONFIG["open"])
-    fill = foreground_cleanup_config.get("fill", DEFAULT_FOREGROUND_CLEANUP_CONFIG["fill"])
-    dil = foreground_cleanup_config.get("dil", DEFAULT_FOREGROUND_CLEANUP_CONFIG["dil"])
-    border = foreground_cleanup_config.get("border", DEFAULT_FOREGROUND_CLEANUP_CONFIG["border"])
-
     start_time = time.time()
-    mask = opening(mask, square(open))
+    mask = opening(mask, square(opening_kernel))
     logger.debug(f"Foreground mask fill after opening: {mask.sum() / mask.size:.2f}")
 
     if mask.astype(int).sum() == 0:
@@ -415,20 +384,18 @@ def mask_clean_up_and_resize(
     mask = binary_fill_holes(mask)
     logger.debug(f"Foreground mask fill after filling holes: {mask.sum() / mask.size:.2f}")
 
-    mask[border, :] = mask[-border, :] = 0
+    mask[edge_margin, :] = mask[-edge_margin, :] = 0
     logger.debug(f"Foreground mask fill after removing border: {mask.sum() / mask.size:.2f}")
-    width_percentage = foreground_cleanup_config.get("width_percentage", DEFAULT_FOREGROUND_CLEANUP_CONFIG["width_percentage"])
-    height_percentage = foreground_cleanup_config.get("height_percentage", DEFAULT_FOREGROUND_CLEANUP_CONFIG["height_percentage"])
-    mask = remove_large_horizontal_regions(mask, width_percentage, height_percentage)
+    mask = remove_large_horizontal_regions(mask, max_width_ratio, max_height_ratio)
     logger.debug(f"Foreground mask fill after removing large regions: {mask.sum() / mask.size:.2f}")
 
 
-    if fill > 0:
-        mask = closing(mask, square(fill))
+    if square_fill_kernel > 0:
+        mask = closing(mask, square(square_fill_kernel))
         mask = binary_fill_holes(mask)
-    if dil > 0:
-        mask = dilation(mask, square(dil))
-    mask = opening(mask, square(open * 4))
+    if square_dilation_kernel > 0:
+        mask = dilation(mask, square(square_dilation_kernel))
+    mask = opening(mask, square(opening_kernel * 4))
 
     logger.debug(f"Foreground mask fill after closing and dilation: {mask.sum() / mask.size:.2f}")
 
@@ -437,57 +404,63 @@ def mask_clean_up_and_resize(
 
     # Top border
     if mask[0, :].sum() >= 0.9 * width:
-        mask[:border, :] = 0
+        mask[:edge_margin, :] = 0
     # Bottom border
     if mask[-1, :].sum() >= 0.9 * width:
-        mask[-border:, :] = 0
+        mask[-edge_margin:, :] = 0
     # Left border
     if mask[:, 0].sum() >= 0.9 * height:
-        mask[:, :border] = 0
+        mask[:, :edge_margin] = 0
     # Right border
     if mask[:, -1].sum() >= 0.9 * height:
-        mask[:, -border:] = 0
+        mask[:, -edge_margin:] = 0
 
-    if shape is not None:
-        mask = resize(mask, shape)
+    if reshape_size is not None:
+        mask = resize(mask, reshape_size)
     mask = np.ceil(mask).astype(bool)
     logger.debug(f"Foreground mask fill after resizing: {mask.sum() / mask.size:.2f}")
     logger.debug(f"Cleaned mask in {time.time() - start_time:.1f}s")
     return mask
 
 
-def get_slide_foreground(slideObj, foreground_config):
+def get_slide_foreground(
+        slideObj: OpenSlide, 
+        thumb_size: int, 
+        fraction: float, 
+        min_tissue_prob: float, 
+        bandwidth: int,
+        min_foreground_ratio: float, 
+    ):
     """ 
     Get foreground mask for openslide object.
 
     Args:
         slideObj (OpenSlide): OpenSlide object.
-        foreground_config (dict): dictionary of foreground detection parameters.
+        thumb_size (int): size of the whole slide image thumbnail to use for calculating foreground mask.
+        fraction (float): fraction of the image to sample.
+        min_tissue_prob (float): minimum tissue probability.
+        bandwidth (float): bandwidth for the Gaussian kernel to estimate foreground boundary.
+        min_foreground_ratio (float): minimum foreground ratio in the whole slide image.
+    
     Returns:
         mask (np.ndarray): binary mask of the foreground. Shape (H, W).
     """
-    thumb_size = foreground_config.get("thumb_size", DEFAULT_FOREGROUND_CONFIG["thumb_size"])
+
     thumb = get_slide_thumb(slideObj, size=thumb_size)
-    return get_hist_foreground(thumb, foreground_config)
+    return get_hist_foreground(thumb, fraction, min_tissue_prob, bandwidth, min_foreground_ratio)
 
 
-def get_mask_samplepoints(foreground_mask, slide_metadata, tiling_config):
-    tile_overlap = tiling_config.get("overlap", DEFAULT_TILING_CONFIG["overlap"])
-    p_foreground = tiling_config.get("p_foreground", DEFAULT_TILING_CONFIG["p_foreground"])
+def get_mask_samplepoints(
+        foreground_mask: np.ndarray,
+        whole_slide_height: int,
+        crop_size: int,
+        tile_overlap: float,
+        patch_foreground_ratio: float,
+):
+    logger.debug(f"True slide dimensions: {whole_slide_height}")
+    logger.debug(f"Tile size: {crop_size}, overlap: {tile_overlap}, patch_foreground_ratio: {patch_foreground_ratio}")
 
-    slide_mag = slide_metadata["mag"]
-    tile_size = tiling_config.get("size", DEFAULT_TILING_CONFIG["size"])
-    reference_mag = tiling_config.get("reference_mag", DEFAULT_TILING_CONFIG["reference_mag"])
-    crop_size = np.around(float(tile_size) * (slide_mag / reference_mag))
-    crop_size = int(crop_size)
-
-    logger.debug("Generating sampling points")
-    logger.debug(f"slide mag: {slide_mag}, reference mag: {reference_mag}")
-    logger.debug(f"Tile size: {crop_size}, overlap: {tile_overlap}, p_foreground: {p_foreground}")
-
-    true_dim = slide_metadata["full_dims"][0]
-    logger.debug(f"True slide dimensions: {slide_metadata['full_dims']}")
-    fg_scale = true_dim / float(foreground_mask.shape[0])
+    fg_scale = whole_slide_height / float(foreground_mask.shape[0])
     logger.debug(f"Foreground scale: {fg_scale}")
 
     # Get slide bounding box
@@ -501,53 +474,91 @@ def get_mask_samplepoints(foreground_mask, slide_metadata, tiling_config):
     logger.debug("Filtering sampling coords based on foreground mask")
     start_time = time.time()
     coords = filter_coords_mask(coords, foreground_mask, fg_scale, crop_size,
-                                p_foreground=p_foreground)
+                                p_foreground=patch_foreground_ratio)
     logger.debug(f"Filtered coords: {len(coords)} in time: {time.time() - start_time:.1f}s")
 
     if len(coords) > 0:
         logger.debug(f"Generated {len(coords)} sampling coords")
         coords = coords[:, [1, 0]] # (x, y) -> (col, row)
-    else:
-        logger.warning(f"No sampling coords could be generated for slide: {slide_metadata['file']}")
-        coords = np.empty((0, 2), dtype=int)
 
     return coords, crop_size
 
 
-def get_slide_samplepoints(slideObj, metadata, tiling_config, foreground_config, foreground_cleanup_config, return_heatmap=False):
+def get_slide_samplepoints(
+        slideObj: OpenSlide,
+        slide_metadata: dict,
+        thumb_size: int,
+        fraction: float,
+        min_tissue_prob: float,
+        bandwidth: float,
+        min_foreground_ratio: float,
+        opening_kernel: int,
+        edge_margin: int,
+        max_width_ratio: float,
+        max_height_ratio: float,
+        square_fill_kernel: int,
+        square_dilation_kernel: int,
+        tile_size: int,
+        reference_mag: float,
+        tile_overlap: float,
+        patch_foreground_ratio: float,
+        return_heatmap: bool = False,
+):
     """
     Extracts sampling points from the slide based on the foreground mask.
     
     Args:
         slideObj (OpenSlide): OpenSlide object.
-        metadata (dict): dictionary of slide metadata.
-        tiling_config (dict): dictionary of tiling parameters.
-        foreground_config (dict): dictionary of foreground detection parameters.
-        foreground_cleanup_config (dict): dictionary of foreground cleanup parameters.
-        return_heatmap (bool): whether to return heatmap of the sampling points.
+        slide_metadata (dict): dictionary of slide metadata.
+        
     
     Returns:
         coords (np.ndarray): array of coordinates. Shape (N, 2).
         heatmap (np.ndarray): heatmap of the sampling points. Shape (H, W). None if not requested.
     """
-    # thumb_size, min_tissue_prob, reference_mag,
+    heatmap = None
     start_time = time.time()
-    foreground_mask = get_slide_foreground(slideObj, foreground_config)
-    clean_mask = mask_clean_up_and_resize(foreground_mask, foreground_cleanup_config)
-    logger.debug(f"Generated foreground mask in {time.time() - start_time:.1f}s")
-
-    coords, crop_size = get_mask_samplepoints(
-        clean_mask,
-        metadata,
-        tiling_config,
+    foreground_mask = get_slide_foreground(
+        slideObj=slideObj,
+        thumb_size=thumb_size,
+        fraction=fraction,
+        min_tissue_prob=min_tissue_prob,
+        bandwidth=bandwidth,
+        min_foreground_ratio=min_foreground_ratio,
     )
 
-    heatmap = None
+    clean_mask = mask_clean_up_and_resize(
+        mask=foreground_mask,
+        opening_kernel=opening_kernel,
+        edge_margin=edge_margin,
+        max_width_ratio=max_width_ratio,
+        max_height_ratio=max_height_ratio,
+        square_fill_kernel=square_fill_kernel,
+        square_dilation_kernel=square_dilation_kernel,
+    )
+    logger.debug(f"Generated foreground mask in {time.time() - start_time:.1f}s")
+
+    slide_mag = slide_metadata["mag"]    
+    crop_size = np.around(float(tile_size) * (slide_mag / reference_mag))
+    crop_size = int(crop_size)
+
+    logger.debug("Collecting valid sampling points from foreground mask...")
+    coords, crop_size = get_mask_samplepoints(
+        clean_mask,
+        whole_slide_height=slide_metadata["full_dims"][0],
+        crop_size=crop_size,
+        tile_overlap=tile_overlap,
+        patch_foreground_ratio=patch_foreground_ratio,
+    )
+    if len(coords) == 0:
+        logger.warning(f"No valid sampling points found in foreground mask for slide: {slide_metadata['file']}")
+        return np.empty((0, 2), dtype=int), heatmap
+
     if return_heatmap:
-        true_dim = metadata["full_dims"][0]
+        true_dim = slide_metadata["full_dims"][0]
         fg_scale = true_dim / float(clean_mask.shape[0])
         heatmap = coords_to_heatmap(coords, fg_scale, crop_size, clean_mask.shape)
-    logger.debug(f"Finished processing slide\n{metadata['file']}\nin {time.time() - start_time:.2f}s")
+    logger.debug(f"Finished processing slide\n{slide_metadata['file']}\nin {time.time() - start_time:.2f}s")
     return coords, heatmap
 
 
