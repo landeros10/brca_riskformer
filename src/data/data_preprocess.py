@@ -22,16 +22,16 @@ from torchvision import transforms # type: ignore
 import timm # type: ignore
 from timm.data import resolve_data_config # type: ignore
 from timm.data.transforms_factory import create_transform # type: ignore
-from src.randstainna import RandStainNA
+# from src.randstainna import RandStainNA
 
 from src.logger_config import logger_setup
 from src.data.data_utils import (open_svs, get_slide_samplepoints,)
 
 logger = logging.getLogger(__name__)
 
-yaml_file = '/home/ubuntu/notebooks/cpc_hist/src/CRC_LAB_randomTrue_n0.yaml'
-stain_augmentor = RandStainNA(yaml_file, std_hyper=-0.0)
-stain_normalizer = RandStainNA(yaml_file, std_hyper=-1.0)
+# yaml_file = '/home/ubuntu/notebooks/cpc_hist/src/CRC_LAB_randomTrue_n0.yaml'
+# stain_augmentor = RandStainNA(yaml_file, std_hyper=-0.0)
+# stain_normalizer = RandStainNA(yaml_file, std_hyper=-1.0)
 
 
 class ForegroundConfigSchema(BaseModel):
@@ -102,15 +102,15 @@ def get_svs_samplepoints(svs_file, foreground_config, foreground_cleanup_config,
     """
     if not os.path.isfile(svs_file):
         logger.error(f"SVS file not found: {svs_file}")
-        return np.empty((0, 2), dtype=int), None
+        raise FileNotFoundError(f"SVS file not found: {svs_file}")
 
-    slide_obj, metadata = open_svs(svs_file, default_mag=DEFAULT_TILING_CONFIG["reference_mag"])
+    slide_obj, slide_metadata = open_svs(svs_file, default_mag=DEFAULT_TILING_CONFIG["reference_mag"])
     logger.debug(f"Successfully opened slide: {svs_file}")
-    logger.debug(f"Processing slide:\n{svs_file}")
+    logger.debug("Collecting sampling points...")
     try:
         sampling_coords, heatmap = get_slide_samplepoints(
             slide_obj,
-            slide_metadata=metadata,
+            slide_metadata=slide_metadata,
             thumb_size=foreground_config.thumb_size,
             sampling_fraction=foreground_config.sampling_fraction,
             min_tissue_prob=foreground_config.min_tissue_prob,
@@ -128,21 +128,28 @@ def get_svs_samplepoints(svs_file, foreground_config, foreground_cleanup_config,
             reference_mag=tiling_config.reference_mag,
             return_heatmap=False,
         )
+        logger.debug(f"Successfully extracted sampling points from slide: {svs_file}")
+
+        slide_mag = slide_metadata["mag"]    
+        sampling_size = np.around(float(tiling_config.tile_size) * (slide_mag / tiling_config.reference_mag))
+        sampling_size = int(sampling_size)
+        logger.debug(f"Sampling size from high-resolution whole slide image: {sampling_size}")
+
     except Exception as e:
         logger.error(f"Failed to process slide: {svs_file}\n{e}")
-        return (np.empty((0, 2), dtype=int), None)
+        raise e
 
-    return sampling_coords, slide_obj, metadata, heatmap
+    return sampling_coords, slide_obj, slide_metadata, sampling_size, heatmap
 
 
-def load_dino_model(model_path):
+def load_dino_encoder(model_path):
     # model_path = join(RESOURCE_DIR, "ViT", 'vit256_small_dino.pth')        
     return None
     # model256 = get_vit256(pretrained_weights=model_path, device=device256)
     # return model256.to(device)
 
 
-def load_uni_model(model_path, config_files):
+def load_uni_encoder(model_path, config_files):
     """ Load the UNI2-h model with predefined timm_kwargs.
     Default timm_kwargs are loaded from DefaultUni2hConfig. Default transform:
         # transforms.Resize(224),
@@ -211,7 +218,7 @@ def load_uni_model(model_path, config_files):
     return model, transform
 
 
-def load_resnet_model(model_path, config_files, resnet_type):
+def load_resnet_encoder(model_path, config_files, resnet_type):
     """ Load a pre-trained ResNet model with parameters defined in config_files.
     
     Args:
@@ -233,7 +240,7 @@ def load_resnet_model(model_path, config_files, resnet_type):
     return model, transform
 
 
-def load_model_from_path(model_type, model_path, config_files):
+def load_encoder(model_type, model_path, config_files):
     model = None
     transform = None
     model_type = model_type.lower().strip()
@@ -242,7 +249,7 @@ def load_model_from_path(model_type, model_path, config_files):
         if model_path is None:
             logger.error("Cannot load UNI2-h model without pre-downloaded model.")
             raise ValueError("Model path is None, must be given for UNI2-h feature extractor.")
-        model, transform = load_uni_model(model_path, config_files)
+        model, transform = load_uni_encoder(model_path, config_files)
 
     elif model_type.startswith("resnet"):
         resnet_version = model_type.replace("resnet", "").strip()
@@ -250,11 +257,11 @@ def load_model_from_path(model_type, model_path, config_files):
             logger.warning("Unsupported ResNet version. Defaulting to ResNet50.")
             resnet_version = "50"
         
-        model, transform = load_resnet_model(model_path, config_files, resnet_version)
+        model, transform = load_resnet_encoder(model_path, config_files, resnet_version)
 
     else:
         logger.warning("Model type not supported. Using ResNet50 as default.")
-        model, transform = load_resnet_model(model_path, config_files, "50")
+        model, transform = load_resnet_encoder(model_path, config_files, "50")
 
     return model, transform
 

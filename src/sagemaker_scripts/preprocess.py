@@ -1,13 +1,17 @@
+'''
+preprocess.py
+Author: landeros10
+Created: 2025-02-05
+'''
 import logging
 import argparse
 import yaml
 import os
 
 import torch
-from transformers import AutoModel
 
 from src.logger_config import logger_setup
-from src.data.data_preprocess import (get_svs_samplepoints, load_model_from_path,
+from src.data.data_preprocess import (get_svs_samplepoints, load_encoder,
                                       TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema,
                                       )
 from src.data.datasets import SingleSlideDataset
@@ -52,7 +56,7 @@ def load_yaml_config(config_path, schema):
         logger.warning(f"Failed to load YAML config {config_path}. Error: {e}. Using defaults.")
         return schema()
     try:
-        return schema(**yaml_config).dict()
+        return schema(**yaml_config)
     except Exception as e:
         logger.warning(f"Invalid values in {config_path}. Using defaults. Error: {e}")
         return schema()
@@ -113,7 +117,7 @@ def find_model_files(model_dir):
     return model_path, config_files
 
 
-def load_feature_extractor(model_dir, model_type):
+def load_encoder_wrapper(model_dir, model_type):
     """
     Load the feature extractor model from a local directory.
 
@@ -128,21 +132,21 @@ def load_feature_extractor(model_dir, model_type):
     transform = None
     model_path, config_files = find_model_files(model_dir)
     if model_path is None:
-        logger.error("No model file found in the specified directory.")
+        logger.warning("No model file found in the specified directory.")
 
     # Load model
     try:
-        model, transform = load_model_from_path(model_type, model_path, config_files)
+        model, transform = load_encoder(model_type, model_path, config_files)
     except Exception as e:
         logger.error(f"Failed to load model from {model_path}. Error: {e}")
     return model, transform
 
 
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(description="Preprocessing pipeline for SVS slides in SageMaker")
-    parser.add_argument("--profile", type=str, default="651340551631_AWSPowerUserAccess", help="AWS profile name")
     parser.add_argument("--input_filename", type=str, required=True, help="Input filename")
     parser.add_argument("--output_dir", type=str, default="/opt/ml/processing/output", help="Output directory")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     
     parser.add_argument("--tiling_config", type=str, required=False, help="Tiling parameters YAML file")
     parser.add_argument("--foreground_config", type=str, required=False, help="Foreground detection YAML file")
@@ -151,52 +155,72 @@ def main():
     parser.add_argument("--model_dir", type=str, required=True, help="local dir for model artifact and config files")
     parser.add_argument("--model_type", type=str, default="resnet50", help="Model type")
     args = parser.parse_args()
+    logger.info("Arguments parsed successfully.")
 
+    for key, value in vars(args).items():
+        logger.info(f"{key}: {value}")
+
+    return args
+
+
+def main():
+    args = parse_args()
+    
     logger_setup(debug=args.debug)
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
-    logger.debug(f"Input filename: {args.input_filename}")
+    logger.info(f"Input filename: {args.input_filename}")
 
     # keys: "tiling_config", "foreground_config", "foreground_cleanup_config"
     preprocessing_params = load_preprocessing_configs(args)
 
     # Collect sample points for svs file
-    sample_coords, sample_size, slide_obj, metadata, _ = get_svs_samplepoints(
-        args.input_filename,
-        preprocessing_params["tiling_config"],
-        preprocessing_params["foreground_config"],
-        preprocessing_params["foreground_cleanup_config"],
-        return_heatmap=False,
-    )
+    try:
+        sample_coords, slide_obj, slide_metadata, sampling_size, _ = get_svs_samplepoints(
+            args.input_filename,
+            preprocessing_params["tiling_config"],
+            preprocessing_params["foreground_config"],
+            preprocessing_params["foreground_cleanup_config"],
+            return_heatmap=False,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get sample points for {args.input_filename}. Error: {e}")
+        return
 
-    # Log cuda availability and set proper device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
-
-
-    # Initialize s3 client
-    s3_client = initialize_s3_client()
-    if s3_client is None:
-        logger.error("Failed to initialize S3 client.")
+    if len(sample_coords) == 0:
+        logger.error(f"No valid sample points found for {args.input_filename}")
         return
 
     # Load feature extraction model
-    model, transform = load_feature_extractor(args.model_dir, args.model_type)
+    model, transform = load_encoder_wrapper(args.model_dir, args.model_type)
     if model is None:
         logger.error("Failed to load feature extraction model.")
         return
+    logger.info(f"Model successfully loaded: {args.model_type} from {args.model_dir}")
+    logger.info(f"Model summary:\n{model.summary()}")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
+    model = model.eval().to(device)
 
     # Create dataset object
-    dataset = SingleSlideDataset(
-        slide_obj=slide_obj,
-        slide_metadata=metadata,
-        sample_coords=sample_coords,
-        sample_size=sample_size,
-        output_size=preprocessing_params["tiling_config"]["size"],
-        transform=transform
-    )
+    try:
+        slide_dataset = SingleSlideDataset(
+            slide_obj=slide_obj,
+            slide_metadata=slide_metadata,
+            sample_coords=sample_coords,
+            sample_size=sampling_size,
+            output_size=preprocessing_params["tiling_config"]["size"],
+            transform=transform
+        )
+    except Exception as e:
+        logger.error(f"Failed to create single-slide dataset. Error: {e}")
+        return
+    logger.info(f"Dataset created with {len(slide_dataset)} samples.")
 
-    # TODO - go through slides and convert patches to features using all_coords
-    pass
+
+
+    logger.info("Breaking" + "=" * 20)
+    logger.info("Will complete feature extraction next....")
 
 
 if __name__ == "__main__":
