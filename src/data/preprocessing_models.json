@@ -1,0 +1,14 @@
+{
+    "uni": {
+        "model_path": "models/uni/model.pth",
+        "arch": "uni2-h"
+    },
+    "resnet50": {
+        "model_path": null,
+        "arch": "resnet50"
+    },
+    "resnet101": {
+        "model_path": null,
+        "arch": "resnet101"
+    }
+}

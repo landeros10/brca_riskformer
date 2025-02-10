@@ -15,21 +15,25 @@ from src.utils import set_seed
 logger = logging.getLogger(__name__)
 
 def upload_models(s3_client, models_info, bucket_name):
-    # TODO - create json file that will work with this and upload the UNI model path and config files.
-    # TODO - needs to allow for NO model path and NO config files if resnet (using defaults)
-
     for model_type, model_info in models_info.items():
-        model_path = model_info.get("model_path")
-        model_arch = model_info.get("arch")
-        if not model_path or not model_arch:
-            logger.error(f"Model info for {model_type} is missing model_path or arch. Skipping upload.")
-            continue
+        model_path = model_info.get("model_path", None)
+        model_arch = model_info.get("arch", model_type)
+        prefix = f"{model_type}/{model_arch}"
+
+        # Make the prefix folder in bucket_name if doesn't exist
+        dummy_key = f"{prefix}/.keep"
+        s3_client.put_object(Bucket=bucket_name, Key=dummy_key, Body="")
+        logger.info(f"Created prefix {model_type}/{model_arch}/ in bucket {bucket_name}")
+
+
+        if not model_path:
+            logger.warning(f"Model info for {model_type} does not include model path. Will be downloaded with timm library.")
+            logger.info(f"Only uploading config files for {model_type}")
             
         if not os.path.exists(model_path) or not os.path.isfile(model_path):
-            logger.error(f"Provided model path is invalid. Skipping upload.")
-            continue
+            logger.warning(f"Provided model path is invalid. Skipping file upload.")
+            logger.info(f"Only uploading config files for {model_type}")
 
-        prefix = f"{model_type}/{model_arch}"
         upload_large_files_to_bucket(s3_client, bucket_name, [model_path], file_names=["model.pth"], prefix=prefix)
 
         for config_name, config in model_info.items():
@@ -72,16 +76,13 @@ def load_models_info(models_json_file):
 def main():
     # set up arg parsing
     parser = argparse.ArgumentParser(description="Data loading script")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--profile", type=str, default="651340551631_AWSPowerUserAccess", help="AWS profile name")
     parser.add_argument("--bucket", type=str, default="tcga-riskformer-data-2025", help="S3 bucket name")
     parser.add_argument("--wipe_bucket", action="store_true", help="Wipe bucket before uploading data")
     parser.add_argument("--reupload", action="store_true", help="Reupload files even if they exist")
-
     parser.add_argument("--models_file", type=str, default="/data/resources/preprocessing_models.json", help="Path to models list")
-
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
-
     args = parser.parse_args()
     logger_setup(debug=args.debug)
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
