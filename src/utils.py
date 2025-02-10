@@ -21,7 +21,6 @@ import torch
 import numpy as np
 import pandas as pd
 import random
-from openslide import OpenSlide # type: ignore
 import logging
 
 logger = logging.getLogger(__name__)
@@ -44,8 +43,6 @@ logger = logging.getLogger(__name__)
 #                "In situ carcinoma": 2,
 #                "Invasive carcinoma": 3,
 #                "Carcinoma invasive": 3}
-
-# # slideObjects = {f: OpenSlide(f) for f in np.load("/home/ubuntu/notebooks/cpc_hist/resources/svs_files.npy")}
 
 # def stain_augmentor_wrapper(image, **kwargs):
 #     if np.std(image) < 10:
@@ -739,7 +736,7 @@ def set_seed(seed):
     Args:
         seed (int): seed to set
     """
-    logger.info(f"Setting seed to {seed}")
+    logger.info(f"Setting random seed to {seed}")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

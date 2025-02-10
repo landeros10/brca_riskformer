@@ -14,9 +14,10 @@ logger = logging.getLogger(__name__)
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))  # Moves up to project root
 default_uni_model_dir = os.path.join(project_root, "models", "uni2-h")
-defautl_models_info_file = os.path.join(project_root, "config", "preprocessing_models.json")
+defautl_models_info_file = os.path.join(project_root, "src", "config", "preprocessing_models.json")
 
-def download_uni_model(local_model_dir, filename="pytorch_model.bin"):
+
+def download_uni_model(uni_file_dir, filename="pytorch_model.bin"):
     from huggingface_hub import login, hf_hub_download
     try:
         login()
@@ -24,9 +25,11 @@ def download_uni_model(local_model_dir, filename="pytorch_model.bin"):
         logger.error(f"Failed to login to Hugging Face Hub: {e}")
         return
     
-    os.makedirs(local_model_dir, exist_ok=True)
+    os.makedirs(uni_file_dir, exist_ok=True)
+    logging.debug(f"Model download dir was created or exists: {uni_file_dir}")
+
     try:
-        hf_hub_download("MahmoodLab/UNI2-h", filename=filename, local_dir=local_model_dir, force_download=True)
+        hf_hub_download("MahmoodLab/UNI2-h", filename=filename, local_dir=uni_file_dir, force_download=False)
     except Exception as e:
         logger.error(f"Failed to download UNI2-h model: {e}")
         return
@@ -49,12 +52,15 @@ def upload_models(s3_client, models_info, bucket_name):
         if not model_path:
             logger.warning(f"Model info for {model_type} does not include model path. Will be downloaded with timm library.")
             logger.info(f"Only uploading config files for {model_type}")
-            
-        if not os.path.exists(model_path) or not os.path.isfile(model_path):
-            logger.warning(f"Provided model path is invalid. Skipping file upload.")
-            logger.info(f"Only uploading config files for {model_type}")
-
-        upload_large_files_to_bucket(s3_client, bucket_name, [model_path], file_names=["model.pth"], prefix=prefix)
+        
+        else:
+            abs_model_path = os.path.join(project_root, model_path)
+            if not os.path.exists(abs_model_path) or not os.path.isfile(abs_model_path):
+                logger.warning(f"Provided model path is invalid. Skipping file upload.")
+                logger.info(f"Only uploading config files for {abs_model_path}")
+            else:
+                logger.info(f"Uploading {abs_model_path} to {bucket_name}/{prefix}/{os.path.basename(model_path)}")
+                upload_large_files_to_bucket(s3_client, bucket_name, [abs_model_path], file_names=[os.path.basename(model_path)], prefix=prefix)
 
         for config_name, config in model_info.items():
             if config_name in ["model_path", "arch"]:
@@ -102,7 +108,6 @@ def main():
 
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--wipe_bucket", action="store_true", help="Wipe bucket before uploading data")
-    parser.add_argument("--reupload", action="store_true", help="Reupload files even if they exist")
     
     parser.add_argument("--upload_models", action="store_true", help="Upload models to S3 bucket")
     parser.add_argument("--models_info_file", type=str, default=defautl_models_info_file, help="Path to models list")
@@ -113,8 +118,10 @@ def main():
     logger_setup(debug=args.debug)
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
 
-    set_seed(args.seed) 
+    set_seed(args.seed)
 
+    # Initialize S3 client
+    logger.info("Initializing S3 client...")
     s3_client = initialize_s3_client(args.profile)
     if s3_client is None:
         logger.error("Failed to initialize S3 client.")
@@ -143,7 +150,7 @@ def main():
     #Download uni model
     if args.download_uni_model:
         logger.info("Downloading uni2-h model from Hugging Face Hub...")
-        download_uni_model(args.uni_filepath)
+        download_uni_model(args.uni_file_dir)
 
     # Upload models to S3 bucket
     if args.upload_models:

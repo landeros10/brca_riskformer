@@ -1,6 +1,6 @@
 {
     "uni": {
-        "model_path": "models/uni/model.pth",
+        "model_path": "models/uni2-h/pytorch_model.bin",
         "arch": "uni2-h"
     },
     "resnet50": {
