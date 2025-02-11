@@ -333,3 +333,91 @@ def extract_features(slide_dataset, model, device, num_workers=1, batch_size=256
 
     features_array = np.concatenate(features, axis=0)
     return features_array
+
+# TODO
+def create_features_mask(coords, sampling_size, filter_regions=False):
+    pass
+
+
+def pad_and_split_features(features_mask, features):
+    pass
+
+
+# TODO - find function that splits into (N, 32, 32, D) overlapping feature splits
+# slide_i --> (N_i, max_rows_i, max_cols_i, D) tensor ---> efficient format for pytorch
+
+
+# TODO
+# import multiprocessing as mp
+# from os.path import splitext, basename
+# PS = 256
+
+# save_dir = join(RESOURCE_DIR, "PRS_data_256_xl")
+# os.makedirs(save_dir, exist_ok=True)
+# os.makedirs(join(save_dir, "raw"), exist_ok=True)
+
+# patient_ids = patient_df.patient.unique()
+# patient_slides = [splitext(basename(f))[0] for f in patient_slide_paths]
+
+# last_printed = [0]  # Using a list so that it can be modified inside the function
+# def process_patient(patient):    
+#     slides = list(patient_df.loc[patient_df.patient == patient].slide)
+    
+#     patient_features = []
+#     patient_sequence_ids = []
+#     patient_files = []
+#     sequence_id = 0
+
+#     for slide in slides:
+#         slide_idx = patient_slides.index(slide)
+#         mask, coords, fg_scale, crop_size = results[slide_idx]
+#         test_file = patient_slide_paths[slide_idx]
+
+#         mag = get_svs_mag(test_file)
+#         features_mask = create_mask(coords, crop_size, filter_regions=False)        
+#         st = time()
+    
+#         df = process_coordinates(coords, test_file, mag, PS, crop_size)
+#         features = extract_features(test_file, coords, model256, PS, crop_size, bs=224)
+#         padded_features = pad_and_split_features(features_mask, features)
+#         for split in padded_features:
+#             if min(split.shape[:2]) >= 15 and max(split.shape[:2]) >= 21:
+#                 patient_features.append(split)
+#                 patient_files.append(test_file)
+#                 patient_sequence_ids.extend([sequence_id] * patient_features[-1].shape[0])
+#                 sequence_id += 1
+                
+#     if len(patient_features) < 1:
+#         print(patient)
+#         assert len(patient_sequence_ids) == len(patient_files) == 0
+    
+#     patient_label = patient_df.loc[patient_df.patient == patient].odx85.values[0]
+#     filename = join(save_dir, "raw", patient + ".npz")
+    
+#     feats_updated = [f for f in patient_features if np.any(np.array(f.shape[:2]) >= 3)]
+#     patient_files_updated = [pf for f, pf in zip(feats_updated, patient_files) if np.any(np.array(f.shape[:2]) >= 3)]
+#     if len(feats_updated) > 0:
+#         data_dict = {}
+#         for idx, feature in enumerate(feats_updated):
+#             data_dict[f'feature_{idx}'] = feature
+#         data_dict['label'] = patient_label
+#         data_dict['patient_files'] = patient_files_updated
+#         np.savez_compressed(filename, **data_dict)
+    
+#     return patient_features, patient_sequence_ids, patient_files
+
+# results_parallel = []
+# total_patients = len(patient_ids)
+# last_printed_progress = 0
+
+# for i, patient in enumerate(patient_ids, 1):
+#     result = process_patient(patient)
+#     results_parallel.append(result)
+    
+#     current_progress = (i / total_patients) * 100
+#     if current_progress - last_printed_progress >= 10:  # Check if progress has increased by at least 10%
+#         print(f"Processed: {i}/{total_patients} ({current_progress:.2f}%) patients")
+#         last_printed_progress = current_progress
+
+# # # Unpack results after processing
+# # all_features, all_ids, all_patients = zip(*results_parallel)
