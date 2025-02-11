@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 import numpy as np
 
 import torch
+from torch.utils.data import DataLoader
 from torchvision import transforms # type: ignore
 import timm # type: ignore
 from timm.data import resolve_data_config # type: ignore
@@ -70,8 +71,8 @@ class DefaultUni2hConfig(BaseModel):
     mlp_ratio: float = Field(default=2.66667*2, description="ViT MLP ratio")
     num_classes: int = Field(default=0, description="Number of classes")
     no_embed_class: bool = Field(default=True, description="No embed class")
-    mlp_layer: str = Field(default="timm.layers.SwiGLUPacked", description="MLP layer")
-    act_layer: str = Field(default="torch.nn.SiLU", description="Activation layer")
+    mlp_layer: str = Field(default=timm.layers.SwiGLUPacked, description="MLP layer")
+    act_layer: str = Field(default=torch.nn.SiLU, description="Activation layer")
     reg_tokens: int = Field(default=8, description="Number of reg tokens")
     dynamic_img_size: bool = Field(default=True, description="Dynamic image size")
 
@@ -82,7 +83,12 @@ DEFAULT_TILING_CONFIG = TilingConfigSchema().dict()
 DEFAULT_UNI_CONFIG = DefaultUni2hConfig().dict()
 
 
-def get_svs_samplepoints(svs_file, foreground_config, foreground_cleanup_config, tiling_config, return_heatmap=False):
+def get_svs_samplepoints(
+    svs_file, 
+    foreground_config, 
+    foreground_cleanup_config, 
+    tiling_config, 
+):
     """
     Extracts sampling points from the SVS file based on the foreground mask.
     
@@ -91,8 +97,7 @@ def get_svs_samplepoints(svs_file, foreground_config, foreground_cleanup_config,
         foreground_config (ForegroundConfigSchema): histopathology foreground detection parameters.
         foreground_cleanup_config (ForegroundCleanupConfigSchema): foreground cleanup parameters.
         tiling_config (TilingConfigSchema): whole-slide sampling parameters.
-        return_heatmap (bool): whether to return heatmap of the sampling points.
-    
+
     Returns:
         sampling_coords (np.ndarray): array of coordinates. Shape (N, 2).
         sampling_size (int): size of the sampling points.
@@ -108,7 +113,7 @@ def get_svs_samplepoints(svs_file, foreground_config, foreground_cleanup_config,
     logger.debug(f"Successfully opened slide: {svs_file}")
     logger.debug("Collecting sampling points...")
     try:
-        sampling_coords, heatmap = get_slide_samplepoints(
+        sampling_coords, heatmap, thumb = get_slide_samplepoints(
             slide_obj,
             slide_metadata=slide_metadata,
             thumb_size=foreground_config.thumb_size,
@@ -126,9 +131,10 @@ def get_svs_samplepoints(svs_file, foreground_config, foreground_cleanup_config,
             tile_overlap=tiling_config.tile_overlap,
             patch_foreground_ratio=tiling_config.patch_foreground_ratio,
             reference_mag=tiling_config.reference_mag,
-            return_heatmap=False,
+            return_heatmap=True,
+            return_thumb=True,
         )
-        logger.debug(f"Successfully extracted sampling points from slide: {svs_file}")
+        logger.info(f"Successfully extracted sampling points from slide: {svs_file}")
 
         slide_mag = slide_metadata["mag"]    
         sampling_size = np.around(float(tiling_config.tile_size) * (slide_mag / tiling_config.reference_mag))
@@ -139,7 +145,7 @@ def get_svs_samplepoints(svs_file, foreground_config, foreground_cleanup_config,
         logger.error(f"Failed to process slide: {svs_file}\n{e}")
         raise e
 
-    return sampling_coords, slide_obj, slide_metadata, sampling_size, heatmap
+    return sampling_coords, slide_obj, slide_metadata, sampling_size, heatmap, thumb
 
 
 def load_dino_encoder(model_path):
@@ -162,7 +168,7 @@ def load_uni_encoder(model_path, config_files):
         config_files (dict): dictionary of config files.
     
     Returns:
-        model: loaded model.
+        model (torch.nn.Module): loaded model.
         transform: image transform.
     """
     model_name = "hf-hub:MahmoodLab/UNI2-h"
@@ -192,11 +198,25 @@ def load_uni_encoder(model_path, config_files):
         timm_kwargs = default_config.copy()
     
     try:
-        model = timm.create_model(**timm_kwargs)
+        logger.debug("Loading model with timm_kwargs:")
+        for key, value in timm_kwargs.items():
+            logger.debug(f"{key}: {value}")
+        model = timm.create_model(**timm_kwargs)        
+    except Exception as e:
+        logger.warning(f"Failed to create UNI2-h model with given kwargs: {e}")
+        raise e
+    
+    try:
         model.load_state_dict(
             torch.load(model_path, map_location="cpu"),
             strict=True
             )
+        logger.info(f"Loaded UNI2-h model weights from {model_path}")
+    except Exception as e:
+        logger.error(f"Failed to load UNI2-h model weights from {model_path}: {e}")
+        raise e
+    
+    try:
         transform = transforms.Compose(
             [
                 transforms.Resize(224),
@@ -205,15 +225,9 @@ def load_uni_encoder(model_path, config_files):
                 transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             ]
         )
-        
     except Exception as e:
-        logger.warning(f"Failed to load UNI2-h mode with given kwargs: {e}")
+        logger.error(f"Failed to create transform: {e}")
         raise e
-
-    if model is not None:
-        transform = create_transform(
-            **resolve_data_config(model.pretrained_cfg, model=model)
-            )
 
     return model, transform
 
@@ -222,7 +236,14 @@ def load_resnet_encoder(model_path, config_files, resnet_type):
     """ Load a pre-trained ResNet model with parameters defined in config_files.
     
     Args:
-        model_path (str): path to the model file."""
+        model_path (str): path to the model file.
+        config_files (dict): dictionary of config files.
+        resnet_type (str): type of the ResNet model.
+    
+    Returns:
+        model (torch.nn.Module): loaded model.
+        transform (callable): image transform.
+    """
     model = None
     transform = None
     try:
@@ -241,6 +262,17 @@ def load_resnet_encoder(model_path, config_files, resnet_type):
 
 
 def load_encoder(model_type, model_path, config_files):
+    """
+    Load the encoder model based on the given model type.
+    
+    Args:
+        model_type (str): The type of the model.
+        model_path (str): The path to the model file.
+        config_files (dict): The config files.
+        
+    Returns:
+        model (torch.nn.Module): The loaded model.
+    """
     model = None
     transform = None
     model_type = model_type.lower().strip()
@@ -266,22 +298,21 @@ def load_encoder(model_type, model_path, config_files):
     return model, transform
 
 
-def extract_features(test_file, coords, model, image_size, crop_size, bs=256):
-    # TODO review this function
-    use_cpu = next(model.parameters()).device.type == "cpu"
+def extract_features(slide_dataset, model, device, num_workers=1, batch_size=256):
+    dataloader = DataLoader(slide_dataset, batch_size=batch_size, num_workers=num_workers)
+    # Run test:
+    test_batch = next(iter(dataloader))
+    test_feats = model(test_batch).detach().cpu().numpy()
+    logger.debug(f"Test batch output shape: {test_feats.shape}")
 
-    # TODO - replace lambda func
-    # dataset = SingleSlideDataset(test_file, coords, lambda x: x, image_size, crop_size)
-    # dataloader = DataLoader(dataset, batch_size=bs, num_workers=1)
+    features = []
+    # TODO -update to use device
+    for batch_images in dataloader:
+        if not use_cpu:
+            batch_images = batch_images.cuda()
+        batch_features = model(batch_images)
+        batch_features = batch_features.detach().cpu().numpy()
+        features.append(batch_features)
 
-    # features = []
-    # for batch_images in dataloader:
-    #     if not use_cpu:
-    #         batch_images = batch_images.cuda()
-    #     batch_features = model(batch_images)
-    #     batch_features = batch_features.detach().cpu().numpy()
-    #     features.append(batch_features)
-
-    # features_array = np.concatenate(features, axis=0)
-    # dataset.close_slide()
-    # return features_array
+    features_array = np.concatenate(features, axis=0)
+    return features_array

@@ -335,7 +335,9 @@ def remove_large_horizontal_regions(mask, max_width_ratio, max_height_ratio):
         region_width = maxc - minc
         region_height = maxr - minr
 
-        if region_width > max_width_ratio * mask.shape[1] and region_height > max_height_ratio * mask.shape[0]:
+        if region_width > max_width_ratio * mask.shape[1] and region_height < (1 - max_height_ratio) * mask.shape[0]:
+            labeled[labeled == region.label] = 0
+        elif region_height > max_height_ratio * mask.shape[0] and region_width < (1 - max_width_ratio) * mask.shape[1]:
             labeled[labeled == region.label] = 0
 
     return labeled > 0
@@ -423,7 +425,8 @@ def get_slide_foreground(
         sampling_fraction: float, 
         min_tissue_prob: float, 
         bandwidth: int,
-        min_foreground_ratio: float, 
+        min_foreground_ratio: float,
+        return_thumb: bool = False,
     ):
     """ 
     Get foreground mask for openslide object.
@@ -435,13 +438,17 @@ def get_slide_foreground(
         min_tissue_prob (float): minimum tissue probability.
         bandwidth (float): bandwidth for the Gaussian kernel to estimate foreground boundary.
         min_foreground_ratio (float): minimum foreground ratio in the whole slide image.
+        return_thumb (bool): whether to return thumbnail of the slide.
     
     Returns:
         mask (np.ndarray): binary mask of the foreground. Shape (H, W).
     """
 
     thumb = get_slide_thumb(slideObj, size=thumb_size)
-    return get_hist_foreground(thumb, sampling_fraction, min_tissue_prob, bandwidth, min_foreground_ratio)
+    foreground = get_hist_foreground(thumb, sampling_fraction, min_tissue_prob, bandwidth, min_foreground_ratio)
+    if return_thumb:
+        return foreground, thumb
+    return foreground
 
 
 def get_mask_samplepoints(
@@ -510,6 +517,7 @@ def get_slide_samplepoints(
         patch_foreground_ratio: float,
         reference_mag: float,
         return_heatmap: bool = False,
+        return_thumb: bool = False,
 ):
     """
     Extracts sampling points from the slide based on the foreground mask.
@@ -533,21 +541,25 @@ def get_slide_samplepoints(
         patch_foreground_ratio (float): minimum foreground ratio in the sampling window.
         reference_mag (float): reference magnification for the sampling window (sampling window scaled to match this mag).
         return_heatmap (bool): whether to return heatmap of the sampling points.
+        return_thumb (bool): whether to return thumbnail of the slide.
             
     Returns:
         coords (np.ndarray): array of coordinates. Shape (N, 2).
         heatmap (np.ndarray): heatmap of the sampling points. Shape (H, W). None if not requested.
     """
     heatmap = None
+    thumb = None
     start_time = time.time()
-    foreground_mask = get_slide_foreground(
+    foreground_mask, thumb = get_slide_foreground(
         slideObj=slideObj,
         thumb_size=thumb_size,
         sampling_fraction=sampling_fraction,
         min_tissue_prob=min_tissue_prob,
         bandwidth=bandwidth,
         min_foreground_ratio=min_foreground_ratio,
+        return_thumb=return_thumb,
     )
+    logger.info(f"Generated foreground mask in {time.time() - start_time:.1f}s")
 
     clean_mask = mask_clean_up_and_resize(
         mask=foreground_mask,
@@ -574,11 +586,11 @@ def get_slide_samplepoints(
     )
     if len(coords) == 0:
         logger.warning(f"No valid sampling points found in foreground mask for slide: {slide_metadata['file']}")
-        return np.empty((0, 2), dtype=int), heatmap
+        return np.empty((0, 2), dtype=int), heatmap, thumb
 
     if return_heatmap:
         true_dim = slide_metadata["full_dims"][0]
         fg_scale = true_dim / float(clean_mask.shape[0])
         heatmap = map_coords_to_heatmap(coords, fg_scale, sampling_size, clean_mask.shape)
     logger.debug(f"Finished processing slide\n{slide_metadata['file']}\nin {time.time() - start_time:.2f}s")
-    return coords, heatmap
+    return coords, heatmap, thumb

@@ -9,6 +9,7 @@ import yaml
 import os
 
 import torch
+from PIL import Image
 
 from src.logger_config import logger_setup
 from src.data.data_preprocess import (get_svs_samplepoints, load_encoder,
@@ -171,18 +172,20 @@ def main():
     logger_setup(debug=args.debug)
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
     logger.info(f"Input filename: {args.input_filename}")
+    logger.info(f"Output directory: {args.output_dir}")
+    logger.info("=" * 50)
 
     # keys: "tiling_config", "foreground_config", "foreground_cleanup_config"
     preprocessing_params = load_preprocessing_configs(args)
 
     # Collect sample points for svs file
+    logger.info("[Collecting sample points for svs file]")
     try:
-        sample_coords, slide_obj, slide_metadata, sampling_size, _ = get_svs_samplepoints(
+        sample_coords, slide_obj, slide_metadata, sampling_size, heatmap, thumb = get_svs_samplepoints(
             args.input_filename,
             foreground_config=preprocessing_params["foreground_config"],
             foreground_cleanup_config=preprocessing_params["foreground_cleanup_config"],
             tiling_config=preprocessing_params["tiling_config"],
-            return_heatmap=False,
         )
     except Exception as e:
         logger.error(f"Failed to get sample points for {args.input_filename}. Error: {e}")
@@ -192,19 +195,35 @@ def main():
         logger.error(f"No valid sample points found for {args.input_filename}")
         return
 
+    if thumb is not None and heatmap is not None:
+        logger.info(f"[Saving thumbnail and heatmap to output directory {args.output_dir}]")
+        thumb_file = os.path.join(args.output_dir, f"{os.path.basename(args.input_filename)}_thumbnail.png")
+        heatmap_file = os.path.join(args.output_dir, f"{os.path.basename(args.input_filename)}_heatmap.png")
+        logger.info(f"Saving thumbnail to {thumb_file}")
+        logger.info(f"Saving heatmap to {heatmap_file}")
+
+        # thumb is already a PIL RGB image and can be saved using pillow methods
+        thumb.save(thumb_file)
+
+        #heatmap is a np.ndarray float with arbitrary range >=0 and should be converted to uint8 [0,255] for visualization
+        heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min()) * 255.0
+        heatmap = heatmap.astype("uint8")
+        Image.fromarray(heatmap).save(heatmap_file)
+
+
     # Load feature extraction model
+    logger.info("[Loading feature extraction model...]")
     model, transform = load_encoder_wrapper(args.model_dir, args.model_type)
     if model is None:
         logger.error("Failed to load feature extraction model.")
         return
     logger.info(f"Model successfully loaded: {args.model_type} from {args.model_dir}")
-    logger.info(f"Model summary:\n{model}")
+    logger.info("=" * 50)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
     model = model.eval().to(device)
 
-    # Create dataset object
     try:
         slide_dataset = SingleSlideDataset(
             slide_obj=slide_obj,
@@ -218,11 +237,10 @@ def main():
         logger.error(f"Failed to create single-slide dataset. Error: {e}")
         return
     logger.info(f"Dataset created with {len(slide_dataset)} samples.")
+    logger.info("=" * 50)
 
-
-
-    logger.info("Breaking" + "=" * 20)
-    logger.info("Will complete feature extraction next....")
+    # Feature Extraction
+    
 
 
 if __name__ == "__main__":

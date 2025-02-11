@@ -1,6 +1,6 @@
 opening_kernel: 3  # Size of the structuring element to use for opening foreground mask
-square_fill_kernel: 15  # Size of the structuring element to use for closing foreground mask
+square_fill_kernel: 25  # Size of the structuring element to use for closing foreground mask
 square_dilation_kernel: 1  # Size of the structuring element to use for final dilation of foreground mask
 edge_margin: 50  # Size of the border to consider for aberrant regions
-max_width_ratio: 0.9  # Percentage of the mask width covered to consider as aberrant
-max_height_ratio: 0.75  # Percentage of the mask height covered to consider as aberrant
+max_width_ratio: 0.8  # Percentage of the mask width covered to consider as aberrant
+max_height_ratio: 0.8  # Percentage of the mask height covered to consider as aberrant
