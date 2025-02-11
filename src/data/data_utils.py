@@ -5,15 +5,12 @@ created: 2/25/2025
 '''
 import logging
 import time
-import json
 import os
-import uuid
-from pydantic import BaseModel, Field
 
 import numpy as np
 from PIL import Image
-import openslide # type: ignore
-from openslide import OpenSlide # type: ignore
+import openslide
+from openslide import OpenSlide
 from skimage import color
 from skimage.transform import resize, rescale
 from skimage.filters import threshold_triangle
@@ -21,9 +18,6 @@ from skimage.morphology import opening, closing, dilation, square
 from scipy.ndimage import binary_fill_holes
 from skimage.measure import label, regionprops
 from histomicstk.segmentation import simple_mask # type: ignore
-
-import boto3
-import botocore
 
 logger = logging.getLogger(__name__)
 
