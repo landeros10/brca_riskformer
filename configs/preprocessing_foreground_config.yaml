@@ -1,0 +1,5 @@
+thumb_size: 500  # Size of the thumbnail to use for foreground
+sampling_fraction: 0.10  # Fraction of the image to use for foreground sampling
+bandwidth: 2  # Bandwidth of the Gaussian kernel to use for foreground estimation
+min_tissue_prob: 0.05  # Minimum tissue probability to consider a pixel as foreground
+min_foreground_ratio: 0.15  # Minimum foreground/background ratio in slide

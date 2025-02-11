@@ -47,8 +47,10 @@ def load_yaml_config(config_path, schema):
         return schema()
 
     try:
+        logger.info(f"Loading YAML config from {config_path}")
         with open(config_path, "r") as f:
             yaml_config = yaml.safe_load(f)
+            logger.info("Successfully loaded YAML config.")
             if not isinstance(yaml_config, dict):
                 logger.warning(f"Invalid YAML format in {config_path}. Using defaults.")
                 return schema()
@@ -177,9 +179,9 @@ def main():
     try:
         sample_coords, slide_obj, slide_metadata, sampling_size, _ = get_svs_samplepoints(
             args.input_filename,
-            preprocessing_params["tiling_config"],
-            preprocessing_params["foreground_config"],
-            preprocessing_params["foreground_cleanup_config"],
+            foreground_config=preprocessing_params["foreground_config"],
+            foreground_cleanup_config=preprocessing_params["foreground_cleanup_config"],
+            tiling_config=preprocessing_params["tiling_config"],
             return_heatmap=False,
         )
     except Exception as e:
@@ -196,7 +198,7 @@ def main():
         logger.error("Failed to load feature extraction model.")
         return
     logger.info(f"Model successfully loaded: {args.model_type} from {args.model_dir}")
-    logger.info(f"Model summary:\n{model.summary()}")
+    logger.info(f"Model summary:\n{model}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
@@ -209,7 +211,7 @@ def main():
             slide_metadata=slide_metadata,
             sample_coords=sample_coords,
             sample_size=sampling_size,
-            output_size=preprocessing_params["tiling_config"]["size"],
+            output_size=preprocessing_params["tiling_config"].tile_size,
             transform=transform
         )
     except Exception as e:

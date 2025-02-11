@@ -86,7 +86,7 @@ def main():
     parser.add_argument("--bucket", type=str, default="tcga-riskformer-data-2025", help="S3 bucket name")
     parser.add_argument("--wipe_bucket", action="store_true", help="Wipe bucket before uploading data")
     parser.add_argument("--reupload", action="store_true", help="Reupload files even if they exist")
-    parser.add_argument("--svs_paths_file", type=str, default="/data/resources/riskformer_slides.json", help="Path to slides list")
+    parser.add_argument("--svs_paths_file", type=str, default="/resources/riskformer_slides.json", help="Path to slides list")
     parser.add_argument("--destination_dir", type=str, default="raw", help="Destination directory in S3 bucket")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
