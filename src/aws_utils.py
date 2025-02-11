@@ -8,7 +8,7 @@ import botocore
 
 logger = logging.getLogger(__name__)
 
-def initialize_s3_client(xw
+def initialize_s3_client(
         profile_name,
         region_name=None,
         return_session=False):
