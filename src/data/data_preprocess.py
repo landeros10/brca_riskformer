@@ -312,7 +312,10 @@ def extract_features(slide_dataset, model, device, num_workers=1, batch_size=256
         features_array (np.ndarray): The extracted features of shape (len(slide_dataset), feature_dim).
     """
     dataloader = DataLoader(slide_dataset, batch_size=batch_size, num_workers=num_workers)
+    logger.debug(f"DataLoader initialized with {num_workers} workers and batch size {batch_size}")
+
     # Run test:
+    logger.debug('Running test batch...')
     test_batch = next(iter(dataloader))
     with torch.no_grad():
         test_feats = model(test_batch).detach().cpu().numpy()
@@ -320,6 +323,7 @@ def extract_features(slide_dataset, model, device, num_workers=1, batch_size=256
 
     features = []
     model.eval()
+    logger.debug('Extracting features...')
     with torch.no_grad():
         for batch_images in dataloader:
             batch_images = batch_images.to(device)

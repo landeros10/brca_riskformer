@@ -12,7 +12,7 @@ import torch
 from PIL import Image
 
 from src.logger_config import logger_setup
-from src.data.data_preprocess import (get_svs_samplepoints, load_encoder,
+from src.data.data_preprocess import (get_svs_samplepoints, load_encoder, extract_features,
                                       TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema,
                                       )
 from src.data.datasets import SingleSlideDataset
@@ -157,6 +157,9 @@ def parse_args():
 
     parser.add_argument("--model_dir", type=str, required=True, help="local dir for model artifact and config files")
     parser.add_argument("--model_type", type=str, default="resnet50", help="Model type")
+
+    parser.add_argument("--num_workers", type=int, default=1, help="Number of workers for DataLoader")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for DataLoader")
     args = parser.parse_args()
     logger.info("Arguments parsed successfully.")
 
@@ -240,6 +243,18 @@ def main():
     logger.info("=" * 50)
 
     # Feature Extraction
+    try:
+        slide_features = extract_features(
+            slide_dataset=slide_dataset,
+            model=model,
+            device=device,
+            num_workers=args.num_workers,
+            batch_size=args.batch_size,
+        )
+    except Exception as e:
+        logger.error(f"Failed to extract features. Error: {e}")
+        return        
+    logger.info("Feature extraction completed.")
     
 
 
