@@ -1,7 +1,21 @@
 {
     "uni": {
         "model_path": "models/uni2-h/pytorch_model.bin",
-        "arch": "uni2-h"
+        "arch": "uni2-h",
+        "timm": {
+            "model_name": "vit_giant_patch14_224",
+            "img_size": 256,
+            "patch_size": 16,
+            "depth": 24,
+            "num_heads": 24,
+            "init_values": 1e-05,
+            "embed_dim": 1536,
+            "mlp_ratio": 5.33334,
+            "num_classes": 0,
+            "no_embed_class": true,
+            "reg_tokens": 8,
+            "dynamic_img_size": true
+        }
     },
     "resnet50": {
         "model_path": null,

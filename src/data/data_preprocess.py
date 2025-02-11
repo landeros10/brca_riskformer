@@ -6,9 +6,8 @@ Author: landeros10
 Created: 2025-02-05
 '''
 import logging
-import argparse
+from typing import Type
 
-import time
 import os
 import json
 import yaml
@@ -71,8 +70,8 @@ class DefaultUni2hConfig(BaseModel):
     mlp_ratio: float = Field(default=2.66667*2, description="ViT MLP ratio")
     num_classes: int = Field(default=0, description="Number of classes")
     no_embed_class: bool = Field(default=True, description="No embed class")
-    mlp_layer: str = Field(default=timm.layers.SwiGLUPacked, description="MLP layer")
-    act_layer: str = Field(default=torch.nn.SiLU, description="Activation layer")
+    mlp_layer: Type[torch.nn.Module] = Field(default=timm.layers.SwiGLUPacked, description="MLP layer")
+    act_layer: Type[torch.nn.Module] = Field(default=torch.nn.SiLU, description="Activation layer")
     reg_tokens: int = Field(default=8, description="Number of reg tokens")
     dynamic_img_size: bool = Field(default=True, description="Dynamic image size")
 
@@ -299,20 +298,34 @@ def load_encoder(model_type, model_path, config_files):
 
 
 def extract_features(slide_dataset, model, device, num_workers=1, batch_size=256):
+    """
+    Extract features from the slide dataset using the given model.
+    
+    Args:
+        slide_dataset (Dataset): The slide dataset.
+        model (torch.nn.Module): The model to use for feature extraction.
+        device (torch.device): The device to use for feature extraction.
+        num_workers (int, optional): The number of workers to use for data loading. Defaults to 1.
+        batch_size (int, optional): The batch size to use for data loading. Defaults to 256.
+    
+    Returns:
+        features_array (np.ndarray): The extracted features of shape (len(slide_dataset), feature_dim).
+    """
     dataloader = DataLoader(slide_dataset, batch_size=batch_size, num_workers=num_workers)
     # Run test:
     test_batch = next(iter(dataloader))
-    test_feats = model(test_batch).detach().cpu().numpy()
+    with torch.no_grad():
+        test_feats = model(test_batch).detach().cpu().numpy()
     logger.debug(f"Test batch output shape: {test_feats.shape}")
 
     features = []
-    # TODO -update to use device
-    for batch_images in dataloader:
-        if not use_cpu:
-            batch_images = batch_images.cuda()
-        batch_features = model(batch_images)
-        batch_features = batch_features.detach().cpu().numpy()
-        features.append(batch_features)
+    model.eval()
+    with torch.no_grad():
+        for batch_images in dataloader:
+            batch_images = batch_images.to(device)
+            batch_features = model(batch_images)
+            batch_features = batch_features.detach().cpu().numpy()
+            features.append(batch_features)
 
     features_array = np.concatenate(features, axis=0)
     return features_array
