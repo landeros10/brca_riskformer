@@ -324,12 +324,17 @@ def extract_features(slide_dataset, model, device, num_workers=1, batch_size=256
     features = []
     model.eval()
     logger.debug('Extracting features...')
+    n_batches = len(slide_dataset) // batch_size + 1
+    count = 0
     with torch.no_grad():
         for batch_images in dataloader:
             batch_images = batch_images.to(device)
             batch_features = model(batch_images)
             batch_features = batch_features.detach().cpu().numpy()
             features.append(batch_features)
+
+            count += 1
+            logger.debug(f"Processed batch {count}/{n_batches} ({(count/n_batches)*100:.2f}%)")
 
     features_array = np.concatenate(features, axis=0)
     return features_array
