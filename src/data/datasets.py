@@ -1,7 +1,9 @@
 import numpy as np
 from PIL import Image
+import zarr
 
-from torch.utils.data import Dataset, DataLoader
+import torch
+from torch.utils.data import Dataset
 from torchvision import transforms
 from src.data.data_utils import sample_slide_image
 
@@ -70,5 +72,28 @@ class SingleSlideDataset(Dataset):
         
         image = image.resize((self.output_size, self.output_size), Image.BILINEAR)
         return image
+
+class ZarrFeatureDataset(Dataset):
+    def __init__(self, zarr_path):
+        """
+        Initialize dataset from a Zarr store.
+
+        Args:
+            zarr_path (str): Path to Zarr file (local or S3).
+        """
+        self.root = zarr.open(zarr_path, mode='r')
+        self.coords = self.root["coords"]
+        self.features = self.root["features"]
+
+    def __len__(self):
+        return self.features.shape[0]
+
+    def __getitem__(self, idx):
+        """
+        Fetch a single sample.
+        """
+        coord = self.coords[idx]  # (2,) coordinate
+        feature = self.features[idx]  # (D,) feature vector
+        return torch.tensor(coord, dtype=torch.int32), torch.tensor(feature, dtype=torch.float32)
 
 

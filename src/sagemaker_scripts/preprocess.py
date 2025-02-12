@@ -12,9 +12,9 @@ import torch
 from PIL import Image
 
 from src.logger_config import logger_setup
-from src.data.data_preprocess import (get_svs_samplepoints, load_encoder, extract_features,
+from src.data.data_preprocess import (get_svs_samplepoints, load_encoder, extract_features, get_COO_coords,
                                       TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema,
-                                      )
+                                      save_features_zarr,)
 from src.data.datasets import SingleSlideDataset
 from src.aws_utils import initialize_s3_client
 logger = logging.getLogger(__name__)
@@ -160,6 +160,9 @@ def parse_args():
 
     parser.add_argument("--num_workers", type=int, default=1, help="Number of workers for DataLoader")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for DataLoader")
+
+    parser.add_argument("--zarr_compressor", type=str, default="blosc", help="Compressor for Zarr file")
+    parser.add_argument("--zarr_chunk_size", type=int, default=1000, help="Chunk size for Zarr file")
     args = parser.parse_args()
     logger.info("Arguments parsed successfully.")
 
@@ -242,7 +245,6 @@ def main():
     logger.info(f"Dataset created with {len(slide_dataset)} samples.")
     logger.info("=" * 50)
 
-    # TODO
     # Feature Extraction
     try:
         slide_features = extract_features(
@@ -255,7 +257,35 @@ def main():
     except Exception as e:
         logger.error(f"Failed to extract features. Error: {e}")
         return        
-    logger.info("Feature extraction completed.")
+    logger.info(f"Successfully extracted tile features for foreground samples. Feature shape: {slide_features.shape}")
+
+    # save features as zarr file in args.output_dir
+    logger.info(f"Saving feature vectors to {args.output_dir}")
+    coo_coords = get_COO_coords(
+        coords=sample_coords,
+        sampling_size=sampling_size,
+        tile_overlap=preprocessing_params["tiling_config"].tile_overlap,
+    )
+    logger.debug(f"Generated coordinates for sparse representation.")
+    try:
+        assert len(coo_coords) == slide_features.shape[0]
+    except Exception as e:
+        logger.error(f"Number of feature vectors does not match number of sample points. Error: {e}")
+        return
+    logger.debug("Saving feature vectors to zarr file...")
+    try:
+        save_features_zarr(
+            output_path=os.path.join(args.output_dir, f"{os.path.basename(args.input_filename)}.zarr"),
+            coo_coords=coo_coords,
+            slide_features=slide_features,
+            chunk_size=args.zarr_chunk_size,
+            compressor=args.zarr_compressor,
+        )
+    except Exception as e:
+        logger.error(f"Failed to save feature vectors to zarr file. Error: {e}")
+        return
+    
+
     
 
 
