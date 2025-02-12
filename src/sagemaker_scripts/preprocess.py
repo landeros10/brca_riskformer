@@ -113,6 +113,7 @@ def find_model_files(model_dir):
     # Ensure a model file is found
     if model_path is None:
         logger.error(f"No valid model file found in {model_dir}")
+        return model_path, config_files
 
     if not config_files:
         logger.warning("No model config files found! Using default model config.")
@@ -162,7 +163,6 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for DataLoader")
 
     parser.add_argument("--zarr_compressor", type=str, default="blosc", help="Compressor for Zarr file")
-    parser.add_argument("--zarr_chunk_size", type=int, default=1000, help="Chunk size for Zarr file")
     args = parser.parse_args()
     logger.info("Arguments parsed successfully.")
 
@@ -266,27 +266,24 @@ def main():
         sampling_size=sampling_size,
         tile_overlap=preprocessing_params["tiling_config"].tile_overlap,
     )
-    logger.debug(f"Generated coordinates for sparse representation.")
-    try:
-        assert len(coo_coords) == slide_features.shape[0]
-    except Exception as e:
-        logger.error(f"Number of feature vectors does not match number of sample points. Error: {e}")
+    if len(coo_coords) != slide_features.shape[0]:
+        logger.error(f"Number of feature vectors does not match number of sample points.")
         return
+    logger.debug(f"Generated coordinates for sparse representation.")
+
     logger.debug("Saving feature vectors to zarr file...")
     try:
         save_features_zarr(
             output_path=os.path.join(args.output_dir, f"{os.path.basename(args.input_filename)}.zarr"),
             coo_coords=coo_coords,
             slide_features=slide_features,
-            chunk_size=args.zarr_chunk_size,
+            chunk_size=min(5000, max(1000, slide_features.shape[0] // 4)),
             compressor=args.zarr_compressor,
         )
     except Exception as e:
         logger.error(f"Failed to save feature vectors to zarr file. Error: {e}")
         return
-    
-
-    
+    logger.info("Feature vectors saved successfully.")    
 
 
 if __name__ == "__main__":

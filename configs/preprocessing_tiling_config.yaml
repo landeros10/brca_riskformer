@@ -1,4 +1,4 @@
 tile_size: 224  # Size of the tile to extract from the slide
-tile_overlap: 0.75  # Overlap between tiles
-patch_foreground_ratio: 0.5  # Minimum fraction of foreground pixels in a tile
+tile_overlap: 0.1  # Overlap between tiles
+patch_foreground_ratio: 0.25  # Minimum fraction of foreground pixels in a tile
 reference_mag: 20.0  # Reference magnification level for tiling
