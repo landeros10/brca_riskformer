@@ -5,6 +5,7 @@ import logging
 
 import boto3
 import botocore
+import sagemaker
 
 logger = logging.getLogger(__name__)
 
@@ -208,3 +209,15 @@ def upload_large_files_to_bucket(
                 logger.error(f"Failed to upload {file_name}: {e}")
         else:
             logger.warning(f"Skipping: {file_path} (File not found or invalid)")
+
+
+def init_sagemaker_session(session):
+    sagemaker_session = sagemaker.Session(boto_session=session)
+    logger.debug(f"Using SageMaker session: {sagemaker_session}")
+    try:
+        role = sagemaker.get_execution_role(sagemaker_session=sagemaker_session)
+        logger.debug(f"Using IAM role from Sagemaker: {role}")
+    except Exception as e:
+        logger.warning(f"Failed to get IAM role from Sagemaker: {e}")
+        role = None
+    return sagemaker_session, role

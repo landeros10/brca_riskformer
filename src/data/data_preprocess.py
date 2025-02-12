@@ -13,6 +13,7 @@ import time
 import json
 import yaml
 import zarr
+import numcodecs
 from multiprocessing import Pool, cpu_count
 from pydantic import BaseModel, Field
 
@@ -380,7 +381,7 @@ def get_COO_coords(coords, sampling_size, tile_overlap):
 
 
 
-def save_features_zarr(output_path, coo_coords, slide_features, chunk_size=10000, compressor='blosc'):
+def save_features_zarr(output_path, coo_coords, slide_features, chunk_size=10000, compressor=None):
     """
     Saves COO-style coordinates and feature vectors to a Zarr store.
 
@@ -391,15 +392,30 @@ def save_features_zarr(output_path, coo_coords, slide_features, chunk_size=10000
         chunk_size (int): Chunk size for Zarr storage (default: 10000).
         compressor (str): Compression algorithm (default: 'blosc').
     """
+    if compressor is None:
+        compressor = numcodecs.Blosc(cname='zstd', clevel=5, shuffle=numcodecs.Blosc.BITSHUFFLE)
+
     root = zarr.open(output_path, mode='w')
     logger.debug(f"Opened Zarr store at {output_path}")
     try:
-        root.create_dataset("coords", data=coo_coords, dtype="int32", chunks=(chunk_size, 2), compressor=compressor)
+        root.create_dataset(
+                "coords",
+                data=coo_coords,
+                dtype="int32",
+                chunks=(chunk_size, 2),
+                compressor=compressor
+            )
     except Exception as e:
         logger.error(f"Failed to create dataset 'coords' in Zarr store: {e}")
         raise e
     try:
-        root.create_dataset("features", data=slide_features, dtype="float32", chunks=(chunk_size, slide_features.shape[1]), compressor=compressor)
+        root.create_dataset(
+            "features",
+            data=slide_features,
+            dtype="float32",
+            chunks=(chunk_size, slide_features.shape[1]), 
+            compressor=compressor
+        )
     except Exception as e:
         logger.error(f"Failed to create dataset 'features' in Zarr store: {e}")
         raise e

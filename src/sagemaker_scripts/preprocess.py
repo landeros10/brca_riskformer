@@ -43,8 +43,14 @@ def log_config(config, tag):
 
 def load_yaml_config(config_path, schema):
     """Load a YAML config file and validate it against a schema."""
-    if not config_path or not os.path.isfile(config_path):
-        logger.warning(f"Config file {config_path} not found or not provided. Using defaults.")
+    
+    config_path = os.path.abspath(config_path)
+    if not config_path:
+        logger.warning(f"Config file {config_path} not given. Using defaults.")
+        return schema()
+    
+    if not os.path.isfile(config_path):
+        logger.warning(f"Config file {config_path} not valid. Using defaults.")
         return schema()
 
     try:
@@ -152,9 +158,9 @@ def parse_args():
     parser.add_argument("--output_dir", type=str, default="/opt/ml/processing/output", help="Output directory")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     
-    parser.add_argument("--tiling_config", type=str, required=False, help="Tiling parameters YAML file")
     parser.add_argument("--foreground_config", type=str, required=False, help="Foreground detection YAML file")
     parser.add_argument("--foreground_cleanup_config", type=str, required=False, help="Foreground cleanup YAML file")
+    parser.add_argument("--tiling_config", type=str, required=False, help="Tiling parameters YAML file")
 
     parser.add_argument("--model_dir", type=str, required=True, help="local dir for model artifact and config files")
     parser.add_argument("--model_type", type=str, default="resnet50", help="Model type")
@@ -162,8 +168,6 @@ def parse_args():
     parser.add_argument("--num_workers", type=int, default=16, help="Number of workers for DataLoader")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for DataLoader")
     parser.add_argument("--prefetch_factor", type=int, default=2, help="Prefetch factor for DataLoader")
-
-    parser.add_argument("--zarr_compressor", type=str, default="blosc", help="Compressor for Zarr file")
     args = parser.parse_args()
     logger.info("Arguments parsed successfully.")
 
@@ -175,7 +179,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    
+
     logger_setup(debug=args.debug)
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
     logger.info(f"Input filename: {args.input_filename}")
@@ -201,6 +205,11 @@ def main():
     if len(sample_coords) == 0:
         logger.error(f"No valid sample points found for {args.input_filename}")
         return
+    
+    if args.debug:
+        cutoff_size = args.batch_size * 2
+        logger.debug(f"*** Cutting off coords length to {cutoff_size} for debug testing ***")
+        sample_coords = sample_coords[:cutoff_size]
 
     if thumb is not None and heatmap is not None:
         logger.info(f"[Saving thumbnail and heatmap to output directory {args.output_dir}]")
@@ -247,6 +256,7 @@ def main():
     logger.info("=" * 50)
 
     # Feature Extraction
+    logger.info("Extracting features from sampled images...")
     try:
         slide_features = extract_features(
             slide_dataset=slide_dataset,
@@ -280,7 +290,6 @@ def main():
             coo_coords=coo_coords,
             slide_features=slide_features,
             chunk_size=min(5000, max(1000, slide_features.shape[0] // 4)),
-            compressor=args.zarr_compressor,
         )
     except Exception as e:
         logger.error(f"Failed to save feature vectors to zarr file. Error: {e}")

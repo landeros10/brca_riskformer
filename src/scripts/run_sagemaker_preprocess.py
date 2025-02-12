@@ -12,7 +12,7 @@ import sagemaker
 from sagemaker.processing import ScriptProcessor, ProcessingInput, ProcessingOutput
 
 from src.logger_config import logger_setup
-from src.aws_utils import initialize_s3_client
+from src.aws_utils import initialize_s3_client, init_sagemaker_session
 from src.utils import load_slide_paths
 logger = logging.getLogger(__name__)
 
@@ -49,14 +49,11 @@ def main():
     logger.debug(f"Using AWS region: {args.region}")
     logger.debug("Initialized S3 client.")
 
-    sagemaker_session = sagemaker.Session(boto_session=session)
-    logger.debug(f"Using SageMaker session: {sagemaker_session}")
     try:
-        role = sagemaker.get_execution_role(sagemaker_session=sagemaker_session)
-        logger.debug(f"Using IAM role from Sagemaker: {role}")
+        sagemaker_session, role = init_sagemaker_session(session)
     except Exception as e:
-        logger.warning(f"Failed to get IAM role from Sagemaker: {e}")
-        role = None
+        logger.error(f"Failed to initialize SageMaker session: {e}")
+        return
     
     processor = ScriptProcessor(
         role=role,
