@@ -159,8 +159,9 @@ def parse_args():
     parser.add_argument("--model_dir", type=str, required=True, help="local dir for model artifact and config files")
     parser.add_argument("--model_type", type=str, default="resnet50", help="Model type")
 
-    parser.add_argument("--num_workers", type=int, default=1, help="Number of workers for DataLoader")
+    parser.add_argument("--num_workers", type=int, default=16, help="Number of workers for DataLoader")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for DataLoader")
+    parser.add_argument("--prefetch_factor", type=int, default=2, help="Prefetch factor for DataLoader")
 
     parser.add_argument("--zarr_compressor", type=str, default="blosc", help="Compressor for Zarr file")
     args = parser.parse_args()
@@ -253,6 +254,7 @@ def main():
             device=device,
             num_workers=args.num_workers,
             batch_size=args.batch_size,
+            prefetch_factor=args.prefetch_factor,
         )
     except Exception as e:
         logger.error(f"Failed to extract features. Error: {e}")

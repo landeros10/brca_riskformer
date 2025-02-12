@@ -9,6 +9,7 @@ import logging
 from typing import Type
 
 import os
+import time
 import json
 import yaml
 import zarr
@@ -208,7 +209,7 @@ def load_uni_encoder(model_path, config_files):
     
     try:
         model.load_state_dict(
-            torch.load(model_path, map_location="cpu"),
+            torch.load(model_path, map_location="cpu", weights_only=False),
             strict=True
             )
         logger.info(f"Loaded UNI2-h model weights from {model_path}")
@@ -249,7 +250,7 @@ def load_resnet_encoder(model_path, config_files, resnet_type):
     try:
         model = timm.create_model(f'resnet{resnet_type}', pretrained=True)
         if model_path and os.path.isfile(model_path):
-            model.load_state_dict(torch.load(model_path, map_location="cpu"), strict=False)
+            model.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=False), strict=False)
             logger.info(f"Loaded ResNet{resnet_type} model weights from {model_path}")
         else:
             logger.info("Using pre-trained ResNet model weights.")
@@ -303,7 +304,7 @@ def load_encoder(model_type, model_path, config_files):
     return model, transform
 
 
-def extract_features(slide_dataset, model, device, num_workers=1, batch_size=256):
+def extract_features(slide_dataset, model, device, num_workers=1, batch_size=256, prefetch_factor=2):
     """
     Extract features from the slide dataset using the given model.
     
@@ -317,33 +318,46 @@ def extract_features(slide_dataset, model, device, num_workers=1, batch_size=256
     Returns:
         features_array (np.ndarray): The extracted features of shape (len(slide_dataset), feature_dim).
     """
-    dataloader = DataLoader(slide_dataset, batch_size=batch_size, num_workers=num_workers)
+    dataloader = DataLoader(
+        slide_dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=False,
+        persistent_workers=True,
+        prefetch_factor=prefetch_factor,
+    )
     logger.debug(f"DataLoader initialized with {num_workers} workers and batch size {batch_size}")
 
-    # Run test:
-    logger.debug('Running test batch...')
-    test_batch = next(iter(dataloader))
-    with torch.no_grad():
-        test_feats = model(test_batch).detach().cpu().numpy()
-    logger.debug(f"Test batch output shape: {test_feats.shape}")
-
-    features = []
+    torch.backends.mkldnn.enabled = True
     model.eval()
+    if device.type == "cpu":
+        try:
+            model = torch.jit.script(model)
+            logger.info("JIT optimization enabled.")
+        except Exception as e:
+            logger.warning(f"JIT compilation failed: {e}. Running model without JIT.")
+
     logger.debug('Extracting features...')
     n_batches = len(slide_dataset) // batch_size + 1
     count = 0
-    with torch.no_grad():
-        for batch_images in dataloader:
-            batch_images = batch_images.to(device)
-            batch_features = model(batch_images)
-            batch_features = batch_features.detach().cpu().numpy()
-            features.append(batch_features)
+    start_time = time.time()
 
-            count += 1
-            logger.debug(f"Processed batch {count}/{n_batches} ({(count/n_batches)*100:.2f}%)")
+    feature_dim = model(torch.randn(1, *slide_dataset[0].shape).to(device)).shape[1]
+    start_idx = 0
+    features = np.empty((len(slide_dataset), feature_dim), dtype=np.float32)
+    with torch.inference_mode():
+        for count, batch_images in enumerate(dataloader):
+            batch_images = batch_images.to(device, dtype=torch.float32)
+            batch_features = model(batch_images).cpu().numpy().astype(np.float32)
 
-    features_array = np.concatenate(features, axis=0)
-    return features_array
+            end_idx = start_idx + batch_images.shape[0]
+            features[start_idx:end_idx, :] = batch_features
+            start_idx = end_idx
+            
+            if count % 10 == 0:
+                current_time = time.time()
+                logger.debug(f"({(current_time - start_time)/60:.2f}m) -Processed batch {count}/{n_batches} ({(count/n_batches)*100:.2f}%)")
+    return features
 
 
 def get_COO_coords(coords, sampling_size, tile_overlap):
