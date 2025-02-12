@@ -289,6 +289,11 @@ def load_encoder(model_type, model_path, config_files):
             resnet_version = "50"
         
         model, transform = load_resnet_encoder(model_path, config_files, resnet_version)
+    
+    # TODO - Load SimCLR tensorflow model somehow
+    elif model_type == "simclr":
+        logger.warning("SimCLR model not supported yet.")
+        raise NotImplementedError("SimCLR model not supported yet.")
 
     else:
         logger.warning("Model type not supported. Using ResNet50 as default.")
