@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""
+run_preprocess.py
+
+Orchestrates a preprocessing job over new files in S3.
+
+Author: landeros10
+Created: 2025-12-05
+"""
+import os
+import json
+import logging
+import argparse
+import subprocess
+
+from src.logger_config import logger_setup
+from src.aws_utils import initialize_s3_client, list_bucket_files
+
+logger = logging.getLogger(__name__)
+
+
+def load_dataset_files(s3_client, args, project_root):
+    raw_files = list_bucket_files(s3_client, args.bucket, args.input_dir)
+    logger.info(f"Found {len(raw_files)} files in {args.input_dir}...")
+    processed_files = list_bucket_files(s3_client, args.bucket, args.output_dir)
+    logger.info(f"Found {len(processed_files)} files in {args.output_dir}...")
+
+    logger.info("Loading riskformer dataset metadata...")
+    metadata_file = os.path.join(project_root, args.metadata_file)
+    riskformer_dataset = json.load(open(metadata_file, "r"))
+    logger.debug(f"First 5 keys in riskformer dataset: {list(riskformer_dataset.keys())[:5]}")
+
+    to_process = [file.split("/")[1] for file in raw_files if file.endswith(".svs")]
+    logger.debug(f"Now filtered to {len(to_process)} .svs files")
+
+    logger.debug(f"file to keys map: {to_process[0]}: {to_process[0].split('.svs')[0]}")
+    to_process = [file for file in to_process if file.split(".svs")[0] in riskformer_dataset.keys()]
+    logger.debug(f"Now filtered to {len(to_process)} files in riskformer dataset")
+
+    to_process = [file for file in to_process if file not in processed_files]
+
+    return to_process
+
+
+def download_s3_model_files(s3_client, args, model_dir):
+    logger.debug(f"Downloading model files from s3://{args.model_bucket}/{args.model_key} to {model_dir}")
+
+    model_files = list_bucket_files(s3_client, args.model_bucket, args.model_key)
+    logger.debug(f"Found {len(model_files)} model files in {args.model_key}...")
+    for file in model_files:
+        logger.debug(f"Found file: {file}")
+        file_name = os.path.basename(file)
+        local_file_path = os.path.join(model_dir, file_name)
+        if not os.path.exists(local_file_path):
+            logger.info(f"Downloading s3://{args.model_bucket}/{args.model_key}/{file_name} to {local_file_path}")
+            s3_client.download_file(args.model_bucket, file, local_file_path)
+        else:
+            logger.info(f"File {local_file_path} already exists, skipping download.")
+    return model_files
+
+
+def arg_parse():
+    """
+    Parse command line arguments.
+    """
+    parser = argparse.ArgumentParser(description="Data loading / Preprocessing Orchestrator")
+    parser.add_argument("--profile", type=str, default="651340551631_AWSPowerUserAccess",
+                        help="AWS profile name")
+    parser.add_argument("--bucket", type=str, default="tcga-riskformer-data-2025",
+                        help="S3 bucket name")
+    parser.add_argument("--region", type=str, default="us-east-1", help="AWS region")
+    parser.add_argument("--input_dir", type=str, default="raw", help="Path (prefix) to input data in S3")
+    parser.add_argument("--output_dir", type=str, default="preprocessed", help="Path (prefix) to output data in S3")
+
+    parser.add_argument("--metadata_file", type=str, default="resources/riskformer_slides.json",)
+
+    parser.add_argument("--tiling_config", type=str, default="configs/tiling_config.yaml",
+                        help="Tiling parameters YAML file")
+    parser.add_argument("--foreground_config", type=str, default="configs/foreground_config.yaml",
+                        help="Foreground detection YAML file")
+    parser.add_argument("--foreground_cleanup_config", type=str, default="configs/foreground_cleanup.yaml",
+                        help="Foreground cleanup YAML file")
+
+    parser.add_argument("--model_bucket", type=str, default="tcga-riskformer-preprocessing-models",)
+    parser.add_argument("--model_key", type=str, default="uni/uni2-h", help="local dir for model artifact and config files")
+    parser.add_argument("--model_type", type=str, default="uni", help="Model type")
+
+    parser.add_argument("--batch_size", type=int, default=64, help="Batch size for preprocessing")
+    parser.add_argument("--prefetch_factor", type=int, default=2, help="Prefetch factor for DataLoader")
+
+    parser.add_argument("--ecr_uri", type=str, default="651340551631.dkr.ecr.us-east-1.amazonaws.com/brca-riskformer/pytorch-svs-preprocess",)
+
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    args = parser.parse_args()
+    logger.info("Arguments parsed successfully.")
+
+    for key, value in vars(args).items():
+        logger.info(f"{key}: {value}")
+
+    return args
+
+
+def main():
+    args = arg_parse()
+    logger_setup(debug=args.debug)
+    logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    logger.info(f"Project root: {project_root}")
+
+    os.environ["AWS_REGION"] = args.region
+    s3_client, session = initialize_s3_client(
+        args.profile,
+        region_name=args.region,
+        return_session=True
+    )
+    logger.debug(f"Using AWS profile: {args.profile}, region: {args.region}")
+
+    # Load dataset files
+    to_process = load_dataset_files(s3_client, args, project_root)
+    logger.info(f"Need to process {len(to_process)} new .svs files")
+
+    # Download model files
+    tmp_dir = os.path.join(project_root, "tmp")
+    model_dir = os.path.join(tmp_dir, args.model_key)
+    os.makedirs(tmp_dir, exist_ok=True)
+    os.makedirs(model_dir, exist_ok=True)
+
+    model_files = download_s3_model_files(s3_client, args, model_dir)
+    logger.info(f"Downloaded {len(model_files)} model files to {model_dir}")
+
+    # Set up Arguments
+    foreground_config = os.path.join(project_root, args.foreground_config)
+    foreground_cleanup_config = os.path.join(project_root, args.foreground_cleanup_config)
+    tiling_config = os.path.join(project_root, args.tiling_config)
+
+    logger.info(f"Starting preprocessing for {len(to_process)} files...")
+    logger.info("Using the following parameters:")
+    logger.info(f"foreground_config: {foreground_config}")
+    logger.info(f"foreground_cleanup_config: {foreground_cleanup_config}")
+    logger.info(f"tiling_config: {tiling_config}")
+    logger.info(f"model_dir: {model_dir}")
+    logger.info(f"model_type: {args.model_type}")
+    logger.info(f"num_workers: 1")
+    logger.info(f"batch_size: {args.batch_size}")
+    logger.info(f"prefetch_factor: {args.prefetch_factor}")
+    
+    for raw_key in to_process:
+        raw_s3_path = f"s3://{args.bucket}/{args.input_dir}/{raw_key}"
+        out_s3_dir = f"s3://{args.bucket}/{args.output_dir}"
+
+        cmd = [
+            "python", "-m", "src.scripts.preprocess",
+            "--input_filename", raw_s3_path,
+            "--output_dir", out_s3_dir,
+            "--foreground_config", foreground_config,
+            "--foreground_cleanup_config", foreground_cleanup_config,
+            "--tiling_config", tiling_config,
+            "--model_dir", model_dir,
+            "--model_type", args.model_type,
+            "--num_workers", "1",
+            "--batch_size", args.batch_size,
+            "--prefetch_factor", str(args.prefetch_factor),
+        ]
+        if args.debug:
+            cmd.append("--debug")
+
+        logger.info(f"Running command: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd, check=True)
+            logger.info(f"Preprocessing completed for {raw_s3_path}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error during preprocessing: {e}")
+            continue
+        break
+        
+
+    logger.info("All done!")
+
+if __name__ == "__main__":
+    main()

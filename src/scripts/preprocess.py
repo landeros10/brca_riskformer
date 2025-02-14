@@ -16,7 +16,6 @@ from src.data.data_preprocess import (get_svs_samplepoints, load_encoder, extrac
                                       TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema,
                                       save_features_zarr,)
 from src.data.datasets import SingleSlideDataset
-from src.aws_utils import initialize_s3_client
 logger = logging.getLogger(__name__)
 
 MODEL_EXTS = [".pth", ".bin", ".pt"]

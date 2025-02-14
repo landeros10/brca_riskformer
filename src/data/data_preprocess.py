@@ -160,10 +160,10 @@ def load_dino_encoder(model_path):
 def load_uni_encoder(model_path, config_files):
     """ Load the UNI2-h model with predefined timm_kwargs.
     Default timm_kwargs are loaded from DefaultUni2hConfig. Default transform:
-        # transforms.Resize(224),
-        # transforms.CenterCrop(224),
-        # transforms.ToTensor(),
-        # transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        transforms.Resize(224),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
 
     Args:
         model_path (str): path to the model file.

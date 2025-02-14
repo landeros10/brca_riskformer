@@ -221,3 +221,94 @@ def init_sagemaker_session(session):
         logger.warning(f"Failed to get IAM role from Sagemaker: {e}")
         role = None
     return sagemaker_session, role
+
+
+def isfile_s3_or_local(path, s3_client=None):
+    """
+    Check if a file exists in S3 or locally.
+
+    Args:
+        path (str): Path to the file.
+
+    Returns:
+        bool: True if the file exists, False otherwise.
+    """
+    if path.startswith("s3://"):
+        bucket_name, key = path[5:].split("/")[1:]
+        try:
+            s3_client.head_object(Bucket=bucket_name, Key=key)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to verify S3 object: {e}")
+            return False
+    else:
+        return os.path.isfile(path)
+    
+
+def exists_s3_or_local(path, s3_client=None):
+    """
+    Check if a given path (local or S3) exists.
+
+    Args:
+        path (str): The path or S3 URI.
+        s3_client (boto3.client, optional): The S3 client, required if path is S3.
+
+    Returns:
+        bool: True if the path exists, False otherwise.
+    """
+    if path.startswith("s3://"):
+        # Extract bucket and key from 's3://bucket/key...'
+        bucket_name, key = path[5:].split("/", 1)
+        try:
+            # If there are any objects with this prefix, we consider it existing in S3
+            response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=key)
+            return "Contents" in response
+        except Exception as e:
+            logger.error(f"Failed to list S3 objects: {e}")
+            return False
+    else:
+        return os.path.exists(path)
+
+
+def isdir_s3_or_local(path, s3_client=None):
+    """
+    Check if a given path (local or S3) behaves like a directory.
+
+    Args:
+        path (str): The path or S3 URI.
+        s3_client (boto3.client, optional): The S3 client, required if path is S3.
+
+    Returns:
+        bool: True if the path is considered a directory, False otherwise.
+    """
+    if path.startswith("s3://"):
+        bucket_name, key = path[5:].split("/", 1)
+        # Ensure we treat this as a "folder" prefix in S3 by adding a trailing slash if needed
+        if not key.endswith("/"):
+            key += "/"
+        try:
+            # Using Delimiter="/", we can check if any objects or subfolders exist under that prefix
+            response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=key, Delimiter="/")
+            return "CommonPrefixes" in response or "Contents" in response
+        except Exception as e:
+            logger.error(f"Failed to list S3 objects for directory check: {e}")
+            return False
+    else:
+        return os.path.isdir(path)
+    
+
+def listdir_s3_or_local(path, s3_client=None):
+    """
+    List files in a directory (local or S3).
+    Args:
+        path (str): The path or S3 URI.
+        s3_client (boto3.client, optional): The S3 client, required if path is S3.
+    
+    Returns:
+        list: List of files in the directory.
+    """
+    if path.startswith("s3://"):
+        bucket_name, key = path[5:].split("/", 1)
+        return list_bucket_files(s3_client, bucket_name, key)
+    else:
+        return os.listdir(path)

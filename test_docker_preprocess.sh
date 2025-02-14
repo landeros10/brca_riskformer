@@ -53,7 +53,7 @@ docker run --rm \
     -v "$OUTPUTS_DIR":"$WORKSPACE_ROOT/outputs" \
     -w "$WORKSPACE_ROOT" \
     "$IMAGE_NAME" \
-    -m src.sagemaker_scripts.preprocess \
+    -m src.scripts.preprocess \
         --foreground_config "$FOREGROUND_CONFIG" \
         --foreground_cleanup_config "$FOREGROUND_CLEANUP_CONFIG" \
         --tiling_config "$TILING_CONFIG" \
