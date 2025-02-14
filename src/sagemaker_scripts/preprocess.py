@@ -206,11 +206,6 @@ def main():
         logger.error(f"No valid sample points found for {args.input_filename}")
         return
     
-    if args.debug:
-        cutoff_size = args.batch_size * 2
-        logger.debug(f"*** Cutting off coords length to {cutoff_size} for debug testing ***")
-        sample_coords = sample_coords[:cutoff_size]
-
     if thumb is not None and heatmap is not None:
         logger.info(f"[Saving thumbnail and heatmap to output directory {args.output_dir}]")
         thumb_file = os.path.join(args.output_dir, f"{os.path.basename(args.input_filename)}_thumbnail.png")
