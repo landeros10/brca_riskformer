@@ -45,6 +45,7 @@ DATA_BUCKET="tcga-riskformer-data-2025"
 REGION="us-east-1"
 INPUT_DIR="raw"
 OUTPUT_DIR="preprocessed"
+AWS_CREDENTIALS="$HOME/.aws/credentials"
 
 # ==============================
 # Run the Docker Container
@@ -52,6 +53,7 @@ OUTPUT_DIR="preprocessed"
 
 docker run --rm \
     --user root \
+    -v "$AWS_CREDENTIALS":"$HOME/.aws/credentials" \
     -v "$SRC_DIR":"$WORKSPACE_ROOT/src" \
     -v "$RESOURCES_DIR":"$WORKSPACE_ROOT/resources" \
     -v "$CONFIGS_DIR":"$WORKSPACE_ROOT/configs" \
