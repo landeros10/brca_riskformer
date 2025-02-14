@@ -28,6 +28,9 @@ from timm.data.transforms_factory import create_transform # type: ignore
 
 from riskformer.utils.randstainna import RandStainNA
 from riskformer.utils.data_utils import (open_svs, get_slide_samplepoints,)
+from riskformer.utils.logger_config import log_config
+from riskformer.utils.config_utils import load_yaml_config
+
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +52,8 @@ class ForegroundCleanupConfigSchema(BaseModel):
     max_height_ratio: float = Field(default=0.75, description="Percentage of the mask height covered to consider as aberrant.")
 
 
-# This was designed for images taken at (1/4) resolution of 20X
 class TilingConfigSchema(BaseModel):
+    # This was designed for images taken at (1/4) resolution of 20X
     tile_size: int = Field(default=256, description="Size of the tile to extract from the slide.")
     tile_overlap: float = Field(default=0.1, description="Overlap between tiles.")
     patch_foreground_ratio: float = Field(default=0.5, description="Minimum fraction of foreground pixels in a tile.")
@@ -79,6 +82,8 @@ DEFAULT_FOREGROUND_CLEANUP_CONFIG = ForegroundCleanupConfigSchema().model_dump()
 DEFAULT_TILING_CONFIG = TilingConfigSchema().model_dump()
 DEFAULT_UNI_CONFIG = DefaultUni2hConfig().model_dump()
 
+MODEL_EXTS = [".pth", ".bin", ".pt"]
+CONFIG_EXTS = [".json", ".yaml", ".yml"]
 
 def get_svs_samplepoints(
     svs_file, 
@@ -258,7 +263,7 @@ def load_resnet_encoder(model_path, config_files, resnet_type):
     return model, transform
 
 
-def load_encoder(model_type, model_path, config_files):
+def select_and_load_encoder(model_type, model_path, config_files):
     """
     Load the encoder model based on the given model type.
     
@@ -415,3 +420,86 @@ def save_features_zarr(output_path, coo_coords, slide_features, chunk_size=10000
         logger.error(f"Failed to create dataset 'features' in Zarr store: {e}")
         raise e
     
+
+def load_preprocessing_configs(args):
+    tiling_config = load_yaml_config(args.tiling_config, TilingConfigSchema)
+    foreground_config = load_yaml_config(args.foreground_config, ForegroundConfigSchema)
+    foreground_cleanup_config = load_yaml_config(args.foreground_cleanup_config, ForegroundCleanupConfigSchema)
+    
+    log_config(logger, tiling_config, "Tiling Parameters")
+    log_config(logger, foreground_config, "Foreground Detection Parameters")
+    log_config(logger, foreground_cleanup_config, "Foreground Cleanup Parameters")
+
+    return {
+        "tiling_config": tiling_config,
+        "foreground_config": foreground_config,
+        "foreground_cleanup_config": foreground_cleanup_config,
+    }
+
+
+def retrieve_encoder_files(model_dir):
+    """
+    Find model and config files in the given directory.
+    Args:
+        model_dir (str): The directory to search for model and config files.
+        
+    Returns:
+        tuple: A tuple containing the model path and a dictionary of config files.
+    """
+    model_path = None
+    config_files = {}
+
+    if not os.path.exists(model_dir) or not os.path.isdir(model_dir):
+        logger.error(f"Model directory '{model_dir}' does not exist or is not a directory.")
+        return model_path, config_files
+
+    # Scan local directory for model and config files
+    for file in os.listdir(model_dir):
+        file_path = os.path.join(model_dir, file)
+        if os.path.isfile(file_path):
+            if file.endswith(tuple(MODEL_EXTS)) and model_path is None:
+                model_path = file_path
+            elif file.endswith(tuple(MODEL_EXTS)):
+                logger.warning(f"Found multiple model files. Using: {model_path}, ignoring: {file_path}")
+            elif file.endswith(tuple(CONFIG_EXTS)):
+                config_name = os.path.splitext(file)[0]
+                config_files[config_name] = file_path
+            else:
+                logger.warning(f"Found unexpected file type: {file}")
+
+    # Ensure a model file is found
+    if model_path is None:
+        logger.error(f"No valid model file found in {model_dir}")
+        return model_path, config_files
+
+    if not config_files:
+        logger.warning("No model config files found! Using default model config.")
+
+    return model_path, config_files
+
+
+def load_encoder(model_dir, model_type):
+    """
+    Load the feature extractor model from a local directory.
+
+    Args:
+        model_dir (str): The local directory containing the model and config files.
+        model_type (str): The model type.
+
+    Returns:
+        model: The loaded model.
+    """
+    model = None
+    transform = None
+    model_path, config_files = retrieve_encoder_files(model_dir)
+    if model_path is None:
+        logger.warning("No model file found in the specified directory.")
+
+    # Load model
+    try:
+        model, transform = select_and_load_encoder(model_type, model_path, config_files)
+    except Exception as e:
+        logger.error(f"Failed to load model from {model_path}. Error: {e}")
+    return model, transform
+
+
