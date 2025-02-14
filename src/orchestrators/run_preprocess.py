@@ -149,6 +149,8 @@ def main():
     # Download model files
     tmp_dir = os.path.join(project_root, "tmp")
     model_dir = os.path.join(tmp_dir, args.model_key)
+    local_input_dir = os.path.join(tmp_dir, args.input_dir)
+    local_out_dir = os.path.join(tmp_dir, args.output_dir)
     os.makedirs(tmp_dir, exist_ok=True)
     os.makedirs(f"{tmp_dir}/{args.input_dir}", exist_ok=True)
     os.makedirs(f"{tmp_dir}/{args.output_dir}", exist_ok=True)
@@ -182,7 +184,7 @@ def main():
         out_s3_dir = f"s3://{args.bucket}/{args.output_dir}"
 
         # TODO - download svs file to matching tmp/args.input_dir
-        local_file_path = os.path.join(tmp_dir, args.input_dir, raw_key)
+        local_file_path = os.path.join(local_input_dir, raw_key)
         logger.info(f"Downloading {raw_s3_path} to {local_file_path}")
         s3_client.download_file(args.bucket, f"{args.input_dir}/{raw_key}", local_file_path)
         
@@ -190,7 +192,7 @@ def main():
         cmd = [
             "python", "-m", "src.scripts.preprocess",
             "--input_filename", local_file_path,
-            "--output_dir", out_s3_dir,
+            "--output_dir", local_out_dir,
             "--foreground_config", foreground_config,
             "--foreground_cleanup_config", foreground_cleanup_config,
             "--tiling_config", tiling_config,
