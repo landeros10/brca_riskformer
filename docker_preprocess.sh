@@ -53,7 +53,7 @@ AWS_CREDENTIALS="$HOME/.aws/credentials"
 
 docker run --rm \
     --user root \
-    -v "$AWS_CREDENTIALS":"$WORKSPACE_ROOT/.aws/credentials" \
+    -v "$AWS_CREDENTIALS":"~/.aws/credentials" \
     -v "$SRC_DIR":"$WORKSPACE_ROOT/src" \
     -v "$RESOURCES_DIR":"$WORKSPACE_ROOT/resources" \
     -v "$CONFIGS_DIR":"$WORKSPACE_ROOT/configs" \
