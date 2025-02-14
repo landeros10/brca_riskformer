@@ -155,7 +155,7 @@ def load_encoder_wrapper(model_dir, model_type):
 def parse_args():
     parser = argparse.ArgumentParser(description="Preprocessing pipeline for SVS slides in SageMaker")
     parser.add_argument("--input_filename", type=str, required=True, help="Input filename")
-    parser.add_argument("--output_dir", type=str, default="/opt/ml/processing/output", help="Output directory")
+    parser.add_argument("--output_dir", type=str, default="./output", help="Output directory")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     
     parser.add_argument("--foreground_config", type=str, required=False, help="Foreground detection YAML file")
