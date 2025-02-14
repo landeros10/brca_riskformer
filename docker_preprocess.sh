@@ -51,7 +51,7 @@ AWS_CREDENTIALS="$HOME/.aws/credentials"
 # Run the Docker Container
 # ==============================
 
-docker run --rm \
+docker run --rm --gpus all\
     --user root \
     -v "$AWS_CREDENTIALS":"/root/.aws/credentials" \
     -v "$SRC_DIR":"$WORKSPACE_ROOT/src" \
