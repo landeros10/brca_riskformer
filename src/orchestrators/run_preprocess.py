@@ -150,6 +150,8 @@ def main():
     tmp_dir = os.path.join(project_root, "tmp")
     model_dir = os.path.join(tmp_dir, args.model_key)
     os.makedirs(tmp_dir, exist_ok=True)
+    os.makedirs(f"{tmp_dir}/{args.input_dir}", exist_ok=True)
+    os.makedirs(f"{tmp_dir}/{args.output_dir}", exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
     model_files = download_s3_model_files(s3_client, args, model_dir)
