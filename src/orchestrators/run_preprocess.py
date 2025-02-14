@@ -170,7 +170,7 @@ def main():
     logger.info(f"tiling_config: {tiling_config}")
     logger.info(f"model_dir: {model_dir}")
     logger.info(f"model_type: {args.model_type}")
-    logger.info(f"num_workers: 1")
+    logger.info(f"num_workers: {args.num_workers}")
     logger.info(f"batch_size: {args.batch_size}")
     logger.info(f"prefetch_factor: {args.prefetch_factor}")
     logger.info(f"output_dir: {local_out_dir}")
@@ -193,7 +193,7 @@ def main():
             "--model_dir", model_dir,
             "--model_type", args.model_type,
             "--num_workers", str(args.num_workers),
-            "--batch_size", args.batch_size,
+            "--batch_size", str(args.batch_size),
             "--prefetch_factor", str(args.prefetch_factor),
         ]
         if args.debug:
