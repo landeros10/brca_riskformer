@@ -79,10 +79,10 @@ class DefaultUni2hConfig(BaseModel):
     dynamic_img_size: bool = Field(default=True, description="Dynamic image size")
 
 
-DEFAULT_FOREGROUND_CONFIG = ForegroundConfigSchema().dict()
-DEFAULT_FOREGROUND_CLEANUP_CONFIG = ForegroundCleanupConfigSchema().dict()
-DEFAULT_TILING_CONFIG = TilingConfigSchema().dict()
-DEFAULT_UNI_CONFIG = DefaultUni2hConfig().dict()
+DEFAULT_FOREGROUND_CONFIG = ForegroundConfigSchema().model_dump()
+DEFAULT_FOREGROUND_CLEANUP_CONFIG = ForegroundCleanupConfigSchema().model_dump()
+DEFAULT_TILING_CONFIG = TilingConfigSchema().model_dump()
+DEFAULT_UNI_CONFIG = DefaultUni2hConfig().model_dump()
 
 
 def get_svs_samplepoints(
@@ -193,9 +193,9 @@ def load_uni_encoder(model_path, config_files):
     
     if not timm_kwargs:
         logger.debug("No valid config files given. Using default timm_kwargs.")
-        timm_kwargs = DefaultUni2hConfig().dict().copy()
+        timm_kwargs = DefaultUni2hConfig().model_dump().copy()
     else:
-        default_config =  DefaultUni2hConfig().dict()
+        default_config =  DefaultUni2hConfig().model_dump()
         default_config.update(timm_kwargs)
         timm_kwargs = default_config.copy()
     
