@@ -181,6 +181,7 @@ def main():
 
         # TODO - download svs file to matching tmp/args.input_dir
         local_file_path = os.path.join(tmp_dir, args.input_dir, raw_key)
+        logger.info(f"Downloading {raw_s3_path} to {local_file_path}")
         s3_client.download_file(args.bucket, f"{args.input_dir}/{raw_key}", local_file_path)
         
 
