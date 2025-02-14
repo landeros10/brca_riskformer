@@ -46,6 +46,7 @@ REGION="us-east-1"
 INPUT_DIR="raw"
 OUTPUT_DIR="preprocessed"
 AWS_CREDENTIALS="$HOME/.aws/credentials"
+INSTNCE_ID="i-08a58080616278d9c"
 
 # ==============================
 # Run the Docker Container
