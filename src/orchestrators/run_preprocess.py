@@ -14,7 +14,7 @@ import argparse
 import subprocess
 
 from src.logger_config import logger_setup
-from src.aws_utils import initialize_s3_client, list_bucket_files
+from src.aws_utils import initialize_s3_client, list_bucket_files, upload_large_files_to_bucket
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,30 @@ def download_s3_model_files(s3_client, args, model_dir):
     return model_files
 
 
+def upload_preprocessing_results(s3_client, args, local_out_dir):
+    """
+    Uploads the preprocessing results to S3.
+    """
+    logger.debug(f"Uploading results from {local_out_dir} to s3://{args.bucket}/{args.output_dir}")
+    for filename in os.listdir(local_out_dir):
+        local_file_path = os.path.join(local_out_dir, filename)
+        if os.path.isfile(local_file_path):
+            try:
+                upload_large_files_to_bucket(
+                    s3_client,
+                    bucket_name=args.bucket,
+                    files_list=[local_file_path],
+                    prefix=args.output_dir,
+                    reupload=False,
+                )
+            except Exception as e:
+                logger.error(f"Error uploading {local_file_path} to S3: {e}")
+                continue
+        else:
+            logger.warning(f"{local_file_path} is not a file, skipping upload.")
+            
+
+
 def arg_parse():
     """
     Parse command line arguments.
@@ -86,9 +110,8 @@ def arg_parse():
     parser.add_argument("--model_type", type=str, default="uni", help="Model type")
 
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for preprocessing")
+    parser.add_argument("--num_workers", type=int, default=1, help="Number of workers for DataLoader")
     parser.add_argument("--prefetch_factor", type=int, default=2, help="Prefetch factor for DataLoader")
-
-    parser.add_argument("--ecr_uri", type=str, default="651340551631.dkr.ecr.us-east-1.amazonaws.com/brca-riskformer/pytorch-svs-preprocess",)
 
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     args = parser.parse_args()
@@ -133,6 +156,9 @@ def main():
     foreground_cleanup_config = os.path.join(project_root, args.foreground_cleanup_config)
     tiling_config = os.path.join(project_root, args.tiling_config)
 
+    # save dir
+    local_out_dir = os.path.join(tmp_dir, args.output_dir)
+
     logger.info(f"Starting preprocessing for {len(to_process)} files...")
     logger.info("Using the following parameters:")
     logger.info(f"foreground_config: {foreground_config}")
@@ -143,34 +169,55 @@ def main():
     logger.info(f"num_workers: 1")
     logger.info(f"batch_size: {args.batch_size}")
     logger.info(f"prefetch_factor: {args.prefetch_factor}")
+    logger.info(f"output_dir: {local_out_dir}")
     
     for raw_key in to_process:
         raw_s3_path = f"s3://{args.bucket}/{args.input_dir}/{raw_key}"
         out_s3_dir = f"s3://{args.bucket}/{args.output_dir}"
 
+        # TODO - download svs file to matching tmp/args.input_dir
+        local_file_path = os.path.join(tmp_dir, args.input_dir, raw_key)
+        
+
         cmd = [
             "python", "-m", "src.scripts.preprocess",
-            "--input_filename", raw_s3_path,
+            "--input_filename", local_file_path,
             "--output_dir", out_s3_dir,
             "--foreground_config", foreground_config,
             "--foreground_cleanup_config", foreground_cleanup_config,
             "--tiling_config", tiling_config,
             "--model_dir", model_dir,
             "--model_type", args.model_type,
-            "--num_workers", "1",
+            "--num_workers", str(args.num_workers),
             "--batch_size", args.batch_size,
             "--prefetch_factor", str(args.prefetch_factor),
         ]
         if args.debug:
             cmd.append("--debug")
 
-        logger.info(f"Running command: {' '.join(cmd)}")
+        logger.info("Running command...")
         try:
             subprocess.run(cmd, check=True)
             logger.info(f"Preprocessing completed for {raw_s3_path}")
         except subprocess.CalledProcessError as e:
             logger.error(f"Error during preprocessing: {e}")
             continue
+
+        try:
+            upload_preprocessing_results(s3_client, args, local_out_dir)
+            logger.info(f"Uploaded preprocessing results for {out_s3_dir}")
+        except Exception as e:
+            logger.error(f"Error uploading preprocessing results: {e}")
+            continue
+
+        # remove tmp dir recursively
+        try:
+            logger.info(f"Removing tmp dir {tmp_dir}")
+            subprocess.run(["rm", "-rf", tmp_dir], check=True)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error removing tmp dir: {e}")
+            continue
+
         break
         
 
