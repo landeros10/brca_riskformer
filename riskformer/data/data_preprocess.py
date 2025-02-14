@@ -22,19 +22,14 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms # type: ignore
-import timm # type: ignore
+import timm
 from timm.data import resolve_data_config # type: ignore
 from timm.data.transforms_factory import create_transform # type: ignore
-# from src.randstainna import RandStainNA
 
-from src.logger_config import logger_setup
-from src.data.data_utils import (open_svs, get_slide_samplepoints,)
+from riskformer.utils.randstainna import RandStainNA
+from riskformer.utils.data_utils import (open_svs, get_slide_samplepoints,)
 
 logger = logging.getLogger(__name__)
-
-# yaml_file = '/home/ubuntu/notebooks/cpc_hist/src/CRC_LAB_randomTrue_n0.yaml'
-# stain_augmentor = RandStainNA(yaml_file, std_hyper=-0.0)
-# stain_normalizer = RandStainNA(yaml_file, std_hyper=-1.0)
 
 
 class ForegroundConfigSchema(BaseModel):

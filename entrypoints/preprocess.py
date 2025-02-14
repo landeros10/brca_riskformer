@@ -11,33 +11,15 @@ import os
 import torch
 from PIL import Image
 
-from src.logger_config import logger_setup
-from src.data.data_preprocess import (get_svs_samplepoints, load_encoder, extract_features, get_COO_coords,
+from riskformer.utils.logger_config import logger_setup, log_config
+from riskformer.data.data_preprocess import (get_svs_samplepoints, load_encoder, extract_features, get_COO_coords,
                                       TilingConfigSchema, ForegroundConfigSchema, ForegroundCleanupConfigSchema,
                                       save_features_zarr,)
-from src.data.datasets import SingleSlideDataset
+from riskformer.data.datasets import SingleSlideDataset
 logger = logging.getLogger(__name__)
 
 MODEL_EXTS = [".pth", ".bin", ".pt"]
 CONFIG_EXTS = [".json", ".yaml", ".yml"]
-
-def log_config(config, tag):
-    """ Logs the configuration parameters.
-    
-    Args:
-        config (dict): configuration parameters.
-        tag (str): tag for the configuration.
-    """
-    if not isinstance(config, dict):
-        try:
-            config = config.dict()
-        except Exception as e:
-            logger.warning(f"Failed to load config dict. Error: {e}")
-            raise e
-
-    logger.info(f"{tag} configuration:" + "=" * 20)
-    for key, value in config.items():
-        logger.info(f"{key}: {value}")
 
 
 def load_yaml_config(config_path, schema):
@@ -75,9 +57,9 @@ def load_preprocessing_configs(args):
     foreground_config = load_yaml_config(args.foreground_config, ForegroundConfigSchema)
     foreground_cleanup_config = load_yaml_config(args.foreground_cleanup_config, ForegroundCleanupConfigSchema)
     
-    log_config(tiling_config, "Tiling Parameters")
-    log_config(foreground_config, "Foreground Detection Parameters")
-    log_config(foreground_cleanup_config, "Foreground Cleanup Parameters")
+    log_config(logger, tiling_config, "Tiling Parameters")
+    log_config(logger, foreground_config, "Foreground Detection Parameters")
+    log_config(logger, foreground_cleanup_config, "Foreground Cleanup Parameters")
 
     return {
         "tiling_config": tiling_config,

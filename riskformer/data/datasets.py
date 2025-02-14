@@ -5,7 +5,7 @@ import zarr
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
-from src.data.data_utils import sample_slide_image
+from riskformer.utils.data_utils import sample_slide_image
 
 
 class SingleSlideDataset(Dataset):

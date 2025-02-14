@@ -723,21 +723,6 @@ def log_training_params(logger, params):
     logger.info(formatted_params)
 
 
-def set_seed(seed):
-    """
-    Set all relevant seeds for reproducibility in Python, NumPy, and PyTorch.
-        
-    Args:
-        seed (int): seed to set
-    """
-    logger.info(f"Setting random seed to {seed}")
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
 
 def save_coords_dict(coords_dict: dict, filename: str):
     """

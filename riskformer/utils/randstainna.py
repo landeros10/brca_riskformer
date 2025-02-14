@@ -5,6 +5,9 @@ from typing import Optional, Dict
 import yaml
 
 # ToDo: add documents
+# yaml_file = '/home/ubuntu/notebooks/cpc_hist/src/CRC_LAB_randomTrue_n0.yaml'
+# stain_augmentor = RandStainNA(yaml_file, std_hyper=-0.0)
+# stain_normalizer = RandStainNA(yaml_file, std_hyper=-1.0)
 
 
 class Dict2Class(object):

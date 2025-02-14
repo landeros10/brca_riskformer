@@ -30,3 +30,19 @@ def logger_setup(debug=False):
         root_logger.info("Setting up debugging for 'src' modules.")
         logging.getLogger("src").setLevel(logging.DEBUG)
         root_logger.debug("Debugging enabled for 'src' modules.")
+
+
+def log_config(logger, config, tag):
+    """ Logs the configuration parameters.
+    
+    """
+    if not isinstance(config, dict):
+        try:
+            config = config.dict()
+        except Exception as e:
+            logger.warning(f"Failed to load config dict. Error: {e}")
+            raise e
+
+    logger.info(f"{tag} configuration:" + "=" * 20)
+    for key, value in config.items():
+        logger.info(f"{key}: {value}")

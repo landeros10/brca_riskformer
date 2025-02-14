@@ -13,8 +13,8 @@ import logging
 import argparse
 import subprocess
 
-from src.logger_config import logger_setup
-from src.aws_utils import initialize_s3_client, list_bucket_files, upload_large_files_to_bucket
+from riskformer.utils.logger_config import logger_setup
+from riskformer.utils.aws_utils import initialize_s3_client, list_bucket_files, upload_large_files_to_bucket
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ def arg_parse():
     parser.add_argument("--input_dir", type=str, default="raw", help="Path (prefix) to input data in S3")
     parser.add_argument("--output_dir", type=str, default="preprocessed", help="Path (prefix) to output data in S3")
 
-    parser.add_argument("--metadata_file", type=str, default="resources/riskformer_slides.json",)
+    parser.add_argument("--metadata_file", type=str, default="resources/riskformer_slide_samples.json",)
 
     parser.add_argument("--tiling_config", type=str, default="configs/tiling_config.yaml",
                         help="Tiling parameters YAML file")
@@ -190,7 +190,7 @@ def main():
         
 
         cmd = [
-            "python", "-m", "src.scripts.preprocess",
+            "python", "-m", "entrypoints.preprocess",
             "--input_filename", local_file_path,
             "--output_dir", local_out_dir,
             "--foreground_config", foreground_config,

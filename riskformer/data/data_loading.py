@@ -7,11 +7,11 @@ import argparse
 import time
 import numpy as np
 
-from src.logger_config import logger_setup
-from src.data.data_utils import (load_slide_paths,
+from riskformer.utils.logger_config import logger_setup
+from riskformer.utils.data_utils import (load_slide_paths,
                                  initialize_s3_client,
                                  upload_large_files_to_bucket, wipe_bucket)
-from src.utils import set_seed
+from riskformer.utils.training_utils import set_seed
 logger = logging.getLogger(__name__)
 
 

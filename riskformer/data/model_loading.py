@@ -8,8 +8,9 @@ import argparse
 import time
 import numpy as np
 
-from src.logger_config import logger_setup
-from src.utils import set_seed, initialize_s3_client, upload_large_files_to_bucket, wipe_bucket
+from riskformer.utils.logger_config import logger_setup
+from riskformer.utils.training_utils import set_seed
+from riskformer.utils.aws_utils import initialize_s3_client, upload_large_files_to_bucket, wipe_bucket
 logger = logging.getLogger(__name__)
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))  # Moves up to project root
