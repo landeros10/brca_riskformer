@@ -131,11 +131,15 @@ def main():
     logger.info(f"Project root: {project_root}")
 
     os.environ["AWS_REGION"] = args.region
-    s3_client, session = initialize_s3_client(
-        args.profile,
-        region_name=args.region,
-        return_session=True
-    )
+    try:
+        s3_client, session = initialize_s3_client(
+            args.profile,
+            region_name=args.region,
+            return_session=True
+        )
+    except Exception as e:
+        logger.error(f"Couldn't initialize S3 client: {e}")
+        return
     logger.debug(f"Using AWS profile: {args.profile}, region: {args.region}")
 
     # Load dataset files
