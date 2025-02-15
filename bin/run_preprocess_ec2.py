@@ -115,10 +115,11 @@ def main():
         " && ".join(REMOTE_COMMANDS),
     ]
     logger.info(f"SSH command: {' '.join(ssh_cmd)}")
-    p = subprocess.Popen(ssh_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, universal_newlines=True)
-    for line in p.stdout:
-        logger.info(line.rstrip())
-    p.wait()
+    result = subprocess.run(ssh_cmd)
+    if result.returncode != 0:
+        logger.error(f"SSH command failed with error: {result.stderr}")
+    else:
+        logger.info(f"SSH command succeeded with output: {result.stdout}")
 
     return ec2_client
 
