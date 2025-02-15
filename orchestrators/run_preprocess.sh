@@ -56,11 +56,14 @@ INSTNCE_ID="i-08a58080616278d9c"
 # Run the Docker Container
 # ==============================
 
-docker run --rm --gpus all\
+docker run --rm --gpus all --runtime=nvidia\
     --user root \
     --ipc=host \
     --memory=0 \
     --privileged \
+    --cap-add=SYS_ADMIN --cap-add=SYS_RAWIO \
+    --device=/dev/nvidiactl --device=/dev/nvidia0 \
+    --device=/dev/nvidia-modeset --device=/dev/nvidia-uvm \
     -v "$AWS_CREDENTIALS":"/root/.aws/credentials" \
     -v "$RISKFORMER_DIR":"$WORKSPACE_ROOT/riskformer" \
     -v "$ENTRYPOINTS_DIR":"$WORKSPACE_ROOT/entrypoints" \
