@@ -5,6 +5,7 @@ import os
 import argparse
 from datetime import datetime
 import logging
+import signal
 
 DEBUG = True
 
@@ -115,11 +116,17 @@ def main():
         " && ".join(REMOTE_COMMANDS),
     ]
     logger.info(f"SSH command: {' '.join(ssh_cmd)}")
-    result = subprocess.run(ssh_cmd)
-    if result.returncode != 0:
-        logger.error(f"SSH command failed with error: {result.stderr}")
-    else:
-        logger.info(f"SSH command succeeded with output: {result.stdout}")
+    ssh_process = subprocess.Popen(ssh_cmd)
+    def handle_interrupt(signum, frame):
+        """Handle CTRL+C and terminate SSH process."""
+        logger.info("CTRL+C detected. Terminating SSH connection...")
+        ssh_process.terminate()  # Gracefully terminate SSH
+        ssh_process.wait()  # Wait for process to exit
+        logger.info("SSH connection closed. Exiting.")
+        exit(0)
+    signal.signal(signal.SIGINT, handle_interrupt)
+    ssh_process.wait()  # Wait for the SSH process to finish
+
 
     return ec2_client
 
