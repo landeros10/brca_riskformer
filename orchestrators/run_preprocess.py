@@ -19,6 +19,7 @@ from riskformer.utils.logger_config import logger_setup
 from riskformer.utils.aws_utils import initialize_s3_client, list_bucket_files, upload_large_files_to_bucket
 
 logger = logging.getLogger(__name__)
+logger_setup(log_group="preprocess", debug=True)
 
 
 def load_dataset_files(s3_client, args, project_root):
@@ -124,7 +125,6 @@ def arg_parse():
 
 def main():
     args = arg_parse()
-    logger_setup(log_group="preprocess", debug=args.debug)
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
     logging.getLogger("botocore").setLevel(logging.WARNING)
     logging.getLogger("boto3").setLevel(logging.WARNING)
