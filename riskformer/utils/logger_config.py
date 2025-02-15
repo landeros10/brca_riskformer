@@ -6,7 +6,7 @@ def logger_setup(log_group="general", debug=False):
     """Configures logging to apply DEBUG only to 'src.*' modules.
     Keeps external libraries at default levels."""
     
-    LOG_PATH = "/var/log"
+    LOG_PATH = "/var/log/brca_riskformer"
     os.makedirs(LOG_PATH, exist_ok=True)
     log_filename = f"{log_group}.log"
 
