@@ -12,7 +12,7 @@ set -x
 IMAGE_NAME="651340551631.dkr.ecr.us-east-1.amazonaws.com/brca-riskformer/pytorch-svs-preprocess"
 
 # Root directory of the project
-PROJECT_ROOT=~/brca_riskformer
+PROJECT_ROOT="/home/ec2-user/brca_riskformer"
 
 # Paths to data and configs
 RESOURCES_DIR="$PROJECT_ROOT/resources"
