@@ -37,6 +37,7 @@ BATCH_SIZE=64
 NUM_WORKERS=1
 PREFETCH_FACTOR=2
 DEBUG_FLAG="--debug"
+STOP_ON_FAIL="--stop_on_fail"
 
 
 # AWS credentials
@@ -71,9 +72,10 @@ docker run --rm --gpus all\
         --foreground_cleanup_config "$FOREGROUND_CLEANUP_CONFIG" \
         --tiling_config "$TILING_CONFIG" \
         --model_type "$MODEL_TYPE" \
-        --model_key "$MODEL_KEY" \
         --model_bucket "$MODEL_BUCKET" \
+        --model_key "$MODEL_KEY" \
         --batch_size "$BATCH_SIZE" \
         --num_workers "$NUM_WORKERS" \
         --prefetch_factor "$PREFETCH_FACTOR" \
+        $STOP_ON_FAIL \
         $DEBUG_FLAG \

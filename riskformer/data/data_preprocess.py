@@ -421,10 +421,14 @@ def save_features_zarr(output_path, coo_coords, slide_features, chunk_size=10000
         raise e
     
 
-def load_preprocessing_configs(args):
-    tiling_config = load_yaml_config(args.tiling_config, TilingConfigSchema)
-    foreground_config = load_yaml_config(args.foreground_config, ForegroundConfigSchema)
-    foreground_cleanup_config = load_yaml_config(args.foreground_cleanup_config, ForegroundCleanupConfigSchema)
+def load_preprocessing_configs(
+        foreground_config_path,
+        foreground_cleanup_config_path,
+        tiling_config_path,
+):
+    tiling_config = load_yaml_config(tiling_config_path, TilingConfigSchema)
+    foreground_config = load_yaml_config(foreground_config_path, ForegroundConfigSchema)
+    foreground_cleanup_config = load_yaml_config(foreground_cleanup_config_path, ForegroundCleanupConfigSchema)
     
     log_config(logger, tiling_config, "Tiling Parameters")
     log_config(logger, foreground_config, "Foreground Detection Parameters")

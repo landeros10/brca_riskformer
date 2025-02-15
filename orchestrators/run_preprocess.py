@@ -8,11 +8,13 @@ Author: landeros10
 Created: 2025-12-05
 """
 import os
+import shutil
 import json
 import logging
 import argparse
 import subprocess
 
+from entrypoints.preprocess import preprocess_one_slide
 from riskformer.utils.logger_config import logger_setup
 from riskformer.utils.aws_utils import initialize_s3_client, list_bucket_files, upload_large_files_to_bucket
 
@@ -82,7 +84,6 @@ def upload_preprocessing_results(s3_client, args, local_out_dir):
             logger.warning(f"{local_file_path} is not a file, skipping upload.")
             
 
-
 def arg_parse():
     """
     Parse command line arguments.
@@ -98,21 +99,19 @@ def arg_parse():
 
     parser.add_argument("--metadata_file", type=str, default="resources/riskformer_slide_samples.json",)
 
-    parser.add_argument("--tiling_config", type=str, default="configs/tiling_config.yaml",
-                        help="Tiling parameters YAML file")
-    parser.add_argument("--foreground_config", type=str, default="configs/foreground_config.yaml",
-                        help="Foreground detection YAML file")
-    parser.add_argument("--foreground_cleanup_config", type=str, default="configs/foreground_cleanup.yaml",
-                        help="Foreground cleanup YAML file")
+    parser.add_argument("--foreground_config", type=str, default="configs/foreground_config.yaml", help="Foreground detection YAML file")
+    parser.add_argument("--foreground_cleanup_config", type=str, default="configs/foreground_cleanup.yaml", help="Foreground cleanup YAML file")
+    parser.add_argument("--tiling_config", type=str, default="configs/tiling_config.yaml", help="Tiling parameters YAML file")
 
+    parser.add_argument("--model_type", type=str, default="uni", help="Model type")
     parser.add_argument("--model_bucket", type=str, default="tcga-riskformer-preprocessing-models",)
     parser.add_argument("--model_key", type=str, default="uni/uni2-h", help="local dir for model artifact and config files")
-    parser.add_argument("--model_type", type=str, default="uni", help="Model type")
 
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for preprocessing")
     parser.add_argument("--num_workers", type=int, default=1, help="Number of workers for DataLoader")
     parser.add_argument("--prefetch_factor", type=int, default=2, help="Prefetch factor for DataLoader")
 
+    parser.add_argument("--stop_on_fail", action="store_true", help="Stop on first slide failure")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     args = parser.parse_args()
     logger.info("Arguments parsed successfully.")
@@ -183,54 +182,37 @@ def main():
         raw_s3_path = f"s3://{args.bucket}/{args.input_dir}/{raw_key}"
         out_s3_dir = f"s3://{args.bucket}/{args.output_dir}"
 
-        # TODO - download svs file to matching tmp/args.input_dir
         local_file_path = os.path.join(local_input_dir, raw_key)
         logger.info(f"Downloading {raw_s3_path} to {local_file_path}")
         s3_client.download_file(args.bucket, f"{args.input_dir}/{raw_key}", local_file_path)
         
-
-        cmd = [
-            "python", "-m", "entrypoints.preprocess",
-            "--input_filename", local_file_path,
-            "--output_dir", local_out_dir,
-            "--foreground_config", foreground_config,
-            "--foreground_cleanup_config", foreground_cleanup_config,
-            "--tiling_config", tiling_config,
-            "--model_dir", model_dir,
-            "--model_type", args.model_type,
-            "--num_workers", str(args.num_workers),
-            "--batch_size", str(args.batch_size),
-            "--prefetch_factor", str(args.prefetch_factor),
-        ]
-        if args.debug:
-            cmd.append("--debug")
-
-        logger.info("Running command...")
         try:
-            subprocess.run(cmd, check=True)
-            logger.info(f"Preprocessing completed for {raw_s3_path}")
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error during preprocessing: {e}")
-            continue
-
-        try:
+            preprocess_one_slide(
+                input_filename=local_file_path,
+                output_dir=local_out_dir,
+                model_dir=model_dir,
+                model_type=args.model_type,
+                foreground_config_path=foreground_config,
+                foreground_cleanup_config_path=foreground_cleanup_config,
+                tiling_config_path=tiling_config,
+                num_workers=args.num_workers,
+                batch_size=args.batcH_size,
+                prefetch_factor=args.prefetch_factor,
+            )
+            logger.info(f"Successfully preprocessed {raw_key}")
             upload_preprocessing_results(s3_client, args, local_out_dir)
-            logger.info(f"Uploaded preprocessing results for {out_s3_dir}")
+            logger.info(f"Successfully uploaded preprocessing results to {out_s3_dir}")
         except Exception as e:
-            logger.error(f"Error uploading preprocessing results: {e}")
-            continue
+            logger.error(f"Error preprocessing slide {raw_key}: {e}")
+            if args.stop_on_fail:
+                raise
+            else:
+                continue
 
-        # remove tmp dir recursively
-        try:
-            logger.info(f"Removing tmp dir {tmp_dir}")
-            subprocess.run(["rm", "-rf", tmp_dir], check=True)
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error removing tmp dir: {e}")
-            continue
-
+        logger.info(f"Removing tmp dir {tmp_dir}")
+        shutil.rmtree(tmp_dir)
+        os.makedirs(tmp_dir, exist_ok=True)
         break
-        
-
     logger.info("All done!")
 
 if __name__ == "__main__":
