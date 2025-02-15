@@ -21,6 +21,7 @@ OUTPUTS_DIR="$PROJECT_ROOT/outputs"
 RISKFORMER_DIR="$PROJECT_ROOT/riskformer"
 ENTRYPOINTS_DIR="$PROJECT_ROOT/entrypoints"
 ORCHESTRATORS_DIR="$PROJECT_ROOT/orchestrators"
+LOGS_DIR="$PROJECT_ROOT/logs"
 
 # Specific files
 WORKSPACE_ROOT="/opt/ml/processing"
@@ -63,6 +64,7 @@ docker run --rm --gpus all\
     -v "$ORCHESTRATORS_DIR":"$WORKSPACE_ROOT/orchestrators" \
     -v "$RESOURCES_DIR":"$WORKSPACE_ROOT/resources" \
     -v "$CONFIGS_DIR":"$WORKSPACE_ROOT/configs" \
+    -v "$LOGS_DIR":"$WORKSPACE_ROOT/logs" \
     -w "$WORKSPACE_ROOT" \
     "$IMAGE_NAME" \
     -m orchestrators.run_preprocess \
