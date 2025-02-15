@@ -24,7 +24,7 @@ ORCHESTRATORS_DIR="$PROJECT_ROOT/orchestrators"
 
 # Specific files
 WORKSPACE_ROOT="/opt/ml/processing"
-METADATA="$WORKSPACE_ROOT/resources/riskformer_slides.json"
+METADATA="$WORKSPACE_ROOT/resources/riskformer_slide_samples.json"
 FOREGROUND_CONFIG="$WORKSPACE_ROOT/configs/preprocessing_foreground_config.yaml"
 FOREGROUND_CLEANUP_CONFIG="$WORKSPACE_ROOT/configs/preprocessing_foreground_cleanup_config.yaml"
 TILING_CONFIG="$WORKSPACE_ROOT/configs/preprocessing_tiling_config.yaml"
