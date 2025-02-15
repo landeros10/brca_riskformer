@@ -20,6 +20,7 @@ CONFIGS_DIR="$PROJECT_ROOT/configs"
 OUTPUTS_DIR="$PROJECT_ROOT/outputs"
 RISKFORMER_DIR="$PROJECT_ROOT/src"
 ENTRYPOINTS_DIR="$PROJECT_ROOT/entrypoints"
+ORCHESTRATORS_DIR="$PROJECT_ROOT/orchestrators"
 
 # Specific files
 WORKSPACE_ROOT="/opt/ml/processing"
@@ -59,6 +60,7 @@ docker run --rm --gpus all\
     -v "$AWS_CREDENTIALS":"/root/.aws/credentials" \
     -v "$RISKFORMER_DIR":"$WORKSPACE_ROOT/riskformer" \
     -v "$ENTRYPOINTS_DIR":"$WORKSPACE_ROOT/entrypoints" \
+    -v "$ORCHESTRATORS_DIR":"$WORKSPACE_ROOT/orchestrators" \
     -v "$RESOURCES_DIR":"$WORKSPACE_ROOT/resources" \
     -v "$CONFIGS_DIR":"$WORKSPACE_ROOT/configs" \
     -w "$WORKSPACE_ROOT" \
