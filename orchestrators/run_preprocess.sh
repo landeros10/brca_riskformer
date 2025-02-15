@@ -18,7 +18,8 @@ PROJECT_ROOT=~/brca_riskformer
 RESOURCES_DIR="$PROJECT_ROOT/resources"
 CONFIGS_DIR="$PROJECT_ROOT/configs"
 OUTPUTS_DIR="$PROJECT_ROOT/outputs"
-SRC_DIR="$PROJECT_ROOT/src"
+RISKFORMER_DIR="$PROJECT_ROOT/src"
+ENTRYPOINTS_DIR="$PROJECT_ROOT/entrypoints"
 
 # Specific files
 WORKSPACE_ROOT="/opt/ml/processing"
@@ -56,7 +57,8 @@ INSTNCE_ID="i-08a58080616278d9c"
 docker run --rm --gpus all\
     --user root \
     -v "$AWS_CREDENTIALS":"/root/.aws/credentials" \
-    -v "$SRC_DIR":"$WORKSPACE_ROOT/src" \
+    -v "$RISKFORMER_DIR":"$WORKSPACE_ROOT/riskformer" \
+    -v "$ENTRYPOINTS_DIR":"$WORKSPACE_ROOT/entrypoints" \
     -v "$RESOURCES_DIR":"$WORKSPACE_ROOT/resources" \
     -v "$CONFIGS_DIR":"$WORKSPACE_ROOT/configs" \
     -w "$WORKSPACE_ROOT" \
