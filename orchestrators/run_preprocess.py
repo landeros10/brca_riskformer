@@ -126,6 +126,10 @@ def main():
     args = arg_parse()
     logger_setup(log_group="preprocess", debug=args.debug)
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
+    logging.getLogger("botocore").setLevel(logging.WARNING)
+    logging.getLogger("boto3").setLevel(logging.WARNING)
+    logging.getLogger("s3transfer").setLevel(logging.WARNING)
+    
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     logger.info(f"Project root: {project_root}")
 
