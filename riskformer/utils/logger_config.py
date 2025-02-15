@@ -26,7 +26,8 @@ def logger_setup(log_group="general", debug=False):
 
     if debug:
         root_logger.info("Setting up debugging for 'src' modules.")
-        logging.getLogger("src").setLevel(logging.DEBUG)
+        logging.getLogger("riskformer").setLevel(logging.DEBUG)
+        logging.getLogger("entrypoints").setLevel(logging.DEBUG)
         root_logger.debug("Debugging enabled for 'src' modules.")
 
 
