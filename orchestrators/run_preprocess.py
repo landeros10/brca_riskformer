@@ -196,7 +196,7 @@ def main():
                 foreground_cleanup_config_path=foreground_cleanup_config,
                 tiling_config_path=tiling_config,
                 num_workers=args.num_workers,
-                batch_size=args.batcH_size,
+                batch_size=args.batch_size,
                 prefetch_factor=args.prefetch_factor,
             )
             logger.info(f"Successfully preprocessed {raw_key}")
