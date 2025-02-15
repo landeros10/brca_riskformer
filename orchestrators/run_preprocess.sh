@@ -61,7 +61,7 @@ docker run --rm --gpus all\
     -v "$CONFIGS_DIR":"$WORKSPACE_ROOT/configs" \
     -w "$WORKSPACE_ROOT" \
     "$IMAGE_NAME" \
-    -m src.orchestrators.run_preprocess \
+    -m orchestrators.run_preprocess \
         --profile "$PROFILE" \
         --bucket "$DATA_BUCKET" \
         --region "$REGION" \
