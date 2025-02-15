@@ -2,20 +2,18 @@ import os
 import logging
 from datetime import datetime
 
-def logger_setup(debug=False):
+def logger_setup(log_group="general", debug=False):
     """Configures logging to apply DEBUG only to 'src.*' modules.
     Keeps external libraries at default levels."""
     
-    LOG_PATH = "./logs"
+    LOG_PATH = "/var/log"
     os.makedirs(LOG_PATH, exist_ok=True)
-    log_filename = f"log_{datetime.now().strftime('%m_%d_%y')}.log"
+    log_filename = f"{log_group}.log"
 
     root_logger = logging.getLogger()
     if root_logger.hasHandlers():
         root_logger.info("Logger already configured, skipping setup.")
         return
-    
-
 
     logging.basicConfig(
         level=logging.INFO,

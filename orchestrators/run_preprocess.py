@@ -124,7 +124,7 @@ def arg_parse():
 
 def main():
     args = arg_parse()
-    logger_setup(debug=args.debug)
+    logger_setup(log_group="preprocessing", debug=args.debug)
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     logger.info(f"Project root: {project_root}")

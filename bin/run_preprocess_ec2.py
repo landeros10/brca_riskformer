@@ -2,6 +2,7 @@ import boto3
 import time
 import subprocess
 import os
+import argparse
 from datetime import datetime
 import logging
 
@@ -18,11 +19,11 @@ REMOTE_FORWARD = "52698:localhost:52698"
 LOCAL_FORWARD_1 = "8888:localhost:8888"
 LOCAL_FORWARD_2 = "16006:localhost:6006"
 
-
 REMOTE_COMMANDS = [
-    "cd ~/notebooks/brca_riskformer",
+    "cd ~/brca_riskformer",
+    "ls -lR",
     "git pull origin main",
-    "./orchestrators/run_preprocess.sh"
+    "./orchestrators/run_preprocess.sh",
 ]
 
 LOG_PATH = "./logs"
@@ -38,47 +39,100 @@ logging.basicConfig(
 )
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG if DEBUG else logging.INFO)
+logging.getLogger("botocore").setLevel(logging.WARNING)
+logging.getLogger("boto3").setLevel(logging.WARNING)
+logger.info(f"Logger initialized{' in DEBUG mode' if DEBUG else ''}.")
 
-# 1. Boot EC2 Instance
-ec2_client = boto3.client("ec2", region_name=REGION)
-logger.info(f"Spinning up EC2 instance {EC2_INSTANCE} in {REGION}...")
-desc = ec2_client.describe_instances(InstanceIds=[EC2_INSTANCE])
-instance_state = desc["Reservations"][0]["Instances"][0]["State"]["Name"].lower()
-logger.info(f"Current instance state: {instance_state}")
 
-# Only start if stopped/stopping
-if instance_state in ["stopped", "stopping"]:
-    start_time = time.time()
-    logger.info(f"Starting EC2 instance: {EC2_INSTANCE}")
-    ec2_client.start_instances(InstanceIds=[EC2_INSTANCE])
-    waiter = ec2_client.get_waiter("instance_running")
-    waiter.wait(InstanceIds=[EC2_INSTANCE])
-    logger.info("EC2 instance is now running.")
-    logger.info(f"Time elapased: {(time.time() - start_time) / 60:.2f} minutes")
-else:
-    logger.info(f"Instance is already in state '{instance_state}'. Skipping start.")
-logger.info("Successfully started EC2 instance.")
+def stop_instance():
+    try:
+        logger.info(f"Stopping EC2 instance: {EC2_INSTANCE}")
+        ec2_client.stop_instances(InstanceIds=[EC2_INSTANCE])
 
-# 2. Connect by SSH & Run Orchestrator Script
-desc = ec2_client.describe_instances(InstanceIds=[EC2_INSTANCE])
-public_dns = desc["Reservations"][0]["Instances"][0]["PublicDnsName"]
-logger.info(f"EC2 instance DNS: {public_dns}")
+        waiter = ec2_client.get_waiter("instance_stopped")
+        waiter.wait(InstanceIds=[EC2_INSTANCE])
+        logger.info("Successfully stopped EC2 instance.")
+    except Exception as e:
+        logger.error(f"Failed to stop EC2 instance: {e}")
 
-expanded_key_path = os.path.expanduser(IDENTITY_FILE)
-logger.info("Connecting to EC2 instance via SSH and running orchestrator script...")
-ssh_cmd = [
-    "ssh",
-    "-i", expanded_key_path,
-    "-o", f"ServerAliveInterval={SERVER_ALIVE_INTERVAL}",
-    "-R", REMOTE_FORWARD,
-    "-L", LOCAL_FORWARD_1,
-    "-L", LOCAL_FORWARD_2,
-    f"{SSH_USER}@{public_dns}",
-    " && ".join(REMOTE_COMMANDS),
-]
-logger.info(f"SSH command: {' '.join(ssh_cmd)}")
-result = subprocess.run(ssh_cmd)
-if result.returncode != 0:
-    logger.error(f"SSH command failed with error: {result.stderr}")
-else:
-    logger.info(f"SSH command succeeded with output: {result.stdout}")
+def main():    
+    # 1. Boot EC2 Instance
+    logger.info("Creating EC2 client...")
+    try:
+        ec2_client = boto3.client("ec2", region_name=REGION)
+        logger.info("Successfully created EC2 client.")
+    except Exception as e:
+        logger.error(f"Couldn't create EC2 client: {e}")
+        return
+
+    logger.info(f"Pulling instance info for {EC2_INSTANCE}...")
+    try:
+        desc = ec2_client.describe_instances(InstanceIds=[EC2_INSTANCE])
+        instance_state = desc["Reservations"][0]["Instances"][0]["State"]["Name"].lower()
+        logger.info(f"Current instance state: {instance_state}")
+    except Exception as e:
+        logger.error(f"Couldn't pull EC2 instance state: {e}")
+        return ec2_client
+
+    # Only start if stopped/stopping
+    if instance_state in ["stopped", "stopping"]:
+        start_time = time.time()
+        logger.info(f"Starting EC2 instance: {EC2_INSTANCE}")
+        try:
+            ec2_client.start_instances(InstanceIds=[EC2_INSTANCE])
+        except Exception as e:
+            logger.error(f"Failed to start EC2 instance: {e}")
+            return ec2_client
+        logger.info("Waiting for EC2 instance finish initializing...")
+        waiter = ec2_client.get_waiter("instance_running")
+        waiter.wait(InstanceIds=[EC2_INSTANCE])
+        logger.info("Successfully started EC2 instance.")
+        logger.info(f"Time elapased: {(time.time() - start_time) / 60:.2f} minutes")
+    else:
+        logger.info(f"Instance is already in state '{instance_state}'. Skipping start.")
+
+    # 2. Connect by SSH & Run Orchestrator Script
+    logger.info("Pulling instance DNS...")
+    try:
+        desc = ec2_client.describe_instances(InstanceIds=[EC2_INSTANCE])
+        public_dns = desc["Reservations"][0]["Instances"][0]["PublicDnsName"]
+        logger.info(f"EC2 instance DNS: {public_dns}")
+    except Exception as e:
+        logger.error(f"Couldn't pull EC2 instance DNS: {e}")
+        return ec2_client
+
+    expanded_key_path = os.path.expanduser(IDENTITY_FILE)
+    logger.info(f"Connecting to EC2 instance with key: {expanded_key_path}")
+    logger.info("Running orchestrator script...")
+    ssh_cmd = [
+        "ssh",
+        "-i", expanded_key_path,
+        "-o", f"ServerAliveInterval={SERVER_ALIVE_INTERVAL}",
+        "-R", REMOTE_FORWARD,
+        "-L", LOCAL_FORWARD_1,
+        "-L", LOCAL_FORWARD_2,
+        f"{SSH_USER}@{public_dns}",
+        " && ".join(REMOTE_COMMANDS),
+    ]
+    logger.info(f"SSH command: {' '.join(ssh_cmd)}")
+    p = subprocess.Popen(ssh_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, universal_newlines=True)
+    for line in p.stdout:
+        logger.info(line.rstrip())
+    p.wait()
+
+    return ec2_client
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run preprocessing on EC2 instance")
+    parser.add_argument("--stop_instance", action="store_true", help="Stop the EC2 instance after running the script")
+    args = parser.parse_args()
+
+    ec2_client = None
+    try:
+        ec2_client = main()
+    except Exception as e:
+        logger.error(f"An unexpected error occurred: {e}")
+    finally:
+        if args.stop_instance and ec2_client:
+            stop_instance(ec2_client)
