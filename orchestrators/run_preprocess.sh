@@ -58,6 +58,9 @@ INSTNCE_ID="i-08a58080616278d9c"
 
 docker run --rm --gpus all\
     --user root \
+    --ipc=host \
+    --memory=0 \
+    --privileged \
     -v "$AWS_CREDENTIALS":"/root/.aws/credentials" \
     -v "$RISKFORMER_DIR":"$WORKSPACE_ROOT/riskformer" \
     -v "$ENTRYPOINTS_DIR":"$WORKSPACE_ROOT/entrypoints" \
