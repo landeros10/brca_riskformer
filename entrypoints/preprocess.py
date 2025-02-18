@@ -87,6 +87,12 @@ def preprocess_one_slide(
         batch_size,
         prefetch_factor,
 ):
+    logger.info(f"Available CPUs: {os.cpu_count()}")  # Should be 32
+    logger.info(f"PyTorch Threads: {torch.get_num_threads()}")  # Might be 1
+
+    torch.set_num_threads(os.cpu_count())  # Force PyTorch to use all CPUs
+    logger.info(f"Updated PyTorch Threads: {torch.get_num_threads()}")
+    logger.info("=" * 50)
 
     # keys: "tiling_config", "foreground_config", "foreground_cleanup_config"
     preprocessing_params = preprocessor.load_preprocessing_configs(
@@ -216,13 +222,6 @@ def main():
     logger.info(f"Input filename: {args.input_filename}")
     logger.info(f"Output directory: {args.output_dir}")
     logger.info("=" * 50)
-
-    logger.info(f"Available CPUs: {os.cpu_count()}")  # Should be 32
-    logger.info(f"PyTorch Threads: {torch.get_num_threads()}")  # Might be 1
-
-    torch.set_num_threads(os.cpu_count())  # Force PyTorch to use all CPUs
-    logger.info(f"Updated PyTorch Threads: {torch.get_num_threads()}")
-
 
     preprocess_one_slide(
         args.input_filename,
