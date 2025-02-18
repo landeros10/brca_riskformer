@@ -167,14 +167,6 @@ def main():
     ]
     logger.info(f"SSH command: {' '.join(ssh_cmd)}")
     ssh_process = subprocess.Popen(ssh_cmd)
-    def handle_interrupt(signum, frame):
-        """Handle CTRL+C and terminate SSH process."""
-        logger.info("CTRL+C detected. Terminating SSH connection...")
-        ssh_process.kill()  # Gracefully terminate SSH
-        ssh_process.wait()  # Wait for process to exit
-        logger.info("SSH connection closed. Exiting.")
-        exit(0)
-    signal.signal(signal.SIGINT, handle_interrupt)
     ssh_process.wait()  # Wait for the SSH process to finish
     return ec2_client
 
