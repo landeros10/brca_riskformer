@@ -346,7 +346,7 @@ def extract_features(slide_dataset, model, device, num_workers=16, batch_size=25
     feature_dim = model(torch.randn(1, *slide_dataset[0].shape).to(device)).shape[1]
     start_idx = 0
     features = np.empty((len(slide_dataset), feature_dim), dtype=np.float32)
-    with torch.inference_mode():
+    with torch.inference_mode(), torch.cuda.amp.autocast():
         for count, batch_images in enumerate(dataloader):
             batch_images = batch_images.to(device, dtype=torch.float32)
             batch_features = model(batch_images).cpu().numpy().astype(np.float32)
