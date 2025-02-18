@@ -214,9 +214,9 @@ def main():
             else:
                 continue
 
-        logger.info(f"Removing tmp dir {tmp_dir}")
-        shutil.rmtree(tmp_dir)
-        os.makedirs(tmp_dir, exist_ok=True)
+        logger.info(f"Removing tmp dir {local_input_dir}")
+        shutil.rmtree(local_input_dir)
+        os.makedirs(local_input_dir, exist_ok=True)
     logger.info("All done!")
 
 
