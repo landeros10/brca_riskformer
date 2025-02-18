@@ -116,7 +116,13 @@ def main():
     expanded_creds = os.path.expanduser(AWS_CREDS)
 
     # Test ssh connection
-    ssh_cmd = ["ssh", "-i", expanded_key_path, f"{SSH_USER}@{public_dns}", "echo", "SSH connection successful"]
+    ssh_cmd = [
+        "ssh",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-i", expanded_key_path,
+        f"{SSH_USER}@{public_dns}",
+        "echo", "SSH connection successful"]
     try:
         subprocess.run(ssh_cmd, check=True)
         logger.info("SSH connection successful.")
@@ -127,6 +133,8 @@ def main():
     if os.path.exists(expanded_creds):
         scp_cmd = [
             "scp",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
             "-i", expanded_key_path,
             expanded_creds,
             f"{SSH_USER}@{public_dns}:/home/ec2-user/.aws/credentials"
@@ -147,6 +155,8 @@ def main():
     ssh_cmd = [
         "ssh",
         "-i", expanded_key_path,
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",    
         "-o", f"ServerAliveInterval={SERVER_ALIVE_INTERVAL}",
         "-R", REMOTE_FORWARD,
         "-L", LOCAL_FORWARD_1,
