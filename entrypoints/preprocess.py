@@ -10,6 +10,7 @@ import os
 import torch
 from PIL import Image
 import numpy as np
+import h5py
 
 from riskformer.utils.logger_config import logger_setup
 from riskformer.data import data_preprocess as preprocessor
@@ -37,8 +38,8 @@ def save_sparse_feature_array(
     logger.debug(f"Generated coordinates for sparse representation.")
 
     try:
-        preprocessor.save_features_zarr(
-            output_path=os.path.join(output_dir, f"{os.path.basename(input_filename)}.zarr"),
+        preprocessor.save_features_h5(
+            output_path=os.path.join(output_dir, os.path.basename(input_filename)),
             coo_coords=coo_coords,
             slide_features=slide_features,
             chunk_size=min(5000, max(1000, slide_features.shape[0] // 4)),

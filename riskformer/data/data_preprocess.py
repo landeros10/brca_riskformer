@@ -13,6 +13,7 @@ import time
 import json
 import yaml
 import zarr
+import h5py
 import numcodecs
 from multiprocessing import Pool, cpu_count
 from pydantic import BaseModel, Field
@@ -418,6 +419,52 @@ def save_features_zarr(output_path, coo_coords, slide_features, chunk_size=10000
         )
     except Exception as e:
         logger.error(f"Failed to create dataset 'features' in Zarr store: {e}")
+        raise e
+    
+
+def save_features_h5(output_path, coo_coords, slide_features, chunk_size=5000, compression="gzip"):
+    """
+    Saves COO-style coordinates and feature vectors to two separate HDF5 files.
+
+    Args:
+        output_path (str): Base path to save HDF5 files (without extension).
+        coo_coords (np.ndarray): (N, 2) array of (row, col) coordinates.
+        slide_features (np.ndarray): (N, D) feature vectors.
+        chunk_size (int): Chunk size for HDF5 storage (default: 5000).
+        compression (str): Compression algorithm (default: 'gzip').
+    """
+
+    coords_file = f"{output_path}_coords.h5"
+    features_file = f"{output_path}_features.h5"
+
+    logger.debug(f"Saving coordinates to {coords_file}")
+    try:
+        with h5py.File(coords_file, "w") as f:
+            f.create_dataset(
+                "coords",
+                data=coo_coords,
+                dtype="int32",
+                chunks=(chunk_size, 2),
+                compression=compression
+            )
+        logger.debug("Successfully saved 'coords' dataset.")
+    except Exception as e:
+        logger.error(f"Failed to save 'coords' dataset: {e}")
+        raise e
+
+    logger.debug(f"Saving features to {features_file}")
+    try:
+        with h5py.File(features_file, "w") as f:
+            f.create_dataset(
+                "features",
+                data=slide_features,
+                dtype="float32",
+                chunks=(chunk_size, slide_features.shape[1]),
+                compression=compression
+            )
+        logger.debug("Successfully saved 'features' dataset.")
+    except Exception as e:
+        logger.error(f"Failed to save 'features' dataset: {e}")
         raise e
     
 
