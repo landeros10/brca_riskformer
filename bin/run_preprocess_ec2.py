@@ -170,7 +170,7 @@ def main():
     def handle_interrupt(signum, frame):
         """Handle CTRL+C and terminate SSH process."""
         logger.info("CTRL+C detected. Terminating SSH connection...")
-        ssh_process.terminate()  # Gracefully terminate SSH
+        ssh_process.kill()  # Gracefully terminate SSH
         ssh_process.wait()  # Wait for process to exit
         logger.info("SSH connection closed. Exiting.")
         exit(0)
