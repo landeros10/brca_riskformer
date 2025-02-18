@@ -61,7 +61,7 @@ docker run --rm --gpus all --runtime=nvidia\
     --user root \
     --ipc=host \
     --memory=0 \
-    --cpus="$(nproc)" \  # Use all available vCPUs
+    --cpus="$(nproc)" \
     --privileged \
     --cap-add=SYS_ADMIN --cap-add=SYS_RAWIO \
     --device=/dev/nvidiactl --device=/dev/nvidia0 \
