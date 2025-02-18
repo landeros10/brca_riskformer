@@ -75,7 +75,7 @@ def upload_preprocessing_results(s3_client, args, local_out_dir):
                     s3_client,
                     bucket_name=args.bucket,
                     files_list=[local_file_path],
-                    prefix=args.output_dir,
+                    prefix=f"{args.output_dir}/{args.model_key}",
                     reupload=False,
                 )
             except Exception as e:
