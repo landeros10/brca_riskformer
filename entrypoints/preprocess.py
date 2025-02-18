@@ -8,6 +8,7 @@ import argparse
 import os
 
 import torch
+torch.set_num_threads(os.cpu_count())
 from PIL import Image
 import numpy as np
 import h5py
