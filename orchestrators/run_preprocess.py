@@ -167,9 +167,6 @@ def main():
     foreground_cleanup_config = os.path.join(project_root, args.foreground_cleanup_config)
     tiling_config = os.path.join(project_root, args.tiling_config)
 
-    # save dir
-    local_out_dir = os.path.join(tmp_dir, args.output_dir)
-
     logger.info(f"Starting preprocessing for {len(to_process)} files...")
     logger.info("Using the following parameters:")
     logger.info(f"foreground_config: {foreground_config}")
@@ -214,9 +211,11 @@ def main():
             else:
                 continue
 
-        logger.info(f"Removing tmp dir {local_input_dir}")
+        logger.info(f"Removing tmp dirs: {local_input_dir}, {local_out_dir}")
         shutil.rmtree(local_input_dir)
+        shutil.rmtree(local_out_dir)
         os.makedirs(local_input_dir, exist_ok=True)
+        os.makedirs(local_out_dir, exist_ok=True)
     logger.info("All done!")
 
 
