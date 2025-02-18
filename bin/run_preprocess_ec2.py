@@ -114,6 +114,16 @@ def main():
     logger.info("Copying AWS credentials to EC2 instance...")
     expanded_key_path = os.path.expanduser(IDENTITY_FILE)
     expanded_creds = os.path.expanduser(AWS_CREDS)
+
+    # Test ssh connection
+    ssh_cmd = ["ssh", "-i", expanded_key_path, f"{SSH_USER}@{public_dns}", "echo", "SSH connection successful"]
+    try:
+        subprocess.run(ssh_cmd, check=True)
+        logger.info("SSH connection successful.")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"SSH connection failed: {e}")
+        return ec2_client
+
     if os.path.exists(expanded_creds):
         scp_cmd = [
             "scp",
