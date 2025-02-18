@@ -48,7 +48,7 @@ logging.getLogger("boto3").setLevel(logging.WARNING)
 logger.info(f"Logger initialized{' in DEBUG mode' if DEBUG else ''}.")
 
 
-def stop_instance():
+def stop_instance(ec2_client):
     try:
         logger.info(f"Stopping EC2 instance: {EC2_INSTANCE}")
         ec2_client.stop_instances(InstanceIds=[EC2_INSTANCE])
