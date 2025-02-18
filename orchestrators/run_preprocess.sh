@@ -38,7 +38,7 @@ MODEL_KEY="uni/uni2-h"
 
 # Processing parameters
 BATCH_SIZE=256
-NUM_WORKERS=16
+NUM_WORKERS=32
 PREFETCH_FACTOR=8
 DEBUG_FLAG="--debug"
 STOP_ON_FAIL="--stop_on_fail"
