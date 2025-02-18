@@ -8,7 +8,6 @@ import argparse
 import os
 
 import torch
-torch.set_num_threads(os.cpu_count())
 from PIL import Image
 import numpy as np
 import h5py
@@ -217,6 +216,13 @@ def main():
     logger.info(f"Input filename: {args.input_filename}")
     logger.info(f"Output directory: {args.output_dir}")
     logger.info("=" * 50)
+
+    logger.info(f"Available CPUs: {os.cpu_count()}")  # Should be 32
+    logger.info(f"PyTorch Threads: {torch.get_num_threads()}")  # Might be 1
+
+    torch.set_num_threads(os.cpu_count())  # Force PyTorch to use all CPUs
+    logger.info(f"Updated PyTorch Threads: {torch.get_num_threads()}")
+
 
     preprocess_one_slide(
         args.input_filename,
