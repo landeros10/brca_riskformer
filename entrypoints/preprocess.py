@@ -91,6 +91,8 @@ def preprocess_one_slide(
     logger.info(f"PyTorch Threads: {torch.get_num_threads()}")  # Might be 1
 
     torch.set_num_threads(os.cpu_count())  # Force PyTorch to use all CPUs
+    torch.set_num_interop_threads(os.cpu_count())  # Helps inter-op parallelism
+    
     logger.info(f"Updated PyTorch Threads: {torch.get_num_threads()}")
     logger.info("=" * 50)
 

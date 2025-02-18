@@ -324,7 +324,7 @@ def extract_features(slide_dataset, model, device, num_workers=1, batch_size=256
         slide_dataset,
         batch_size=batch_size,
         num_workers=num_workers,
-        pin_memory=False,
+        pin_memory=True,
         persistent_workers=True,
         prefetch_factor=prefetch_factor,
     )
