@@ -23,6 +23,7 @@ LOCAL_FORWARD_1 = "8888:localhost:8888"
 LOCAL_FORWARD_2 = "16006:localhost:6006"
 
 REMOTE_COMMANDS = [
+    "nvidia-smi",
     "export AWS_SHARED_CREDENTIALS_FILE=~/.aws/credentials",
     "cd ~/brca_riskformer",
     "ls -lR",
