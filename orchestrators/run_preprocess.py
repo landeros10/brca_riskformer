@@ -12,7 +12,7 @@ import shutil
 import json
 import logging
 import argparse
-import subprocess
+import torch
 
 from entrypoints.preprocess import preprocess_one_slide
 from riskformer.utils.logger_config import logger_setup
@@ -129,6 +129,15 @@ def main():
     logging.getLogger("botocore").setLevel(logging.WARNING)
     logging.getLogger("boto3").setLevel(logging.WARNING)
     logging.getLogger("s3transfer").setLevel(logging.WARNING)
+    
+    logger.info(f"Available CPUs: {os.cpu_count()}")  # Should be 32
+    logger.info(f"PyTorch Threads: {torch.get_num_threads()}")  # Might be 1
+
+    torch.set_num_threads(os.cpu_count())  # Force PyTorch to use all CPUs
+    torch.set_num_interop_threads(os.cpu_count())  # Helps inter-op parallelism
+    
+    logger.info(f"Updated PyTorch Threads: {torch.get_num_threads()}")
+    logger.info("=" * 50)
     
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     logger.info(f"Project root: {project_root}")
