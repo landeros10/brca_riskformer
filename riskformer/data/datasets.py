@@ -67,10 +67,6 @@ class SingleSlideDataset(Dataset):
             image (PIL.Image): sampled image.
         """
         image = sample_slide_image(self.slide_obj, x, y, self.sample_size)
-        if isinstance(image, np.ndarray):
-            image = Image.fromarray(image)
-        
-        image = image.resize((self.output_size, self.output_size), Image.BILINEAR)
         return image
 
 class ZarrFeatureDataset(Dataset):

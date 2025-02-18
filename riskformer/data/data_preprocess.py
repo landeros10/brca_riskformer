@@ -306,7 +306,7 @@ def select_and_load_encoder(model_type, model_path, config_files):
     return model, transform
 
 
-def extract_features(slide_dataset, model, device, num_workers=1, batch_size=256, prefetch_factor=2):
+def extract_features(slide_dataset, model, device, num_workers=16, batch_size=256, prefetch_factor=2):
     """
     Extract features from the slide dataset using the given model.
     
