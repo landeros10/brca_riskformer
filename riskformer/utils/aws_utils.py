@@ -312,3 +312,4 @@ def listdir_s3_or_local(path, s3_client=None):
         return list_bucket_files(s3_client, bucket_name, key)
     else:
         return os.listdir(path)
+

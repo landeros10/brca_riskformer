@@ -69,7 +69,7 @@ def upload_preprocessing_results(s3_client, args, local_out_dir):
     logger.debug(f"Uploading results from {local_out_dir} to s3://{args.bucket}/{args.output_dir}")
     for filename in os.listdir(local_out_dir):
         local_file_path = os.path.join(local_out_dir, filename)
-        if os.path.isfile(local_file_path):
+        if os.path.exists(local_file_path):
             try:
                 upload_large_files_to_bucket(
                     s3_client,
@@ -204,6 +204,7 @@ def main():
                 prefetch_factor=args.prefetch_factor,
             )
             logger.info(f"Successfully preprocessed {raw_key}")
+            logger.info("=" * 50)
             upload_preprocessing_results(s3_client, args, local_out_dir)
             logger.info(f"Successfully uploaded preprocessing results to {out_s3_dir}")
         except Exception as e:
@@ -216,8 +217,8 @@ def main():
         logger.info(f"Removing tmp dir {tmp_dir}")
         shutil.rmtree(tmp_dir)
         os.makedirs(tmp_dir, exist_ok=True)
-        break
     logger.info("All done!")
+
 
 if __name__ == "__main__":
     main()

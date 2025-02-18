@@ -9,6 +9,8 @@ import signal
 
 DEBUG = True
 
+AWS_CREDS = "~/.aws/credentials"
+
 EC2_INSTANCE = "i-08a58080616278d9c"
 REGION = "us-east-1"
 PROFILE = "651340551631_AWSPowerUserAccess"
@@ -21,6 +23,7 @@ LOCAL_FORWARD_1 = "8888:localhost:8888"
 LOCAL_FORWARD_2 = "16006:localhost:6006"
 
 REMOTE_COMMANDS = [
+    "export AWS_SHARED_CREDENTIALS_FILE=~/.aws/credentials",
     "cd ~/brca_riskformer",
     "ls -lR",
     "git pull origin main",
@@ -56,9 +59,8 @@ def stop_instance():
     except Exception as e:
         logger.error(f"Failed to stop EC2 instance: {e}")
 
-def main():    
-    # 1. Boot EC2 Instance
-    logger.info("Creating EC2 client...")
+
+def boot_instance():
     try:
         ec2_client = boto3.client("ec2", region_name=REGION)
         logger.info("Successfully created EC2 client.")
@@ -75,7 +77,6 @@ def main():
         logger.error(f"Couldn't pull EC2 instance state: {e}")
         return ec2_client
 
-    # Only start if stopped/stopping
     if instance_state in ["stopped", "stopping"]:
         start_time = time.time()
         logger.info(f"Starting EC2 instance: {EC2_INSTANCE}")
@@ -91,8 +92,15 @@ def main():
         logger.info(f"Time elapased: {(time.time() - start_time) / 60:.2f} minutes")
     else:
         logger.info(f"Instance is already in state '{instance_state}'. Skipping start.")
+    return ec2_client
 
-    # 2. Connect by SSH & Run Orchestrator Script
+
+def main():    
+    ### 1. Boot EC2 Instance ###
+    logger.info("Creating EC2 client...")
+    ec2_client = boot_instance()
+
+    ### 2.Collect DNS for SSH ###
     logger.info("Pulling instance DNS...")
     try:
         desc = ec2_client.describe_instances(InstanceIds=[EC2_INSTANCE])
@@ -101,8 +109,29 @@ def main():
     except Exception as e:
         logger.error(f"Couldn't pull EC2 instance DNS: {e}")
         return ec2_client
-
+    
+    ### 3. Copy AWS credentials to EC2 instance ###
+    logger.info("Copying AWS credentials to EC2 instance...")
     expanded_key_path = os.path.expanduser(IDENTITY_FILE)
+    expanded_creds = os.path.expanduser(AWS_CREDS)
+    if os.path.exists(expanded_creds):
+        scp_cmd = [
+            "scp",
+            "-i", expanded_key_path,
+            expanded_creds,
+            f"{SSH_USER}@{public_dns}:/home/ec2-user/.aws/credentials"
+        ]
+        try:
+            subprocess.run(scp_cmd, check=True)
+            logger.info("AWS credentials successfully uploaded.")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to upload AWS credentials: {e}")
+            return ec2_client
+    else:
+        logger.error(f"AWS credentials file not found: {AWS_CREDS}")
+        return ec2_client
+            
+    ### 4. SSH into EC2 instance and run script ###
     logger.info(f"Connecting to EC2 instance with key: {expanded_key_path}")
     logger.info("Running orchestrator script...")
     ssh_cmd = [
@@ -126,8 +155,6 @@ def main():
         exit(0)
     signal.signal(signal.SIGINT, handle_interrupt)
     ssh_process.wait()  # Wait for the SSH process to finish
-
-
     return ec2_client
 
 
