@@ -10,6 +10,7 @@ from typing import Type
 
 import os
 import time
+import math
 import json
 import yaml
 import zarr
@@ -397,11 +398,12 @@ def extract_features(slide_dataset, model, device, num_workers=16, batch_size=25
     Extract features from the slide dataset using the given model.
     
     Args:
-        slide_dataset (Dataset): The slide dataset.
+        slide_dataset (datasets.SingleSlideDataset): The dataset for sampling a single slide.
         model (torch.nn.Module): The model to use for feature extraction.
         device (torch.device): The device to use for feature extraction.
         num_workers (int, optional): The number of workers to use for data loading. Defaults to 1.
         batch_size (int, optional): The batch size to use for data loading. Defaults to 256.
+        prefetch_factor (int, optional): The number of batches to prefetch. Defaults to 2.
     
     Returns:
         features_array (np.ndarray): The extracted features of shape (len(slide_dataset), feature_dim).
@@ -420,6 +422,7 @@ def extract_features(slide_dataset, model, device, num_workers=16, batch_size=25
     logger.debug(f"DataLoader initialized with {num_workers} workers and batch size {batch_size}")
 
     torch.backends.mkldnn.enabled = True
+    model = model.to(device)
     model.eval()
     if device.type == "cpu":
         try:
@@ -429,7 +432,7 @@ def extract_features(slide_dataset, model, device, num_workers=16, batch_size=25
             logger.warning(f"JIT compilation failed: {e}. Running model without JIT.")
 
     logger.debug('Extracting features...')
-    n_batches = len(slide_dataset) // batch_size + 1
+    n_batches = math.ceil(len(slide_dataset) / batch_size)
     count = 0
     start_time = time.time()
 

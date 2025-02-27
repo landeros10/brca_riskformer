@@ -181,8 +181,8 @@ def preprocess_one_slide(
         slide_features=slide_features,
         input_filename=input_filename,
         output_dir=output_dir,
-
     )
+    slide_dataset.close_slide()
 
 
 def parse_args():
