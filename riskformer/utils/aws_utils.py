@@ -9,6 +9,7 @@ import sagemaker
 
 logger = logging.getLogger(__name__)
 
+
 def initialize_s3_client(
         profile_name,
         region_name=None,

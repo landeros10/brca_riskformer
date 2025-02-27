@@ -472,46 +472,6 @@ def get_COO_coords(coords, sampling_size, tile_overlap):
     return scaled_coords
 
 
-def save_features_zarr(output_path, coo_coords, slide_features, chunk_size=10000, compressor=None):
-    """
-    Saves COO-style coordinates and feature vectors to a Zarr store.
-
-    Args:
-        output_path (str): Path to save Zarr file (can be local or S3).
-        coo_coords (np.ndarray): (N, 2) array of (row, col) coordinates.
-        slide_features (np.ndarray): (N, D) feature vectors.
-        chunk_size (int): Chunk size for Zarr storage (default: 10000).
-        compressor (str): Compression algorithm (default: 'blosc').
-    """
-    if compressor is None:
-        compressor = numcodecs.Blosc(cname='zstd', clevel=5, shuffle=numcodecs.Blosc.BITSHUFFLE)
-
-    root = zarr.open(output_path, mode='w')
-    logger.debug(f"Opened Zarr store at {output_path}")
-    try:
-        root.create_dataset(
-                "coords",
-                data=coo_coords,
-                dtype="int32",
-                chunks=(chunk_size, 2),
-                compressor=compressor
-            )
-    except Exception as e:
-        logger.error(f"Failed to create dataset 'coords' in Zarr store: {e}")
-        raise e
-    try:
-        root.create_dataset(
-            "features",
-            data=slide_features,
-            dtype="float32",
-            chunks=(chunk_size, slide_features.shape[1]), 
-            compressor=compressor
-        )
-    except Exception as e:
-        logger.error(f"Failed to create dataset 'features' in Zarr store: {e}")
-        raise e
-    
-
 def save_features_h5(output_path, coo_coords, slide_features, chunk_size=5000, compression="gzip"):
     """
     Saves COO-style coordinates and feature vectors to two separate HDF5 files.

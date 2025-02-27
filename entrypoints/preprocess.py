@@ -23,8 +23,8 @@ def save_sparse_feature_array(
     sampling_size,
     tile_overlap,
     slide_features,
-    input_filename,
     output_dir,
+    basename,
 ):
     logger.info("Saving feature vectors and COO coordinates...")
     coo_coords = preprocessor.get_COO_coords(
@@ -39,7 +39,7 @@ def save_sparse_feature_array(
 
     try:
         preprocessor.save_features_h5(
-            output_path=os.path.join(output_dir, os.path.basename(input_filename)),
+            output_path=os.path.join(output_dir, basename),
             coo_coords=coo_coords,
             slide_features=slide_features,
             chunk_size=min(5000, max(1000, slide_features.shape[0] // 4)),
@@ -163,15 +163,16 @@ def preprocess_one_slide(
     logger.info("=" * 50)
     logger.info("Now saving processed data to output dir...")
     logger.debug("Saving thumbnail and heatmap images.")
+    slide_id = os.path.basename(input_filename).split(".svs")[0]
     save_image_output(
         thumb,
         output_dir=output_dir,
-        basename=os.path.basename(input_filename).split(".svs")[0],
+        basename=slide_id,
         tag="thumbnail")
     save_image_output(
         heatmap,
         output_dir=output_dir,
-        basename=os.path.basename(input_filename).split(".svs")[0],
+        basename=slide_id,
         tag="heatmap",
         normalize=True)
     save_sparse_feature_array(
@@ -179,8 +180,8 @@ def preprocess_one_slide(
         sampling_size=sampling_size,
         tile_overlap=tiling_config.tile_overlap,
         slide_features=slide_features,
-        input_filename=input_filename,
         output_dir=output_dir,
+        basename=slide_id,
     )
     slide_dataset.close_slide()
 
