@@ -194,8 +194,12 @@ def main():
 
         local_file_path = os.path.join(local_input_dir, raw_key)
         logger.info(f"Downloading {raw_s3_path} to {local_file_path}")
-        s3_client.download_file(args.bucket, f"{args.input_dir}/{raw_key}", local_file_path)
-        
+        try:
+            s3_client.download_file(args.bucket, f"{args.input_dir}/{raw_key}", local_file_path)
+        except Exception as e:
+            logger.error(f"Error downloading {raw_s3_path}: {e}")
+            continue
+
         try:
             preprocess_one_slide(
                 input_filename=local_file_path,
