@@ -111,7 +111,7 @@ def preprocess_one_slide(
             return
     except Exception as e:
         logger.error(f"Failed to get sample points for {input_filename}. Error: {e}")
-        return
+        raise e
 
     ### Load feature extraction model ###
     logger.info("[Loading feature extraction model...]")
@@ -124,7 +124,7 @@ def preprocess_one_slide(
         )
     if model is None:
         logger.error("Failed to load feature extraction model.")
-        return
+        raise ValueError("Model loading failed.")
     logger.info(f"Model successfully loaded: {model_type} from {model_dir}")
     logger.info("=" * 50)
     model = model.eval().to(device)
@@ -139,7 +139,7 @@ def preprocess_one_slide(
         )
     except Exception as e:
         logger.error(f"Failed to create single-slide dataset. Error: {e}")
-        return
+        raise e
     logger.info(f"Dataset created with {len(slide_dataset)} samples.")
     logger.info("=" * 50)
 
@@ -156,7 +156,7 @@ def preprocess_one_slide(
         )
     except Exception as e:
         logger.error(f"Failed to extract features. Error: {e}")
-        return        
+        raise e        
     logger.info(f"Successfully extracted tile features for foreground samples. Feature shape: {slide_features.shape}")
 
     ### Save Output ###
@@ -164,25 +164,30 @@ def preprocess_one_slide(
     logger.info("Now saving processed data to output dir...")
     logger.debug("Saving thumbnail and heatmap images.")
     slide_id = os.path.basename(input_filename).split(".svs")[0]
-    save_image_output(
-        thumb,
-        output_dir=output_dir,
-        basename=slide_id,
-        tag="thumbnail")
-    save_image_output(
-        heatmap,
-        output_dir=output_dir,
-        basename=slide_id,
-        tag="heatmap",
-        normalize=True)
-    save_sparse_feature_array(
-        sample_coords=sample_coords,
-        sampling_size=sampling_size,
-        tile_overlap=tiling_config.tile_overlap,
-        slide_features=slide_features,
-        output_dir=output_dir,
-        basename=slide_id,
-    )
+    try:
+        save_image_output(
+            thumb,
+            output_dir=output_dir,
+            basename=slide_id,
+            tag="thumbnail")
+        save_image_output(
+            heatmap,
+            output_dir=output_dir,
+            basename=slide_id,
+            tag="heatmap",
+            normalize=True)
+        save_sparse_feature_array(
+            sample_coords=sample_coords,
+            sampling_size=sampling_size,
+            tile_overlap=tiling_config.tile_overlap,
+            slide_features=slide_features,
+            output_dir=output_dir,
+            basename=slide_id,
+        )
+    except Exception as e:
+        logger.error(f"Failed to save output data. Error: {e}")
+        raise e
+    logger.info("Output data saved successfully.")
     slide_dataset.close_slide()
 
 
