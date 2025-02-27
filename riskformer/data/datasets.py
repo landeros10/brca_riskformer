@@ -10,7 +10,8 @@ from riskformer.utils.data_utils import sample_slide_image
 
 class SingleSlideDataset(Dataset):
     """
-    PyTorch dataset for a single slide at specified sample points.
+    PyTorch dataset for a single slide. Image patches are sampled at the specified coordinates and transformed
+    using the provided transform function.
     
     Args:
         slide_obj (openslide.OpenSlide): OpenSlide object of the slide.
@@ -37,7 +38,6 @@ class SingleSlideDataset(Dataset):
         self.slide_metadata = slide_metadata
         self.sample_coords = sample_coords
         self.sample_size = sample_size
-        self.output_size = output_size
         self.transform = transform
         self.to_tensor = transforms.ToTensor()
 
@@ -46,7 +46,7 @@ class SingleSlideDataset(Dataset):
 
     def __getitem__(self, idx):
         x, y = self.sample_coords[idx]
-        image = self.sample_slide(x, y)
+        image = sample_slide_image(self.slide_obj, x, y, self.sample_size)
 
         if self.transform:
             image = self.transform(image)
@@ -55,19 +55,6 @@ class SingleSlideDataset(Dataset):
 
         return image
 
-    def sample_slide(self, x, y):
-        """
-        Samples a slide at the given coordinates.
-        
-        Args:
-            x (int): x coordinate of the sample.
-            y (int): y coordinate of the sample.
-        
-        Returns:
-            image (PIL.Image): sampled image.
-        """
-        image = sample_slide_image(self.slide_obj, x, y, self.sample_size)
-        return image
 
 class ZarrFeatureDataset(Dataset):
     def __init__(self, zarr_path):

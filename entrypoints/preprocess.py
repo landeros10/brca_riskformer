@@ -115,15 +115,18 @@ def preprocess_one_slide(
 
     ### Load feature extraction model ###
     logger.info("[Loading feature extraction model...]")
-    model, transform = preprocessor.load_encoder(model_dir, model_type)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
+    model, transform = preprocessor.load_encoder(
+            model_dir=model_dir,
+            model_type=model_type,
+            device=device,
+        )
     if model is None:
         logger.error("Failed to load feature extraction model.")
         return
     logger.info(f"Model successfully loaded: {model_type} from {model_dir}")
     logger.info("=" * 50)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
     model = model.eval().to(device)
 
     try:
@@ -132,7 +135,6 @@ def preprocess_one_slide(
             slide_metadata=slide_metadata,
             sample_coords=sample_coords,
             sample_size=sampling_size,
-            output_size=tiling_config.tile_size,
             transform=transform
         )
     except Exception as e:

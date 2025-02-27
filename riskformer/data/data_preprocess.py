@@ -158,17 +158,12 @@ def load_dino_encoder(model_path):
     # return model256.to(device)
 
 
-def load_uni_encoder(model_path, config_files):
+def load_uni_encoder(model_path, config_files, device):
     """ Load the UNI2-h model with predefined timm_kwargs.
-    Default timm_kwargs are loaded from DefaultUni2hConfig. Default transform:
-        transforms.Resize(224),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-
     Args:
         model_path (str): path to the model file.
         config_files (dict): dictionary of config files.
+        device (torch.device): device to load the model on.
     
     Returns:
         model (torch.nn.Module): loaded model.
@@ -211,7 +206,7 @@ def load_uni_encoder(model_path, config_files):
     
     try:
         model.load_state_dict(
-            torch.load(model_path, map_location="cpu", weights_only=False),
+            torch.load(model_path, map_location=device, weights_only=False),
             strict=True
             )
         logger.info(f"Loaded UNI2-h model weights from {model_path}")
@@ -222,8 +217,8 @@ def load_uni_encoder(model_path, config_files):
     try:
         transform = transforms.Compose(
             [
+                transforms.resize(224),
                 transforms.ToTensor(),
-                transforms.Resize(timm_kwargs["img_size"]),
                 transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             ]
         )
@@ -234,13 +229,14 @@ def load_uni_encoder(model_path, config_files):
     return model, transform
 
 
-def load_resnet_encoder(model_path, config_files, resnet_type):
+def load_resnet_encoder(model_path, config_files, resnet_type, device):
     """ Load a pre-trained ResNet model with parameters defined in config_files.
     
     Args:
         model_path (str): path to the model file.
         config_files (dict): dictionary of config files.
         resnet_type (str): type of the ResNet model.
+        device (torch.device): device to load the model on.
     
     Returns:
         model (torch.nn.Module): loaded model.
@@ -251,7 +247,7 @@ def load_resnet_encoder(model_path, config_files, resnet_type):
     try:
         model = timm.create_model(f'resnet{resnet_type}', pretrained=True)
         if model_path and os.path.isfile(model_path):
-            model.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=False), strict=False)
+            model.load_state_dict(torch.load(model_path, map_location=device, weights_only=False), strict=False)
             logger.info(f"Loaded ResNet{resnet_type} model weights from {model_path}")
         else:
             logger.info("Using pre-trained ResNet model weights.")
@@ -263,7 +259,7 @@ def load_resnet_encoder(model_path, config_files, resnet_type):
     return model, transform
 
 
-def select_and_load_encoder(model_type, model_path, config_files):
+def select_and_load_encoder(model_type, model_path, config_files, device):
     """
     Load the encoder model based on the given model type.
     
@@ -271,6 +267,7 @@ def select_and_load_encoder(model_type, model_path, config_files):
         model_type (str): The type of the model.
         model_path (str): The path to the model file.
         config_files (dict): The config files.
+        device (torch.device): The device to load the model on.
         
     Returns:
         model (torch.nn.Module): The loaded model.
@@ -283,7 +280,7 @@ def select_and_load_encoder(model_type, model_path, config_files):
         if model_path is None:
             logger.error("Cannot load UNI2-h model without pre-downloaded model.")
             raise ValueError("Model path is None, must be given for UNI2-h feature extractor.")
-        model, transform = load_uni_encoder(model_path, config_files)
+        model, transform = load_uni_encoder(model_path, config_files, device)
 
     elif model_type.startswith("resnet"):
         resnet_version = model_type.replace("resnet", "").strip()
@@ -291,17 +288,106 @@ def select_and_load_encoder(model_type, model_path, config_files):
             logger.warning("Unsupported ResNet version. Defaulting to ResNet50.")
             resnet_version = "50"
         
-        model, transform = load_resnet_encoder(model_path, config_files, resnet_version)
+        model, transform = load_resnet_encoder(model_path, config_files, resnet_version, device)
     
-    # TODO - Load SimCLR tensorflow model somehow
+    # TODO - Load SimCLR tensorflow model
     elif model_type == "simclr":
         logger.warning("SimCLR model not supported yet.")
         raise NotImplementedError("SimCLR model not supported yet.")
 
     else:
         logger.warning("Model type not supported. Using ResNet50 as default.")
-        model, transform = load_resnet_encoder(model_path, config_files, "50")
+        model, transform = load_resnet_encoder(model_path, config_files, "50", device)
 
+    return model, transform
+
+
+def load_preprocessing_configs(
+        foreground_config_path,
+        foreground_cleanup_config_path,
+        tiling_config_path,
+):
+    tiling_config = load_yaml_config(tiling_config_path, TilingConfigSchema)
+    foreground_config = load_yaml_config(foreground_config_path, ForegroundConfigSchema)
+    foreground_cleanup_config = load_yaml_config(foreground_cleanup_config_path, ForegroundCleanupConfigSchema)
+    
+    log_config(logger, tiling_config, "Tiling Parameters")
+    log_config(logger, foreground_config, "Foreground Detection Parameters")
+    log_config(logger, foreground_cleanup_config, "Foreground Cleanup Parameters")
+
+    return {
+        "tiling_config": tiling_config,
+        "foreground_config": foreground_config,
+        "foreground_cleanup_config": foreground_cleanup_config,
+    }
+
+
+def retrieve_encoder_files(model_dir):
+    """
+    Find model and config files in the given directory.
+    Args:
+        model_dir (str): The directory to search for model and config files.
+        
+    Returns:
+        tuple: A tuple containing the model path and a dictionary of config files.
+    """
+    model_path = None
+    config_files = {}
+
+    if not os.path.exists(model_dir) or not os.path.isdir(model_dir):
+        logger.error(f"Model directory '{model_dir}' does not exist or is not a directory.")
+        return model_path, config_files
+
+    # Scan local directory for model and config files
+    for file in os.listdir(model_dir):
+        file_path = os.path.join(model_dir, file)
+        if os.path.isfile(file_path):
+            if file.endswith(tuple(MODEL_EXTS)) and model_path is None:
+                model_path = file_path
+            elif file.endswith(tuple(MODEL_EXTS)):
+                logger.warning(f"Found multiple model files. Using: {model_path}, ignoring: {file_path}")
+            elif file.endswith(tuple(CONFIG_EXTS)):
+                config_name = os.path.splitext(file)[0]
+                config_files[config_name] = file_path
+            else:
+                logger.warning(f"Found unexpected file type: {file}")
+
+    # Ensure a model file is found
+    if model_path is None:
+        logger.error(f"No valid model file found in {model_dir}")
+        return model_path, config_files
+
+    if not config_files:
+        logger.warning("No model config files found! Using default model config.")
+
+    return model_path, config_files
+
+
+def load_encoder(model_dir, model_type, device=None):
+    """
+    Load the feature extractor model from a local directory.
+
+    Args:
+        model_dir (str): The local directory containing the model and config files.
+        model_type (str): The model type.
+
+    Returns:
+        model: The loaded model.
+    """
+    model = None
+    transform = None
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logger.debug(f"Setting device to {device}")
+
+    model_path, config_files = retrieve_encoder_files(model_dir)
+    if model_path is None:
+        logger.warning("No model file found in the specified directory.")
+
+    try:
+        model, transform = select_and_load_encoder(model_type, model_path, config_files, device)
+    except Exception as e:
+        logger.error(f"Failed to load model from {model_path}. Error: {e}")
     return model, transform
 
 
@@ -378,7 +464,6 @@ def get_COO_coords(coords, sampling_size, tile_overlap):
     step_size = np.around(sampling_size * (1 - tile_overlap)).astype(int)
     scaled_coords = coords // step_size
     return scaled_coords
-
 
 
 def save_features_zarr(output_path, coo_coords, slide_features, chunk_size=10000, compressor=None):
@@ -466,90 +551,3 @@ def save_features_h5(output_path, coo_coords, slide_features, chunk_size=5000, c
         logger.error(f"Failed to save 'features' dataset: {e}")
         raise e
     
-
-def load_preprocessing_configs(
-        foreground_config_path,
-        foreground_cleanup_config_path,
-        tiling_config_path,
-):
-    tiling_config = load_yaml_config(tiling_config_path, TilingConfigSchema)
-    foreground_config = load_yaml_config(foreground_config_path, ForegroundConfigSchema)
-    foreground_cleanup_config = load_yaml_config(foreground_cleanup_config_path, ForegroundCleanupConfigSchema)
-    
-    log_config(logger, tiling_config, "Tiling Parameters")
-    log_config(logger, foreground_config, "Foreground Detection Parameters")
-    log_config(logger, foreground_cleanup_config, "Foreground Cleanup Parameters")
-
-    return {
-        "tiling_config": tiling_config,
-        "foreground_config": foreground_config,
-        "foreground_cleanup_config": foreground_cleanup_config,
-    }
-
-
-def retrieve_encoder_files(model_dir):
-    """
-    Find model and config files in the given directory.
-    Args:
-        model_dir (str): The directory to search for model and config files.
-        
-    Returns:
-        tuple: A tuple containing the model path and a dictionary of config files.
-    """
-    model_path = None
-    config_files = {}
-
-    if not os.path.exists(model_dir) or not os.path.isdir(model_dir):
-        logger.error(f"Model directory '{model_dir}' does not exist or is not a directory.")
-        return model_path, config_files
-
-    # Scan local directory for model and config files
-    for file in os.listdir(model_dir):
-        file_path = os.path.join(model_dir, file)
-        if os.path.isfile(file_path):
-            if file.endswith(tuple(MODEL_EXTS)) and model_path is None:
-                model_path = file_path
-            elif file.endswith(tuple(MODEL_EXTS)):
-                logger.warning(f"Found multiple model files. Using: {model_path}, ignoring: {file_path}")
-            elif file.endswith(tuple(CONFIG_EXTS)):
-                config_name = os.path.splitext(file)[0]
-                config_files[config_name] = file_path
-            else:
-                logger.warning(f"Found unexpected file type: {file}")
-
-    # Ensure a model file is found
-    if model_path is None:
-        logger.error(f"No valid model file found in {model_dir}")
-        return model_path, config_files
-
-    if not config_files:
-        logger.warning("No model config files found! Using default model config.")
-
-    return model_path, config_files
-
-
-def load_encoder(model_dir, model_type):
-    """
-    Load the feature extractor model from a local directory.
-
-    Args:
-        model_dir (str): The local directory containing the model and config files.
-        model_type (str): The model type.
-
-    Returns:
-        model: The loaded model.
-    """
-    model = None
-    transform = None
-    model_path, config_files = retrieve_encoder_files(model_dir)
-    if model_path is None:
-        logger.warning("No model file found in the specified directory.")
-
-    # Load model
-    try:
-        model, transform = select_and_load_encoder(model_type, model_path, config_files)
-    except Exception as e:
-        logger.error(f"Failed to load model from {model_path}. Error: {e}")
-    return model, transform
-
-
