@@ -22,6 +22,7 @@ import numpy as np
 
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from torchvision import transforms # type: ignore
 import timm
 from timm.data import resolve_data_config # type: ignore
@@ -405,13 +406,16 @@ def extract_features(slide_dataset, model, device, num_workers=16, batch_size=25
     Returns:
         features_array (np.ndarray): The extracted features of shape (len(slide_dataset), feature_dim).
     """
+    sampler = DistributedSampler(slide_dataset) if torch.cuda.device_count() > 1 else None
+
     dataloader = DataLoader(
         slide_dataset,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=True,
-        persistent_workers=True,
+        persistent_workers=num_workers > 0,
         prefetch_factor=prefetch_factor,
+        sampler=sampler,
     )
     logger.debug(f"DataLoader initialized with {num_workers} workers and batch size {batch_size}")
 

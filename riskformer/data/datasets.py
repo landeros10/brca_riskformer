@@ -1,6 +1,7 @@
 import numpy as np
 from PIL import Image
 import zarr
+import openslide
 
 import torch
 from torch.utils.data import Dataset
@@ -27,33 +28,31 @@ class SingleSlideDataset(Dataset):
     """
     def __init__(
             self,
-            slide_obj,
+            slide_obj: openslide.OpenSlide,
             slide_metadata: dict,
             sample_coords: np.ndarray,
             sample_size: int,
-            output_size: int,
             transform=None,
         ):
         self.slide_obj = slide_obj
         self.slide_metadata = slide_metadata
         self.sample_coords = sample_coords
         self.sample_size = sample_size
-        self.transform = transform
-        self.to_tensor = transforms.ToTensor()
+        self.transform = transform or transforms.ToTensor()
 
     def __len__(self):
         return len(self.sample_coords)
 
     def __getitem__(self, idx):
         x, y = self.sample_coords[idx]
+        # Returns PIL RGB image
         image = sample_slide_image(self.slide_obj, x, y, self.sample_size)
-
-        if self.transform:
-            image = self.transform(image)
-        else:
-            image = self.to_tensor(image) # (C, H, W), scaled to [0, 1]
-
+        image = self.transform(image)
         return image
+    
+    def close_slide(self):
+        """Ensure OpenSlide file is closed properly to prevent memory leaks."""
+        self.slide_obj.close()
 
 
 class ZarrFeatureDataset(Dataset):
