@@ -150,6 +150,7 @@ def upload_large_files_to_bucket(
         bucket_name, 
         files_list,
         file_names=None,
+        generate_unique_names=False,
         prefix="raw",
         ext="",
         reupload=False,
@@ -185,7 +186,10 @@ def upload_large_files_to_bucket(
     count = 0
     total_files = len(files_list)
     if file_names is None or len(file_names) != len(files_list):
-        file_names = [generate_s3_key(file_path) for file_path in files_list]
+        if generate_unique_names:
+            file_names = [generate_s3_key(file_path) for file_path in files_list]
+        else:
+            file_names = [os.path.basename(file_path) for file_path in files_list]
         logger.warning("file_names not provided or length mismatch. Using base names of files_list.")
 
     for file_path, file_name in zip(files_list, file_names):
@@ -198,7 +202,7 @@ def upload_large_files_to_bucket(
             if not reupload and s3_key in existing_files and existing_files[s3_key] == local_size:                
                 count += 1
                 total_time_str = time.strftime("%M:%S", time.gmtime((time.time() - start_time)))
-                logger.debug(f"({total_time_str}) ({count}/{total_files}) Skipping: {file_name}")
+                logger.debug(f"({total_time_str}) ({count}/{total_files}) Already uploaded, skipping: {file_name}")
                 continue
             
             try:

@@ -67,23 +67,26 @@ def upload_preprocessing_results(s3_client, args, local_out_dir):
     Uploads the preprocessing results to S3.
     """
     logger.debug(f"Uploading results from {local_out_dir} to s3://{args.bucket}/{args.output_dir}")
+    local_files = []
     for filename in os.listdir(local_out_dir):
-        local_file_path = os.path.join(local_out_dir, filename)
-        if os.path.exists(local_file_path):
-            try:
-                upload_large_files_to_bucket(
-                    s3_client,
-                    bucket_name=args.bucket,
-                    files_list=[local_file_path],
-                    prefix=f"{args.output_dir}/{args.model_key}",
-                    reupload=False,
-                )
-            except Exception as e:
-                logger.error(f"Error uploading {local_file_path} to S3: {e}")
-                continue
+        filepath = os.path.join(local_out_dir, filename)
+        if os.path.isfile(filepath):
+            local_files.append(filepath)
         else:
-            logger.warning(f"{local_file_path} is not a file, skipping upload.")
-            
+            # Not a file; skip it
+            logger.warning(f"Skipping {filepath}, not a file.")
+
+    try:
+        upload_large_files_to_bucket(
+            s3_client,
+            bucket_name=args.bucket,
+            files_list=local_files,
+            prefix=f"{args.output_dir}/{args.model_key}",
+            reupload=False,
+        )
+    except Exception as e:
+        logger.error(f"Error uploading files from {local_out_dir} to S3: {e}")
+    
 
 def arg_parse():
     """
