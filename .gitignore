@@ -174,9 +174,24 @@ cython_debug/
 *.h5
 *.hdf5
 *.pt
+datasets/
+resources/
+models/
 
 # SVS Files
 *.svs
 
 # MacOS
 .DS_Store
+
+# Logs and Debug
+logs/
+*.log
+debug.log
+
+# Custom project-specific directories
+bin/
+configs/
+orchestrators/
+testing/
+tests/
