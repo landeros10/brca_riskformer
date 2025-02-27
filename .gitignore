@@ -189,9 +189,3 @@ logs/
 *.log
 debug.log
 
-# Custom project-specific directories
-bin/
-configs/
-orchestrators/
-testing/
-tests/
