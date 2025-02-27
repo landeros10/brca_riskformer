@@ -8,7 +8,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 
 from riskformer.utils.data_utils import sample_slide_image
-# from riskformer.utils.randstainna import RandStainNA
+from riskformer.utils.randstainna import RandStainNA
 
 yaml_file = '/home/ubuntu/notebooks/cpc_hist/src/CRC_LAB_randomTrue_n0.yaml'
 stain_normalizer = RandStainNA(yaml_file, std_hyper=-1.0)
