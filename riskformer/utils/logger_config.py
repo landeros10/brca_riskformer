@@ -97,7 +97,7 @@ def logger_setup(
         if cw_handler:
             root_logger.addHandler(cw_handler)
             root_logger.info(
-                f"CloudWatch logging enabled. Log Group: '{log_group}', Stream: '{cw_handler.stream_name}'"
+                f"CloudWatch logging enabled. Log Group: '{log_group}', Stream: '{cw_handler.log_stream_name}'"
             )
         else:
             raise ValueError("Failed to initialize CloudWatch handler; check AWS credentials and permissions.")
