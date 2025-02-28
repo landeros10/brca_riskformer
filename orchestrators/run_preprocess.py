@@ -29,23 +29,25 @@ def load_dataset_files(s3_client, args, project_root):
     processed_prefix = f"{args.output_dir}/{args.model_key}"
     processed_files = list_bucket_files(s3_client, args.bucket, processed_prefix)
     logger.info(f"Found {len(processed_files)//4} file sets in {args.output_dir}...")
-    processed_ids = set([name.split("_")[0].split("/")[-1] for name in processed_files.keys()])
+    processed_ids = set([name.split("_")[0] for name in processed_files.keys()])
     complete_sets = [
-        name for name in processed_ids if len([f for f in processed_files.keys() if f.startswith(name)]) == 4
+        name.split("/")[-1] for name in processed_ids if len([f for f in processed_files.keys() if f.startswith(name)]) == 4
     ]
 
     logger.info("Loading riskformer dataset metadata...")
     metadata_file = os.path.join(project_root, args.metadata_file)
     riskformer_dataset = json.load(open(metadata_file, "r"))
-    logger.debug(f"First 5 keys in riskformer dataset: {list(riskformer_dataset.keys())[:5]}")
+    logger.info("Metadata structure:")
+    test_datapoint = list(riskformer_dataset.values())[0]
+    for key, value in test_datapoint.items():
+        logger.info(f"\t{key}:\t{value}")
 
     to_process = [file.split("/")[1] for file in raw_files if file.endswith(".svs")]
     to_process = [file for file in to_process if file.split(".svs")[0] in riskformer_dataset.keys()]
-    logger.debug(f"Now filtered to {len(to_process)} SVS files in riskformer dataset")
+    logger.info(f"Now filtered to {len(to_process)} SVS files in riskformer dataset")
 
     to_process = [file for file in to_process if file.split(".svs")[0] not in complete_sets]
-    logger.info(f"{complete_sets[0]}")
-    logger.debug(f"Now filtered to {len(to_process)} files not already pre-processed")
+    logger.info(f"Now filtered to {len(to_process)} files not already pre-processed")
 
     return to_process
 
