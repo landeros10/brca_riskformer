@@ -30,6 +30,7 @@ def load_dataset_files(s3_client, args, project_root):
     processed_files = list_bucket_files(s3_client, args.bucket, processed_prefix)
     logger.info(f"Found {len(processed_files)//4} file sets in {args.output_dir}...")
     processed_ids = set([name.split("_")[0] for name in processed_files.keys()])
+    logger.debug(f"first id: {list(processed_ids)[:5]}")
     complete_sets = [
         name for name in processed_ids if len([f for f in processed_files.keys() if f.startswith(name)]) == 4
     ]
@@ -40,13 +41,11 @@ def load_dataset_files(s3_client, args, project_root):
     logger.debug(f"First 5 keys in riskformer dataset: {list(riskformer_dataset.keys())[:5]}")
 
     to_process = [file.split("/")[1] for file in raw_files if file.endswith(".svs")]
-    logger.debug(f"Now filtered to {len(to_process)} .svs files")
-
-    logger.debug(f"file to keys map: {to_process[0]}: {to_process[0].split('.svs')[0]}")
     to_process = [file for file in to_process if file.split(".svs")[0] in riskformer_dataset.keys()]
-    logger.debug(f"Now filtered to {len(to_process)} files in riskformer dataset")
+    logger.debug(f"Now filtered to {len(to_process)} SVS files in riskformer dataset")
 
     to_process = [file for file in to_process if file.split(".svs")[0] not in complete_sets]
+    logger.info(f"{complete_sets[0]}")
     logger.info(f"Now filtered to {len(to_process)} files not already pre-processed")
 
     return to_process
