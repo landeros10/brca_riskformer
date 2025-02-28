@@ -21,6 +21,7 @@ RUN pip install --upgrade pip && \
     scipy \
     scikit-learn \
     openslide-bin \
+    watchtower \
     histomicstk --find-links https://girder.github.io/large_image_wheels \
     zarr==2.18.3
 
