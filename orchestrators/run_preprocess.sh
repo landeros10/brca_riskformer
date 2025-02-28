@@ -8,9 +8,20 @@
 set -e
 set -x
 
+# AWS credentials
+PROFILE="651340551631_AWSPowerUserAccess"
+ECR_ID="651340551631.dkr.ecr.us-east-1.amazonaws.com"
+REGION="us-east-1"
+AWS_CREDENTIALS="$HOME/.aws/credentials"
+
+# S3 paths
+MODEL_BUCKET="tcga-riskformer-preprocessing-models"
+DATA_BUCKET="tcga-riskformer-data-2025"
+INPUT_DIR="raw"
+OUTPUT_DIR="preprocessed"
+
 # Docker image name
-IMAGE_NAME="651340551631.dkr.ecr.us-east-1.amazonaws.com/brca-riskformer/pytorch-svs-preprocess"
-# IMAGE_NAME="pytorch-svs-preprocess"
+IMAGE_NAME="$ECR_ID/brca-riskformer/pytorch-svs-preprocess"
 
 # Root directory of the project
 PROJECT_ROOT="/home/ec2-user/brca_riskformer"
@@ -32,7 +43,6 @@ FOREGROUND_CLEANUP_CONFIG="$WORKSPACE_ROOT/configs/preprocessing_foreground_clea
 TILING_CONFIG="$WORKSPACE_ROOT/configs/preprocessing_tiling_config.yaml"
 
 # Model details
-MODEL_BUCKET="tcga-riskformer-preprocessing-models"
 MODEL_TYPE="uni"
 MODEL_KEY="uni/uni2-h"
 
@@ -44,18 +54,11 @@ DEBUG_FLAG="--debug"
 STOP_ON_FAIL="--stop_on_fail"
 
 
-# AWS credentials
-PROFILE="651340551631_AWSPowerUserAccess"
-DATA_BUCKET="tcga-riskformer-data-2025"
-REGION="us-east-1"
-INPUT_DIR="raw"
-OUTPUT_DIR="preprocessed"
-AWS_CREDENTIALS="$HOME/.aws/credentials"
-INSTNCE_ID="i-08a58080616278d9c"
-
 # ==============================
 # Run the Docker Container
 # ==============================
+aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$ECR_ID"
+docker pull "$IMAGE_NAME"
 
 docker run --rm --gpus all --runtime=nvidia\
     --user root \
@@ -92,4 +95,4 @@ docker run --rm --gpus all --runtime=nvidia\
         --num_workers "$NUM_WORKERS" \
         --prefetch_factor "$PREFETCH_FACTOR" \
         $STOP_ON_FAIL \
-        $DEBUG_FLAG \
+        $DEBUG_FLAG
