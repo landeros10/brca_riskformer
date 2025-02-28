@@ -137,7 +137,7 @@ def arg_parse():
 def main():
     args = arg_parse()
     logger_setup(
-        log_group="run_preprocess",
+        log_group="run_preprocess_ec2",
         debug=args.debug,
         use_cloudwatch=args.use_cloudwatch,
         profile_name=args.profile,
@@ -207,11 +207,15 @@ def main():
     
     overall_time = time.time()
     for i, raw_key in enumerate(to_process):
-        logger.info(f"({(time.time() - overall_time) / 60:.2f} minutes) Processing {i+1}/{len(to_process)}: {raw_key}...")
-        bucket_prefix=f"{args.output_dir}/{args.model_key}"
-        existing_files = list_bucket_files(s3_client, args.bucket, bucket_prefix)
+        files_left = len(to_process) - (i + 1)
+        percent_done = ((i + 1) / len(to_process)) * 100
+        logger.info(
+            f"[{i+1}/{len(to_process)} | {percent_done:.2f}%] "
+            f"Elapsed: {(time.time() - overall_time) / 60:.2f} min, "
+            f"Processing file: {raw_key}, Remaining: {files_left}"
+        )
 
-        start_time = time.time()
+        file_processing_start_time = time.time()
         raw_s3_path = f"s3://{args.bucket}/{args.input_dir}/{raw_key}"
         out_s3_dir = f"s3://{args.bucket}/{args.output_dir}"
 
@@ -251,7 +255,7 @@ def main():
         shutil.rmtree(local_out_dir)
         os.makedirs(local_input_dir, exist_ok=True)
         os.makedirs(local_out_dir, exist_ok=True)
-        logger.info(f"Time taken for {raw_key}: {(time.time() - start_time) / 60:.2f} minutes")
+        logger.info(f"Time taken for {raw_key}: {(time.time() - file_processing_start_time) / 60:.2f} minutes")
         logger.info("=" * 50)
         logger.info("=" * 50)
     logger.info(f"All done! Total time: {(time.time() - overall_time) / 60:.2f} minutes")
