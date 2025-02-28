@@ -191,7 +191,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Preprocessing pipeline for SVS slides in SageMaker")
     parser.add_argument("--input_filename", type=str, required=True, help="Input filename")
     parser.add_argument("--output_dir", type=str, default="./output", help="Output directory")
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     
     parser.add_argument("--foreground_config", type=str, required=False, help="Foreground detection YAML file")
     parser.add_argument("--foreground_cleanup_config", type=str, required=False, help="Foreground cleanup YAML file")
@@ -203,6 +202,9 @@ def parse_args():
     parser.add_argument("--num_workers", type=int, default=16, help="Number of workers for DataLoader")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for DataLoader")
     parser.add_argument("--prefetch_factor", type=int, default=2, help="Prefetch factor for DataLoader")
+
+
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     args = parser.parse_args()
     logger.info("Arguments parsed successfully.")
 
@@ -214,7 +216,10 @@ def parse_args():
 
 def main():
     args = parse_args()
-    logger_setup(debug=args.debug)
+    logger_setup(
+        log_group="riskformer-preprocess",
+        debug=args.debug,
+    )
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
     logger.info(f"Input filename: {args.input_filename}")
     logger.info(f"Output directory: {args.output_dir}")

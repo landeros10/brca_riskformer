@@ -20,7 +20,6 @@ from riskformer.utils.logger_config import logger_setup
 from riskformer.utils.aws_utils import initialize_s3_client, list_bucket_files, upload_large_files_to_bucket
 
 logger = logging.getLogger(__name__)
-logger_setup(log_group="preprocess", debug=True)
 
 
 def load_dataset_files(s3_client, args, project_root):
@@ -117,6 +116,7 @@ def arg_parse():
     parser.add_argument("--prefetch_factor", type=int, default=2, help="Prefetch factor for DataLoader")
 
     parser.add_argument("--stop_on_fail", action="store_true", help="Stop on first slide failure")
+    parser.add_argument("--use_cloudwatch", action="store_true", help="Use CloudWatch for logging")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     args = parser.parse_args()
     logger.info("Arguments parsed successfully.")
@@ -129,6 +129,13 @@ def arg_parse():
 
 def main():
     args = arg_parse()
+    logger_setup(
+        log_group="run_preprocess",
+        debug=args.debug,
+        use_cloudwatch=args.use_cloudwatch,
+        profile_name=args.profile,
+        region_name=args.region,
+    )
     logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
     logging.getLogger("botocore").setLevel(logging.WARNING)
     logging.getLogger("boto3").setLevel(logging.WARNING)
@@ -225,7 +232,7 @@ def main():
         except Exception as e:
             logger.error(f"Error preprocessing slide {raw_key}: {e}")
             if args.stop_on_fail:
-                raise
+                raise e
             else:
                 continue
 

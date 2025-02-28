@@ -10,10 +10,34 @@ import sagemaker
 logger = logging.getLogger(__name__)
 
 
+def initialize_boto3_session(
+        profile_name: str,
+        region_name: str = None,
+    ) -> boto3.Session:
+    """
+    Initialize boto3 session.
+    
+    Args:
+        profile_name (str): AWS profile name.
+        region_name (str): AWS region name.
+    
+    Returns:
+        boto3.Session: Boto3 session object.
+    """
+    session = None
+    try:
+        session = boto3.Session(profile_name=profile_name, region_name=region_name)
+        logger.debug("Created boto3 session")
+    except Exception as e:
+        logger.error(f"Failed to create boto3 session: {e}")
+    return session
+
+
 def initialize_s3_client(
         profile_name,
         region_name=None,
-        return_session=False):
+        return_session=False
+    )-> boto3.client:
     """
     Initialize boto3 session and S3 client.
     
@@ -23,10 +47,8 @@ def initialize_s3_client(
     Returns:
         boto3.client: S3 boto3 client.
     """
-    try:
-        session = boto3.Session(profile_name=profile_name, region_name=region_name)
-        logger.debug("Created boto3 session")
-    except Exception as e:
+    session = initialize_boto3_session(profile_name, region_name)
+    if session is None:
         logger.error(f"Failed to create boto3 session: {e}")
         return
     

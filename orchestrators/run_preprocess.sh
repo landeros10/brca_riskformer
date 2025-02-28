@@ -51,6 +51,7 @@ BATCH_SIZE=256
 NUM_WORKERS=32
 PREFETCH_FACTOR=8
 DEBUG_FLAG="--debug"
+CLOUDWATCH_FLAG="--use_cloudwatch"
 STOP_ON_FAIL="--stop_on_fail"
 
 
@@ -95,4 +96,5 @@ docker run --rm --gpus all --runtime=nvidia\
         --num_workers "$NUM_WORKERS" \
         --prefetch_factor "$PREFETCH_FACTOR" \
         $STOP_ON_FAIL \
-        $DEBUG_FLAG
+        $DEBUG_FLAG \
+        $CLOUDWATCH_FLAG
