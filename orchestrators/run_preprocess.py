@@ -24,13 +24,12 @@ logger = logging.getLogger(__name__)
 
 def load_dataset_files(s3_client, args, project_root):
     raw_files = list_bucket_files(s3_client, args.bucket, args.input_dir)
-    logger.info(f"Found {len(raw_files)} files in {args.input_dir}...")
+    logger.info(f"Found {len(raw_files)} files in s3://{args.bucket}/{args.input_dir}...")
 
     processed_prefix = f"{args.output_dir}/{args.model_key}"
     processed_files = list_bucket_files(s3_client, args.bucket, processed_prefix)
     logger.info(f"Found {len(processed_files)//4} file sets in {args.output_dir}...")
-    processed_ids = set([name.split("_")[0] for name in processed_files.keys()])
-    logger.debug(f"first id: {list(processed_ids)[:5]}")
+    processed_ids = set([name.split("_")[0].split("/")[-1] for name in processed_files.keys()])
     complete_sets = [
         name for name in processed_ids if len([f for f in processed_files.keys() if f.startswith(name)]) == 4
     ]
@@ -46,7 +45,7 @@ def load_dataset_files(s3_client, args, project_root):
 
     to_process = [file for file in to_process if file.split(".svs")[0] not in complete_sets]
     logger.info(f"{complete_sets[0]}")
-    logger.info(f"Now filtered to {len(to_process)} files not already pre-processed")
+    logger.debug(f"Now filtered to {len(to_process)} files not already pre-processed")
 
     return to_process
 
