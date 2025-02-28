@@ -205,8 +205,9 @@ def main():
     logger.info(f"prefetch_factor: {args.prefetch_factor}")
     logger.info(f"output_dir: {local_out_dir}")
     
-    for raw_key in to_process:
-        logger.info("Starting next whole-slide image...")
+    overall_time = time.time()
+    for i, raw_key in enumerate(to_process):
+        logger.info(f"({(time.time() - overall_time) / 60:.2f} minutes) Processing {i+1}/{len(to_process)}: {raw_key}...")
         bucket_prefix=f"{args.output_dir}/{args.model_key}"
         existing_files = list_bucket_files(s3_client, args.bucket, bucket_prefix)
 
@@ -253,7 +254,7 @@ def main():
         logger.info(f"Time taken for {raw_key}: {(time.time() - start_time) / 60:.2f} minutes")
         logger.info("=" * 50)
         logger.info("=" * 50)
-    logger.info("All done!")
+    logger.info(f"All done! Total time: {(time.time() - overall_time) / 60:.2f} minutes")
 
 
 if __name__ == "__main__":
