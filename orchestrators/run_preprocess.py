@@ -25,8 +25,14 @@ logger = logging.getLogger(__name__)
 def load_dataset_files(s3_client, args, project_root):
     raw_files = list_bucket_files(s3_client, args.bucket, args.input_dir)
     logger.info(f"Found {len(raw_files)} files in {args.input_dir}...")
-    processed_files = list_bucket_files(s3_client, args.bucket, args.output_dir)
-    logger.info(f"Found {len(processed_files)} files in {args.output_dir}...")
+
+    processed_prefix = f"{args.output_dir}/{args.model_key}"
+    processed_files = list_bucket_files(s3_client, args.bucket, processed_prefix)
+    logger.info(f"Found {len(processed_files)//4} file sets in {args.output_dir}...")
+    processed_ids = set([name.split("_")[0] for name in processed_files.keys()])
+    complete_sets = [
+        name for name in processed_ids if len([f for f in processed_files.keys() if f.startswith(name)]) == 4
+    ]
 
     logger.info("Loading riskformer dataset metadata...")
     metadata_file = os.path.join(project_root, args.metadata_file)
@@ -40,7 +46,8 @@ def load_dataset_files(s3_client, args, project_root):
     to_process = [file for file in to_process if file.split(".svs")[0] in riskformer_dataset.keys()]
     logger.debug(f"Now filtered to {len(to_process)} files in riskformer dataset")
 
-    to_process = [file for file in to_process if file not in processed_files]
+    to_process = [file for file in to_process if file.split(".svs")[0] not in complete_sets]
+    logger.info(f"Now filtered to {len(to_process)} files not already pre-processed")
 
     return to_process
 
@@ -155,7 +162,7 @@ def main():
 
     os.environ["AWS_REGION"] = args.region
     try:
-        s3_client, session = initialize_s3_client(
+        s3_client, _ = initialize_s3_client(
             args.profile,
             region_name=args.region,
             return_session=True
@@ -168,6 +175,7 @@ def main():
     # Load dataset files
     to_process = load_dataset_files(s3_client, args, project_root)
     logger.info(f"Need to process {len(to_process)} new .svs files")
+    return
 
     # Download model files
     tmp_dir = os.path.join(project_root, "tmp")
@@ -201,6 +209,9 @@ def main():
     
     for raw_key in to_process:
         logger.info("Starting next whole-slide image...")
+        bucket_prefix=f"{args.output_dir}/{args.model_key}"
+        existing_files = list_bucket_files(s3_client, args.bucket, bucket_prefix)
+
         start_time = time.time()
         raw_s3_path = f"s3://{args.bucket}/{args.input_dir}/{raw_key}"
         out_s3_dir = f"s3://{args.bucket}/{args.output_dir}"
