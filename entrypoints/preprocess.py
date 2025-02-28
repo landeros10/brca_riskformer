@@ -26,7 +26,7 @@ def save_sparse_feature_array(
     output_dir,
     basename,
 ):
-    logger.info("Saving feature vectors and COO coordinates...")
+    logger.debug("Saving sparse feature vectors...")
     coo_coords = preprocessor.get_COO_coords(
         coords=sample_coords,
         sampling_size=sampling_size,
@@ -47,7 +47,7 @@ def save_sparse_feature_array(
     except Exception as e:
         logger.error(f"Failed to save feature vectors to zarr file. Error: {e}")
         return
-    logger.info("Feature vectors saved successfully.")    
+    logger.debug("Feature vectors saved successfully.")    
 
 
 def save_image_output(
@@ -58,9 +58,8 @@ def save_image_output(
         normalize=False
     ):
     if image is not None:
-        logger.debug(f"[Saving {tag} to output directory {output_dir}]")
         image_file = os.path.join(output_dir, f"{basename}_{tag}.png")
-        logger.debug(f"Saving image to {image_file}")
+        logger.debug(f"[Saving {tag} to {image_file}")
 
         if isinstance(image, Image.Image):
             image = np.array(image)
@@ -98,7 +97,7 @@ def preprocess_one_slide(
     tiling_config = preprocessing_params["tiling_config"]
 
     ### Collect sample points for svs file ###
-    logger.info("[Collecting sample points for svs file]")
+    logger.info("Collecting sample points for svs file...")
     try:
         sample_coords, slide_obj, slide_metadata, sampling_size, heatmap, thumb = preprocessor.get_svs_samplepoints(
             input_filename,
@@ -114,9 +113,9 @@ def preprocess_one_slide(
         raise e
 
     ### Load feature extraction model ###
-    logger.info("[Loading feature extraction model...]")
+    logger.info("Loading feature extraction model...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
+    logger.debug(f"Using device: {device}")
     model, transform = preprocessor.load_encoder(
             model_dir=model_dir,
             model_type=model_type,
@@ -125,10 +124,10 @@ def preprocess_one_slide(
     if model is None:
         logger.error("Failed to load feature extraction model.")
         raise ValueError("Model loading failed.")
-    logger.info(f"Model successfully loaded: {model_type} from {model_dir}")
-    logger.info("=" * 50)
-    model = model.eval().to(device)
+    logger.info(f"Model successfully loaded!")
 
+    model = model.eval().to(device)
+    logger.info(f"Creating single-slide dataset with {len(sample_coords)} samples...")
     try:
         slide_dataset = SingleSlideDataset(
             slide_obj=slide_obj,
@@ -140,8 +139,7 @@ def preprocess_one_slide(
     except Exception as e:
         logger.error(f"Failed to create single-slide dataset. Error: {e}")
         raise e
-    logger.info(f"Dataset created with {len(slide_dataset)} samples.")
-    logger.info("=" * 50)
+    logger.info(f"Dataset created!")
 
     ### Feature Extraction ###
     logger.info("Extracting features from sampled images...")
@@ -157,12 +155,10 @@ def preprocess_one_slide(
     except Exception as e:
         logger.error(f"Failed to extract features. Error: {e}")
         raise e        
-    logger.info(f"Successfully extracted tile features for foreground samples. Feature shape: {slide_features.shape}")
+    logger.info(f"Successfully extracted tile features (dim={slide_features.shape[1]})")
 
     ### Save Output ###
-    logger.info("=" * 50)
-    logger.info("Now saving processed data to output dir...")
-    logger.debug("Saving thumbnail and heatmap images.")
+    logger.info("Saving processed data to local output dir...")
     slide_id = os.path.basename(input_filename).split(".svs")[0]
     try:
         save_image_output(
@@ -187,7 +183,7 @@ def preprocess_one_slide(
     except Exception as e:
         logger.error(f"Failed to save output data. Error: {e}")
         raise e
-    logger.info("Output data saved successfully.")
+    logger.info("Output data saved successfully to local output dir.")
     slide_dataset.close_slide()
 
 

@@ -13,10 +13,7 @@ import time
 import math
 import json
 import yaml
-import zarr
 import h5py
-import numcodecs
-from multiprocessing import Pool, cpu_count
 from pydantic import BaseModel, Field
 
 import numpy as np
@@ -115,8 +112,8 @@ def get_svs_samplepoints(
 
     slide_obj, slide_metadata = open_svs(svs_file, default_mag=DEFAULT_TILING_CONFIG["reference_mag"])
     logger.debug(f"Successfully opened slide: {svs_file}")
-    logger.debug("Collecting sampling points...")
     try:
+        start_time = time.time()
         sampling_coords, heatmap, thumb = get_slide_samplepoints(
             slide_obj,
             slide_metadata=slide_metadata,
@@ -138,7 +135,8 @@ def get_svs_samplepoints(
             return_heatmap=True,
             return_thumb=True,
         )
-        logger.info(f"Successfully extracted sampling points from slide: {svs_file}")
+        logger.info(f"Successfully extracted sampling points in {time.time() - start_time:.2f}s from {svs_file}")
+
 
         slide_mag = slide_metadata["mag"]    
         sampling_size = np.around(float(tiling_config.tile_size) * (slide_mag / tiling_config.reference_mag))
@@ -386,7 +384,9 @@ def load_encoder(model_dir, model_type, device=None):
         logger.warning("No model file found in the specified directory.")
 
     try:
+        start_time = time.time()
         model, transform = select_and_load_encoder(model_type, model_path, config_files, device)
+        logger.info(f"Model loaded successfully in {time.time() - start_time:.2f}s")
     except Exception as e:
         logger.error(f"Failed to load model from {model_path}. Error: {e}")
     return model, transform
@@ -450,6 +450,7 @@ def extract_features(slide_dataset, model, device, num_workers=16, batch_size=25
             if count % 10 == 0:
                 current_time = time.time()
                 logger.debug(f"({(current_time - start_time)/60:.2f}m) -Processed batch {count}/{n_batches} ({(count/n_batches)*100:.2f}%)")
+    logger.info(f"Feature extraction completed in {(time.time() - start_time)/60:.2f} minutes.")
     return features
 
 
@@ -487,7 +488,6 @@ def save_features_h5(output_path, coo_coords, slide_features, chunk_size=5000, c
     coords_file = f"{output_path}_coords.h5"
     features_file = f"{output_path}_features.h5"
 
-    logger.debug(f"Saving coordinates to {coords_file}")
     try:
         with h5py.File(coords_file, "w") as f:
             f.create_dataset(
@@ -497,12 +497,11 @@ def save_features_h5(output_path, coo_coords, slide_features, chunk_size=5000, c
                 chunks=(chunk_size, 2),
                 compression=compression
             )
-        logger.debug("Successfully saved 'coords' dataset.")
+        logger.debug("Successfully saved coordinates to {coords_file}")
     except Exception as e:
         logger.error(f"Failed to save 'coords' dataset: {e}")
         raise e
 
-    logger.debug(f"Saving features to {features_file}")
     try:
         with h5py.File(features_file, "w") as f:
             f.create_dataset(
@@ -512,7 +511,7 @@ def save_features_h5(output_path, coo_coords, slide_features, chunk_size=5000, c
                 chunks=(chunk_size, slide_features.shape[1]),
                 compression=compression
             )
-        logger.debug("Successfully saved 'features' dataset.")
+        logger.debug("Successfully saved features to {features_file}")
     except Exception as e:
         logger.error(f"Failed to save 'features' dataset: {e}")
         raise e

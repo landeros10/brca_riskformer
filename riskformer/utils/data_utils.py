@@ -592,5 +592,4 @@ def get_slide_samplepoints(
         true_dim = slide_metadata["full_dims"][0]
         fg_scale = true_dim / float(clean_mask.shape[0])
         heatmap = map_coords_to_heatmap(coords, fg_scale, sampling_size, clean_mask.shape)
-    logger.debug(f"Finished processing slide\n{slide_metadata['file']}\nin {time.time() - start_time:.2f}s")
     return coords, heatmap, thumb

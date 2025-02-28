@@ -10,6 +10,7 @@ Created: 2025-12-05
 import os
 import shutil
 import json
+import time
 import logging
 import argparse
 import torch
@@ -192,6 +193,8 @@ def main():
     logger.info(f"output_dir: {local_out_dir}")
     
     for raw_key in to_process:
+        logger.info("Starting next whole-slide image...")
+        start_time = time.time()
         raw_s3_path = f"s3://{args.bucket}/{args.input_dir}/{raw_key}"
         out_s3_dir = f"s3://{args.bucket}/{args.output_dir}"
 
@@ -216,8 +219,7 @@ def main():
                 batch_size=args.batch_size,
                 prefetch_factor=args.prefetch_factor,
             )
-            logger.info(f"Successfully preprocessed {raw_key}")
-            logger.info("=" * 50)
+            logger.info(f"Finished pre-processing {raw_key}")
             upload_preprocessing_results(s3_client, args, local_out_dir)
             logger.info(f"Successfully uploaded preprocessing results to {out_s3_dir}")
         except Exception as e:
@@ -232,6 +234,9 @@ def main():
         shutil.rmtree(local_out_dir)
         os.makedirs(local_input_dir, exist_ok=True)
         os.makedirs(local_out_dir, exist_ok=True)
+        logger.info(f"Time taken for {raw_key}: {(time.time() - start_time) / 60:.2f} minutes")
+        logger.info("=" * 50)
+        logger.info("=" * 50)
     logger.info("All done!")
 
 

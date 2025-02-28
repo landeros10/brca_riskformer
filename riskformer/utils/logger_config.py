@@ -42,6 +42,6 @@ def log_config(logger, config, tag):
             logger.warning(f"Failed to load config dict. Error: {e}")
             raise e
 
-    logger.info(f"{tag} configuration:" + "=" * 20)
+    logger.info(f"[{tag} configuration]")
     for key, value in config.items():
-        logger.info(f"{key}: {value}")
+        logger.info(f"\t{key}:\t{value}")

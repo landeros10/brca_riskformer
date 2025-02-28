@@ -17,10 +17,9 @@ def load_yaml_config(config_path, schema):
         return schema()
 
     try:
-        logger.info(f"Loading YAML config from {config_path}")
         with open(config_path, "r") as f:
             yaml_config = yaml.safe_load(f)
-            logger.info("Successfully loaded YAML config.")
+            logger.debug(f"Successfully loaded YAML config from {config_path}")
             if not isinstance(yaml_config, dict):
                 logger.warning(f"Invalid YAML format in {config_path}. Using defaults.")
                 return schema()
