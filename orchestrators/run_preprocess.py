@@ -16,56 +16,68 @@ import argparse
 import torch
 
 from entrypoints.preprocess import preprocess_one_slide
-from riskformer.utils.logger_config import logger_setup
+from riskformer.utils.logger_config import logger_setup, log_event
 from riskformer.utils.aws_utils import initialize_s3_client, list_bucket_files, upload_large_files_to_bucket
 
 logger = logging.getLogger(__name__)
 
 
 def load_dataset_files(s3_client, args, project_root):
+    log_event("debug", "load_dataset_files", "started",
+              s3_bucket=args.bucket, s3_prefix=args.input_dir, metadata_file=args.metadata_file)
+
     raw_files = list_bucket_files(s3_client, args.bucket, args.input_dir)
-    logger.debug(f"Found {len(raw_files)} files in s3://{args.bucket}/{args.input_dir}...")
+    log_event("debug", "list_s3_bucket_files", "success",
+              s3_bucket=args.bucket, s3_prefix=args.input_dir, file_count=len(raw_files))
 
     processed_prefix = f"{args.output_dir}/{args.model_key}"
     processed_files = list_bucket_files(s3_client, args.bucket, processed_prefix)
-    logger.debug(f"Found {len(processed_files)//4} file sets in {args.output_dir}...")
     processed_ids = set([name.split("_")[0] for name in processed_files.keys()])
     complete_sets = [
         name.split("/")[-1] for name in processed_ids if len([f for f in processed_files.keys() if f.startswith(name)]) == 4
     ]
+    log_event("debug", "list_s3_bucket_processed_files", "success",
+              s3_bucket=args.bucket, s3_prefix=processed_prefix, file_sets_count=len(complete_sets))
 
-    logger.info("Loading riskformer dataset metadata...")
     metadata_file = os.path.join(project_root, args.metadata_file)
     riskformer_dataset = json.load(open(metadata_file, "r"))
-    logger.info("Metadata structure for item 0:")
+    log_event("debug", "load_riskformer_metadata", "success",
+              metadata_file=args.metadata_file)
+    
     test_datapoint = list(riskformer_dataset.values())[0]
-    for key, value in test_datapoint.items():
-        logger.info(f"\t{key}:\t{value}")
-
+    log_event("debug", "riskformer_metadata_structure", "info",
+              message="Metadata structure for item 0", **test_datapoint)
+    
     to_process = [file.split("/")[1] for file in raw_files if file.endswith(".svs")]
     to_process = [file for file in to_process if file.split(".svs")[0] in riskformer_dataset.keys()]
-    logger.debug(f"Filtered to {len(to_process)} SVS files in Riskformer dataset")
-
     to_process = [file for file in to_process if file.split(".svs")[0] not in complete_sets]
-    logger.info(f"{len(to_process)} files not pre-processed in Riskformer dataset")
-
+    log_event("info", "generate_riskformer_dataset", "success",
+              filtered_count=len(to_process))
     return to_process
 
 
 def download_s3_model_files(s3_client, args, model_dir):
-    logger.debug(f"Downloading model files from s3://{args.model_bucket}/{args.model_key} to {model_dir}")
-
+    log_event("debug", "download_s3_model_files", "started",
+              s3_bucket=args.model_bucket, s3_prefix=args.model_key, local_dir=model_dir)
+    
     model_files = list_bucket_files(s3_client, args.model_bucket, args.model_key)
-    logger.debug(f"Found {len(model_files)} model files in {args.model_key}...")
+    log_event("debug", "list_s3_model_files", "success",
+              s3_bucket=args.model_bucket, s3_prefix=args.model_key, file_count=len(model_files))
     for file in model_files:
-        logger.debug(f"Found file: {file}")
         file_name = os.path.basename(file)
         local_file_path = os.path.join(model_dir, file_name)
         if not os.path.exists(local_file_path):
-            logger.info(f"Downloading s3://{args.model_bucket}/{args.model_key}/{file_name} to {local_file_path}")
             s3_client.download_file(args.model_bucket, file, local_file_path)
+            log_event("info", "download_s3_model_file", "success",
+                      s3_bucket=args.model_bucket, s3_prefix=args.model_key,
+                      s3_key=file_name, local_path=local_file_path)
         else:
-            logger.info(f"File {local_file_path} already exists, skipping download.")
+            log_event("info", "download_s3_model_file", "skipped",
+                      s3_bucket=args.model_bucket, s3_prefix=args.model_key,
+                      s3_key=file_name, local_path=local_file_path)
+            
+    log_event("debug", "download_s3_model_files", "success",
+              s3_bucket=args.model_bucket, s3_prefix=args.model_key, local_dir=model_dir)
     return model_files
 
 
@@ -73,15 +85,16 @@ def upload_preprocessing_results(s3_client, args, local_out_dir):
     """
     Uploads the preprocessing results to S3.
     """
-    logger.debug(f"Uploading results from {local_out_dir} to s3://{args.bucket}/{args.output_dir}")
+    log_event("debug", "upload_preprocessing_results", "started",
+              local_dir=local_out_dir, s3_bucket=args.bucket, s3_prefix=f"{args.output_dir}/{args.model_key}")
+    
     local_files = []
     for filename in os.listdir(local_out_dir):
         filepath = os.path.join(local_out_dir, filename)
         if os.path.isfile(filepath):
             local_files.append(filepath)
-        else:
-            # Not a file; skip it
-            logger.warning(f"Skipping {filepath}, not a file.")
+    log_event("debug", "list_local_preprocessing_files", "success",
+              local_dir=local_out_dir, file_count=len(local_files))
 
     try:
         upload_large_files_to_bucket(
@@ -91,8 +104,14 @@ def upload_preprocessing_results(s3_client, args, local_out_dir):
             prefix=f"{args.output_dir}/{args.model_key}",
             reupload=False,
         )
+        log_event("info", "upload_preprocessing_results", "success",
+                  local_dir=local_out_dir, s3_bucket=args.bucket,
+                  s3_prefix=f"{args.output_dir}/{args.model_key}", file_count=len(local_files))
     except Exception as e:
-        logger.error(f"Error uploading files from {local_out_dir} to S3: {e}")
+        raise e
+    log_event("debug", "upload_preprocessing_results", "success",
+              local_dir=local_out_dir, s3_bucket=args.bucket, s3_prefix=f"{args.output_dir}/{args.model_key}")
+    return
     
 
 def arg_parse():
@@ -126,18 +145,16 @@ def arg_parse():
     parser.add_argument("--use_cloudwatch", action="store_true", help="Use CloudWatch for logging")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     args = parser.parse_args()
-    logger.info("Arguments parsed successfully.")
 
-    for key, value in vars(args).items():
-        logger.info(f"{key}: {value}")
-
+    log_event("info", "arg_parse", "success", **vars(args))
     return args
 
 
 def main():
+    log_event("info", "run_preprocess", "started")
     args = arg_parse()
     logger_setup(
-        log_group="run_preprocess_ec2",
+        log_group="riskformer_preprocessing_ec2",
         debug=args.debug,
         use_cloudwatch=args.use_cloudwatch,
         profile_name=args.profile,
@@ -148,34 +165,15 @@ def main():
     logging.getLogger("boto3").setLevel(logging.WARNING)
     logging.getLogger("s3transfer").setLevel(logging.WARNING)
     
-    logger.info(f"Available CPUs: {os.cpu_count()}")  # Should be 32
-    logger.info(f"PyTorch Threads: {torch.get_num_threads()}")  # Might be 1
 
     torch.set_num_threads(os.cpu_count())  # Force PyTorch to use all CPUs
-    torch.set_num_interop_threads(os.cpu_count())  # Helps inter-op parallelism
-    
-    logger.info(f"Updated PyTorch Threads: {torch.get_num_threads()}")
-    logger.info("=" * 50)
+    torch.set_num_interop_threads(os.cpu_count())
+    log_event("info", "torch_threads", "success",
+              available_cpus=os.cpu_count(),
+              torch_threads=torch.get_num_threads(), torch_interop_threads=torch.get_num_interop_threads(),
+              gpu_available=torch.cuda.is_available(), gpu_count=torch.cuda.device_count())
     
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    logger.info(f"Project root: {project_root}")
-
-    os.environ["AWS_REGION"] = args.region
-    try:
-        s3_client, _ = initialize_s3_client(
-            args.profile,
-            region_name=args.region,
-            return_session=True
-        )
-    except Exception as e:
-        logger.error(f"Couldn't initialize S3 client: {e}")
-        return
-    logger.debug(f"Using AWS profile: {args.profile}, region: {args.region}")
-
-    # Load dataset files
-    to_process = load_dataset_files(s3_client, args, project_root)
-
-    # Download model files
     tmp_dir = os.path.join(project_root, "tmp")
     model_dir = os.path.join(tmp_dir, args.model_key)
     local_input_dir = os.path.join(tmp_dir, args.input_dir)
@@ -184,48 +182,60 @@ def main():
     os.makedirs(f"{tmp_dir}/{args.input_dir}", exist_ok=True)
     os.makedirs(f"{tmp_dir}/{args.output_dir}", exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
+    log_event("info", "project_info", "info",
+              project_root=project_root, tmp_dir=tmp_dir, model_dir=model_dir,
+              local_input_dir=local_input_dir, local_out_dir=local_out_dir)
+    
+    os.environ["AWS_REGION"] = args.region
+    try:
+        s3_client, _ = initialize_s3_client(
+            args.profile,
+            region_name=args.region,
+            return_session=True
+        )
+    except Exception as e:
+        log_event("error", "initialize_s3_client", "error",
+                  profile=args.profile, region=args.region, error=str(e))
+        raise e
+    log_event("info", "initialize_s3_client", "success",
+              profile=args.profile, region=args.region)
 
+    # Load dataset and model files
+    to_process = load_dataset_files(s3_client, args, project_root)
     model_files = download_s3_model_files(s3_client, args, model_dir)
-    logger.info(f"Downloaded {len(model_files)} model files to {model_dir}")
+    log_event("info", "load_dataset_and_model_files", "success",
+              dataset_files_count=len(to_process), model_files_count=len(model_files))
 
     # Set up Arguments
     foreground_config = os.path.join(project_root, args.foreground_config)
     foreground_cleanup_config = os.path.join(project_root, args.foreground_cleanup_config)
     tiling_config = os.path.join(project_root, args.tiling_config)
 
-    logger.info(f"Starting preprocessing for {len(to_process)} files...")
-    logger.info("Using the following parameters:")
-    logger.info(f"foreground_config: {foreground_config}")
-    logger.info(f"foreground_cleanup_config: {foreground_cleanup_config}")
-    logger.info(f"tiling_config: {tiling_config}")
-    logger.info(f"model_dir: {model_dir}")
-    logger.info(f"model_type: {args.model_type}")
-    logger.info(f"num_workers: {args.num_workers}")
-    logger.info(f"batch_size: {args.batch_size}")
-    logger.info(f"prefetch_factor: {args.prefetch_factor}")
-    logger.info(f"output_dir: {local_out_dir}")
+    log_event("info", "preprocessing_parameters", "info",
+              foreground_config=foreground_config, foreground_cleanup_config=foreground_cleanup_config,
+              tiling_config=tiling_config, model_dir=model_dir, model_type=args.model_type,
+              num_workers=args.num_workers, batch_size=args.batch_size, prefetch_factor=args.prefetch_factor,
+              output_dir=local_out_dir)
     
-    overall_time = time.time()
     for i, raw_key in enumerate(to_process):
-        files_left = len(to_process) - (i + 1)
         percent_done = ((i + 1) / len(to_process)) * 100
-        logger.info(
-            f"[{i+1}/{len(to_process)} | {percent_done:.2f}%] "
-            f"Elapsed: {(time.time() - overall_time) / 60:.2f} min, "
-            f"Processing file: {raw_key}, Remaining: {files_left}"
-        )
-
-        file_processing_start_time = time.time()
-        raw_s3_path = f"s3://{args.bucket}/{args.input_dir}/{raw_key}"
-        out_s3_dir = f"s3://{args.bucket}/{args.output_dir}"
-
+        log_event("info", "preprocess_slide_orchestrator", "started",
+                  file_index=i, file_count=len(to_process), percent_done=percent_done,
+                  file_name=raw_key)
+    
+        raw_s3_path = f"s3://{args.bucket}/{args.input_dir}/{raw_key}"        
         local_file_path = os.path.join(local_input_dir, raw_key)
-        logger.info(f"Downloading {raw_s3_path} to {local_file_path}")
         try:
             s3_client.download_file(args.bucket, f"{args.input_dir}/{raw_key}", local_file_path)
         except Exception as e:
-            logger.error(f"Error downloading {raw_s3_path}: {e}")
-            continue
+            log_event("error", "download_svs_file", "error",
+                      s3_path=raw_s3_path, local_path=local_file_path, error=str(e), file_name=raw_key)
+            if args.stop_on_fail:
+                raise e
+            else:
+                continue
+        log_event("info", "download_svs_file", "success",
+                  s3_path=raw_s3_path, local_path=local_file_path, file_name=raw_key)
 
         try:
             preprocess_one_slide(
@@ -240,25 +250,38 @@ def main():
                 batch_size=args.batch_size,
                 prefetch_factor=args.prefetch_factor,
             )
-            logger.info(f"Finished pre-processing {raw_key}")
-            upload_preprocessing_results(s3_client, args, local_out_dir)
-            logger.info(f"Successfully uploaded preprocessing results to {out_s3_dir}")
+            log_event("debug", "preprocess_one_slide", "success",
+                      file_name=raw_key)
         except Exception as e:
-            logger.error(f"Error preprocessing slide {raw_key}: {e}")
+            log_event("error", "preprocess_one_slide", "error",
+                      error=str(e), file_name=raw_key)
             if args.stop_on_fail:
                 raise e
             else:
                 continue
 
-        logger.info(f"Removing tmp dirs: {local_input_dir}, {local_out_dir}")
+        try:
+            upload_preprocessing_results(s3_client, args, local_out_dir)
+        except Exception as e:
+            log_event("error", "upload_preprocessing_results", "error",
+                      error=str(e), local_dir=local_out_dir)
+            if args.stop_on_fail:
+                raise e
+            else:
+                continue
+
         shutil.rmtree(local_input_dir)
         shutil.rmtree(local_out_dir)
         os.makedirs(local_input_dir, exist_ok=True)
         os.makedirs(local_out_dir, exist_ok=True)
-        logger.info(f"Time taken for {raw_key}: {(time.time() - file_processing_start_time) / 60:.2f} minutes")
-        logger.info("=" * 50)
-        logger.info("=" * 50)
-    logger.info(f"All done! Total time: {(time.time() - overall_time) / 60:.2f} minutes")
+        log_event("debug", "remove_tmp_dirs", "success",
+                  local_input_dir=local_input_dir, local_out_dir=local_out_dir)
+
+        log_event("info", "preprocess_slide_orchestrator", "success",
+                  file_index=i, file_count=len(to_process), percent_done=percent_done,
+                  file_name=raw_key)
+        
+    log_event("info", "run_preprocess", "success")
 
 
 if __name__ == "__main__":

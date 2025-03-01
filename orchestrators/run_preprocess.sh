@@ -47,9 +47,9 @@ MODEL_TYPE="uni"
 MODEL_KEY="uni/uni2-h"
 
 # Processing parameters
-BATCH_SIZE=256
+BATCH_SIZE=512
 NUM_WORKERS=32
-PREFETCH_FACTOR=8
+PREFETCH_FACTOR=4
 DEBUG_FLAG="--debug"
 CLOUDWATCH_FLAG="--use_cloudwatch"
 STOP_ON_FAIL="--stop_on_fail"

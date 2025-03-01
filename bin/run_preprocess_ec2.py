@@ -110,7 +110,8 @@ def main():
     except Exception as e:
         logger.error(f"Couldn't pull EC2 instance DNS: {e}")
         return ec2_client
-    
+    time.sleep(15)
+
     ### 3. Copy AWS credentials to EC2 instance ###
     logger.info("Copying AWS credentials to EC2 instance...")
     expanded_key_path = os.path.expanduser(IDENTITY_FILE)

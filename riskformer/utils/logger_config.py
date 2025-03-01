@@ -117,3 +117,23 @@ def log_config(logger, config, tag):
     logger.info(f"[{tag} configuration]")
     for key, value in config.items():
         logger.info(f"\t{key}:\t{value}")
+
+
+def log_event(level, event, status, **kwargs):
+    log_data = {"event": event, "status": status, "timestamp": time.time(), **kwargs}
+    
+    # Human-readable log for local debugging
+    log_text = f"[{event}] {status} | " + " | ".join(f"{k}={v}" for k, v in kwargs.items())
+
+    if level == "info":
+        logger.info(log_text)
+        logger.info(json.dumps(log_data))  # JSON for CloudWatch
+    elif level == "debug":
+        logger.debug(log_text)
+        logger.debug(json.dumps(log_data))
+    elif level == "warning":
+        logger.warning(log_text)
+        logger.warning(json.dumps(log_data))
+    elif level == "error":
+        logger.error(log_text)
+        logger.error(json.dumps(log_data))
