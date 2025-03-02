@@ -22,8 +22,15 @@ REMOTE_FORWARD = "52698:localhost:52698"
 LOCAL_FORWARD_1 = "8888:localhost:8888"
 LOCAL_FORWARD_2 = "16006:localhost:6006"
 
+aws_access_key = os.environ.get("AWS_ACCESS_KEY_ID")
+aws_secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
+aws_session_token = os.environ.get("AWS_SESSION_TOKEN")
+
 REMOTE_COMMANDS = [
     "nvidia-smi",
+    f"export AWS_ACCESS_KEY_ID={aws_access_key}",
+    f"export AWS_SECRET_ACCESS_KEY={aws_secret_key}",
+    f"export AWS_SESSION_TOKEN={aws_session_token}",
     "export AWS_SHARED_CREDENTIALS_FILE=~/.aws/credentials",
     "cd ~/brca_riskformer",
     "ls -lR",
