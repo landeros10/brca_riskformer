@@ -1,4 +1,6 @@
 import os
+import json
+from datetime import datetime
 import logging
 import watchtower
 from riskformer.utils.aws_utils import initialize_boto3_session
@@ -120,20 +122,37 @@ def log_config(logger, config, tag):
 
 
 def log_event(level, event, status, **kwargs):
-    log_data = {"event": event, "status": status, "timestamp": time.time(), **kwargs}
-    
-    # Human-readable log for local debugging
+    """
+    Logs structured event data in both JSON and human-readable formats.
+
+    Args:
+        level (str): Logging level (info, debug, warning, error).
+        event (str): Name of the event.
+        status (str): Status of the event (started, success, error, etc.).
+        **kwargs: Additional context details.
+    """
+    valid_levels = {"info", "debug", "warning", "error"}
+    if level not in valid_levels:
+        raise ValueError(f"Invalid log level: {level}. Must be one of {valid_levels}.")
+
+    # Use UTC timestamp for consistency
+    log_data = {
+        "event": event,
+        "status": status,
+        "timestamp": datetime.utcnow().isoformat(),
+        **kwargs
+    }
+
+    # Generate human-readable log text
     log_text = f"[{event}] {status} | " + " | ".join(f"{k}={v}" for k, v in kwargs.items())
 
-    if level == "info":
-        logger.info(log_text)
-        logger.info(json.dumps(log_data))  # JSON for CloudWatch
-    elif level == "debug":
-        logger.debug(log_text)
-        logger.debug(json.dumps(log_data))
-    elif level == "warning":
-        logger.warning(log_text)
-        logger.warning(json.dumps(log_data))
-    elif level == "error":
-        logger.error(log_text)
-        logger.error(json.dumps(log_data))
+    # Get root logger dynamically
+    logger = logging.getLogger()
+
+    # Log JSON format (CloudWatch-friendly)
+    log_func = getattr(logger, level)
+    log_func(json.dumps(log_data, separators=(",", ":")))
+
+    # Log human-readable text for debugging (only for debug level)
+    if level == "debug":
+        log_func(log_text)
