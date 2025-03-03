@@ -96,5 +96,4 @@ docker run --rm --gpus all --runtime=nvidia\
         --num_workers "$NUM_WORKERS" \
         --prefetch_factor "$PREFETCH_FACTOR" \
         $STOP_ON_FAIL \
-        $DEBUG_FLAG \
         $CLOUDWATCH_FLAG
