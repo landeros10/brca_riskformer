@@ -10,6 +10,25 @@ import sagemaker
 logger = logging.getLogger(__name__)
 
 
+def is_s3_path(path: str) -> bool:
+    """
+    Check if a path is an S3 URL.
+    
+    Args:
+        path (str): Path to check
+        
+    Returns:
+        bool: True if path starts with 's3://', False otherwise
+        
+    Example:
+        >>> is_s3_path("s3://my-bucket/my-file.txt")
+        True
+        >>> is_s3_path("/local/path/file.txt")
+        False
+    """
+    return path.startswith('s3://')
+
+
 def initialize_boto3_session(
         profile_name: str,
         region_name: str = None,
