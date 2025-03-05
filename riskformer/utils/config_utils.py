@@ -1,8 +1,8 @@
 import os
 import yaml
 import logging
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, asdict
+from typing import List, Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -77,14 +77,24 @@ class PreprocessingConfig:
     model: ModelConfig
     processing: ProcessingConfig
 
-def load_preprocessing_config(config_path: str) -> PreprocessingConfig:
+def _dataclass_to_dict(obj: Any) -> Dict:
+    """Convert a dataclass instance to a nested dictionary."""
+    if hasattr(obj, '__dataclass_fields__'):
+        result = {}
+        for field in obj.__dataclass_fields__:
+            value = getattr(obj, field)
+            result[field] = _dataclass_to_dict(value) if hasattr(value, '__dataclass_fields__') else value
+        return result
+    return obj
+
+def load_preprocessing_config(config_path: str) -> Dict:
     """Load preprocessing configuration from a YAML file.
     
     Args:
         config_path: Path to the YAML configuration file
         
     Returns:
-        PreprocessingConfig object containing the configuration
+        Dictionary containing the configuration
     """
     if not os.path.isfile(config_path):
         raise FileNotFoundError(f"Config file {config_path} not found")
@@ -103,7 +113,7 @@ def load_preprocessing_config(config_path: str) -> PreprocessingConfig:
         model_config = ModelConfig(**config_dict["model"])
         processing_config = ProcessingConfig(**config_dict["processing"])
         
-        return PreprocessingConfig(
+        config = PreprocessingConfig(
             aws=aws_config,
             s3=s3_config,
             docker=docker_config,
@@ -112,6 +122,9 @@ def load_preprocessing_config(config_path: str) -> PreprocessingConfig:
             model=model_config,
             processing=processing_config
         )
+        
+        # Convert the dataclass to a dictionary
+        return _dataclass_to_dict(config)
     except Exception as e:
         logger.error(f"Failed to load config from {config_path}: {str(e)}")
         raise
