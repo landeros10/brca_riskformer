@@ -312,4 +312,8 @@ def main():
     log_event("info", "run_preprocess", "success")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        log_event("error", "main", "error", error=str(e))
+        raise e
