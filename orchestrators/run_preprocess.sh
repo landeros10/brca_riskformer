@@ -62,6 +62,10 @@ fi
 echo "$ECR_TOKEN" | docker login --username AWS --password-stdin "$ECR_ID"
 docker pull "$IMAGE_NAME"
 
+# Get the relative path of the config file from the configs directory
+CONFIG_RELATIVE_PATH=$(realpath --relative-to="$CONFIGS_DIR" "$CONFIG_FILE")
+CONTAINER_CONFIG_PATH="$WORKSPACE_ROOT/configs/$CONFIG_RELATIVE_PATH"
+
 docker run --rm --gpus all --runtime=nvidia\
     --user root \
     --ipc=host \
@@ -84,4 +88,4 @@ docker run --rm --gpus all --runtime=nvidia\
     -w "$WORKSPACE_ROOT" \
     "$IMAGE_NAME" \
     -m orchestrators.run_preprocess \
-    --config "$CONFIG_FILE"
+    --config "$CONTAINER_CONFIG_PATH"
