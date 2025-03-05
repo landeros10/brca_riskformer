@@ -12,11 +12,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! command -v yq &> /dev/null; then
-    echo "Installing yq..."
-    wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
-    chmod +x /usr/local/bin/yq
-fi
 YQ_VERSION=$(yq --version)
 echo "yq version: $YQ_VERSION"
 
