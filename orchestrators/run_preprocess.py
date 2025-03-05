@@ -21,7 +21,7 @@ from pathlib import Path
 from entrypoints.preprocess import preprocess_one_slide
 from riskformer.utils.logger_config import logger_setup, log_event
 from riskformer.utils.aws_utils import initialize_s3_client, list_bucket_files, upload_large_files_to_bucket
-from riskformer.utils.config_utils import load_config
+from riskformer.utils.config_utils import load_preprocessing_config
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +150,7 @@ def arg_parse():
 
 def main():
     args = arg_parse()
-    config = load_config(args.config)
+    config = load_preprocessing_config(args.config)
     
     # Override config with command line arguments if provided
     if args.debug:

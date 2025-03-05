@@ -15,7 +15,6 @@ trap cleanup EXIT
 YQ_VERSION=$(yq --version)
 echo "yq version: $YQ_VERSION"
 
-
 # Root directory of the project
 PROJECT_ROOT="/home/ec2-user/brca_riskformer"
 CONFIG_FILE="$PROJECT_ROOT/configs/preprocessing/ec2_config.yaml"
@@ -23,7 +22,6 @@ if [ ! -f "$CONFIG_FILE" ]; then
     echo "Error: Configuration file not found at $CONFIG_FILE"
     exit 1
 fi
-
 
 # AWS credentials
 PROFILE=$(yq '.aws.profile' "$CONFIG_FILE")
@@ -55,7 +53,13 @@ LOGS_DIR="$PROJECT_ROOT/$(yq '.project.directories.logs' "$CONFIG_FILE")"
 # ==============================
 # Run the Docker Container
 # ==============================
-aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$ECR_ID"
+# Use the provided ECR token
+if [ -z "$ECR_TOKEN" ]; then
+    echo "Error: ECR_TOKEN environment variable not set"
+    exit 1
+fi
+
+echo "$ECR_TOKEN" | docker login --username AWS --password-stdin "$ECR_ID"
 docker pull "$IMAGE_NAME"
 
 docker run --rm --gpus all --runtime=nvidia\
@@ -67,9 +71,10 @@ docker run --rm --gpus all --runtime=nvidia\
     --cap-add=SYS_ADMIN --cap-add=SYS_RAWIO \
     --device=/dev/nvidiactl --device=/dev/nvidia0 \
     --device=/dev/nvidia-modeset --device=/dev/nvidia-uvm \
-    -e AWS_PROFILE \
+    -e AWS_ACCESS_KEY_ID \
+    -e AWS_SECRET_ACCESS_KEY \
+    -e AWS_SESSION_TOKEN \
     -e AWS_DEFAULT_REGION \
-    -v "$HOME/.aws":/root/.aws:ro \
     -v "$RISKFORMER_DIR":"$WORKSPACE_ROOT/riskformer" \
     -v "$ENTRYPOINTS_DIR":"$WORKSPACE_ROOT/entrypoints" \
     -v "$ORCHESTRATORS_DIR":"$WORKSPACE_ROOT/orchestrators" \

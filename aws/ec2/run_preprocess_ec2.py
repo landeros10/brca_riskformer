@@ -12,7 +12,6 @@ DEBUG = True
 
 EC2_INSTANCE = "i-08a58080616278d9c"
 REGION = "us-east-1"
-PROFILE = "651340551631_AWSPowerUserAccess"
 
 IDENTITY_FILE = "~/Downloads/clawsec2.pem"
 SSH_USER = "ec2-user"
@@ -28,10 +27,6 @@ INSTANCE_STARTUP_TIMEOUT = 300  # 5 minutes
 SSH_CONNECT_TIMEOUT = 30  # 30 seconds
 SSH_PROCESS_TIMEOUT = 5  # 5 seconds
 DOCKER_STOP_TIMEOUT = 10  # 10 seconds
-
-# Set up AWS profile for boto3
-os.environ['AWS_PROFILE'] = PROFILE
-os.environ['AWS_DEFAULT_REGION'] = REGION
 
 REMOTE_COMMANDS = [
     "nvidia-smi",
@@ -244,6 +239,9 @@ def wait_for_ssh(public_dns, expanded_key_path, max_attempts=10):
 def main():    
     global global_ec2_client, ssh_process, public_dns, expanded_key_path
     
+    # Expand the key path at the start
+    expanded_key_path = os.path.expanduser(IDENTITY_FILE)
+    
     ### 1. Boot EC2 Instance ###
     logger.info("Creating EC2 client...")
     ec2_client = boot_instance()
@@ -267,29 +265,29 @@ def main():
         logger.error(f"Couldn't pull EC2 instance DNS: {e}")
         return None
 
-    ### 3. SSH into EC2 instance and run script ###
-    logger.info("Connecting to EC2 instance with key: {expanded_key_path}")
+    ### 3. Get AWS credentials ###
+    logger.info("Getting AWS credentials...")
+    try:
+        # Get the current session's credentials
+        session = boto3.Session()
+        credentials = session.get_credentials().get_frozen_credentials()
+        aws_access_key = credentials.access_key
+        aws_secret_key = credentials.secret_key
+        aws_session_token = credentials.token
+        logger.info("Successfully obtained AWS credentials")
+    except Exception as e:
+        logger.error(f"Failed to get AWS credentials: {e}")
+        return None
+
+    ### 4. SSH into EC2 instance and run script ###
+    logger.info(f"Connecting to EC2 instance with key: {expanded_key_path}")
     logger.info("Running orchestrator script...")
     
-    # Use a safer approach to execute commands
-    ssh_base_cmd = [
-        "ssh",
-        "-i", expanded_key_path,
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",    
-        "-o", f"ServerAliveInterval={SERVER_ALIVE_INTERVAL}",
-        "-R", REMOTE_FORWARD,
-        "-L", LOCAL_FORWARD_1,
-        "-L", LOCAL_FORWARD_2,
-        f"{SSH_USER}@{public_dns}"
-    ]
+    # Construct the SSH command with AWS credentials
+    ssh_cmd = f"ssh -i {expanded_key_path} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval={SERVER_ALIVE_INTERVAL} -R {REMOTE_FORWARD} -L {LOCAL_FORWARD_1} -L {LOCAL_FORWARD_2} ec2-user@{public_dns} 'nvidia-smi; export AWS_ACCESS_KEY_ID={aws_access_key}; export AWS_SECRET_ACCESS_KEY={aws_secret_key}; export AWS_SESSION_TOKEN={aws_session_token}; export AWS_DEFAULT_REGION={REGION}; cd ~/brca_riskformer; ls -lR; git pull origin main; ./orchestrators/run_preprocess.sh'"
     
-    # Join commands with proper escaping
-    remote_cmd_str = " && ".join(REMOTE_COMMANDS)
-    ssh_cmd = ssh_base_cmd + [remote_cmd_str]
-    
-    logger.info(f"SSH command: {' '.join(ssh_cmd)}")
-    ssh_process = subprocess.Popen(ssh_cmd)
+    logger.info(f"SSH command: {ssh_cmd}")
+    ssh_process = subprocess.Popen(ssh_cmd, shell=True)
     ssh_process.wait()  # Wait for the SSH process to finish
     return ec2_client
 
