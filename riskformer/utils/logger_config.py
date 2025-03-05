@@ -7,20 +7,28 @@ from riskformer.utils.aws_utils import initialize_boto3_session
 
 def setup_cloudwatch_handler(
         log_group: str,
-        profile_name: str,
-        region_name: str,
+        profile_name: str = None,
+        region_name: str = None,
 ) -> watchtower.CloudWatchLogHandler:
     """
     Initializes and returns a CloudWatchLogHandler for the given log_group.
     
     Args:
         log_group (str): The name of the CloudWatch log group.
-        profile_name (str): AWS profile name with permissions for CloudWatch Logs.
-        region_name (str): AWS region where CloudWatch Logs will be created.
+        profile_name (str, optional): AWS profile name with permissions for CloudWatch Logs.
+        region_name (str, optional): AWS region where CloudWatch Logs will be created.
 
     Returns:
         watchtower.CloudWatchLogHandler or None
     """
+    # If region_name is not provided, try to get it from environment
+    if not region_name:
+        region_name = os.getenv('AWS_DEFAULT_REGION')
+        if not region_name:
+            logging.getLogger(__name__).error("No region provided and AWS_DEFAULT_REGION not set")
+            return None
+
+    # Initialize session - will use environment variables if profile_name is None
     session = initialize_boto3_session(profile_name, region_name)
     if not session:
         logging.getLogger(__name__).error(
@@ -50,15 +58,15 @@ def logger_setup(
         region_name: str = None,
 ) -> None:
     """
-    Sets up Python logging. If `use_cloudwatch` is True and AWS parameters 
-    are provided, also logs to AWS CloudWatch.
+    Sets up Python logging. If `use_cloudwatch` is True, logs to AWS CloudWatch using
+    either profile credentials or environment variables.
 
     Args:
         log_group (str): Name of the log group in CloudWatch (if enabled).
         debug (bool): Whether to enable debug-level logging.
         use_cloudwatch (bool): Whether to enable CloudWatch logging.
-        profile_name (str): AWS profile name for CloudWatch logging.
-        region_name (str): AWS region for CloudWatch logging.
+        profile_name (str, optional): AWS profile name for CloudWatch logging.
+        region_name (str, optional): AWS region for CloudWatch logging.
     """    
     LOG_PATH = "/opt/ml/processing/logs"
     os.makedirs(LOG_PATH, exist_ok=True)
@@ -85,24 +93,37 @@ def logger_setup(
         root_logger.debug("Debugging enabled for 'src' modules.")
     
     if use_cloudwatch:
-        if not profile_name or not region_name:
+        # Check for AWS credentials in environment if no profile provided
+        if not profile_name and not (os.getenv('AWS_ACCESS_KEY_ID') and os.getenv('AWS_SECRET_ACCESS_KEY')):
             root_logger.error(
-                "CloudWatch logging requested, but 'profile_name' or 'region_name' not provided. "
+                "CloudWatch logging requested but no AWS credentials found in profile or environment. "
                 "Falling back to local logs only."
             )
-            raise ValueError("'profile_name' and 'region_name' must be provided for CloudWatch logging.")
+            return
+
+        # Get region from environment if not provided
+        if not region_name:
+            region_name = os.getenv('AWS_DEFAULT_REGION')
+            if not region_name:
+                root_logger.error(
+                    "CloudWatch logging requested but no region provided and AWS_DEFAULT_REGION not set. "
+                    "Falling back to local logs only."
+                )
+                return
+
         try:
             cw_handler = setup_cloudwatch_handler(log_group, profile_name, region_name)
         except Exception as e:
             root_logger.error(f"Unexpected error setting up CloudWatch handler: {e}")
-            raise e
+            return
+
         if cw_handler:
             root_logger.addHandler(cw_handler)
             root_logger.info(
                 f"CloudWatch logging enabled. Log Group: '{log_group}', Stream: '{cw_handler.log_stream_name}'"
             )
         else:
-            raise ValueError("Failed to initialize CloudWatch handler; check AWS credentials and permissions.")
+            root_logger.error("Failed to initialize CloudWatch handler; check AWS credentials and permissions.")
 
 
 def log_config(logger, config, tag):
