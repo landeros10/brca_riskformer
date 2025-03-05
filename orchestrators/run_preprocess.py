@@ -161,7 +161,6 @@ def main():
         log_group="riskformer_preprocessing_ec2",
         debug=config['processing']['debug'],
         use_cloudwatch=config['processing']['use_cloudwatch'],
-        profile_name=config['aws']['profile'],
         region_name=config['aws']['region'],
     )
     
@@ -198,18 +197,16 @@ def main():
     os.environ["AWS_REGION"] = config['aws']['region']
     try:
         s3_client, _ = initialize_s3_client(
-            config['aws']['profile'],
+            profile_name=None,  # Use environment variables instead of profile
             region_name=config['aws']['region'],
             return_session=True
         )
     except Exception as e:
         log_event("error", "initialize_s3_client", "error",
-                  profile=config['aws']['profile'], 
                   region=config['aws']['region'], 
                   error=str(e))
         raise e
     log_event("info", "initialize_s3_client", "success",
-              profile=config['aws']['profile'], 
               region=config['aws']['region'])
 
     # Load dataset and model files
