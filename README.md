@@ -53,6 +53,20 @@ The model also uses multiple explainability methods to identify high-risk areas 
 - **Region-level prediction**: These are sub-slide predictions directly integrated into the architecture of the model
 - **Attention maps**: Combines fine-scale transformer block attention weights with region-level attention weights from the attention-pooling step.
 
+## Notebooks
+
+> ⚠️ **Coming Soon**: The following notebooks are under development and will be available in the near future.
+
+The `notebooks/` directory will contain Jupyter notebooks that demonstrate key functionality of the RiskFormer pipeline:
+
+### Dataset Exploration
+- **`01_dataset_loading.ipynb`**: Demonstrates how to load and preprocess whole slide images (WSIs) for the RiskFormer pipeline
+- **`02_embedding_visualization.ipynb`**: Visualizes tile embeddings and explains their spatial organization
+
+### Model Usage
+- **`03_simple_inference.ipynb`**: Step-by-step walkthrough of running inference on new WSIs
+- **`04_risk_visualization.ipynb`**: Examples of generating and interpreting risk heatmaps from model outputs
+
 ## Implementation
 
 The project is implemented in PyTorch with comprehensive MLOps integration:
@@ -80,18 +94,7 @@ The project is implemented in PyTorch with comprehensive MLOps integration:
 
 This project demonstrates MLOps practices and AWS cloud integration for large-scale model training and deployment, though some components are still under active development.
 
-### Security Notice
-
-This repository uses AWS infrastructure and requires appropriate credentials for operation. When using this code:
-
-- **Do not** hard-code any AWS credentials directly in the source code
-- **Do not** commit `.env` files or credential files to the repository
-- **Do** use AWS credential provider chain (environment variables, AWS profiles, or IAM roles)
-- **Do** review code for sensitive information before committing
-
-The current implementation passes AWS credentials via environment variables for development purposes. In a production environment, IAM instance profiles should be used instead for better security. All credential handling is done through AWS SDK's secure methods.
-
-## Project Structure
+### Project Structure
 
 ```
 brca_riskformer/
@@ -126,39 +129,6 @@ brca_riskformer/
 │── docs/              # Documentation
 ```
 
-## Features
-
-- Transformer-based architecture for cancer risk prediction
-- Support for processing genetic and clinical data
-- AWS Batch integration for scalable processing
-- Comprehensive preprocessing pipeline
-- Docker containerization for consistent environments
-- Extensive testing and documentation
-
-## Installation
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/brca-riskformer.git
-   cd brca-riskformer
-   ```
-
-2. Create and activate a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. Set up environment variables:
-   ```bash
-   cp .env.example .env
-   # Edit .env with your configuration
-   ```
 
 ## Usage
 
@@ -167,7 +137,7 @@ brca_riskformer/
 The preprocessing pipeline handles data preparation and feature engineering:
 
 ```bash
-python entrypoints/preprocess.py --config configs/preprocessing/config.yaml
+python entrypoints/preprocess.py test.svs --config configs/preprocessing/config.yaml 
 ```
 
 ### Training
@@ -183,70 +153,8 @@ python entrypoints/train.py --config configs/training/config.yaml
 Generate predictions using trained models:
 
 ```bash
-python entrypoints/inference.py --config configs/inference/config.yaml
+python entrypoints/inference.py test.svs
 ```
-
-## Development
-
-### Testing
-
-Run tests:
-```bash
-python -m pytest tests/
-```
-
-## Docker
-
-Build the Docker image:
-```bash
-docker build -t brca-riskformer -f docker/Dockerfile .
-```
-
-Run the container:
-```bash
-docker run -it brca-riskformer
-```
-
-## AWS Integration
-
-The project includes AWS integration for scalable processing:
-
-### SQS-Based Job Processing
-
-The project uses AWS SQS for job queue management:
-
-```bash
-# Create SQS queue
-bash aws/create_sqs_queue.sh
-```
-
-### Lambda Functions for Event-Driven Processing
-
-Lambda functions are used to process S3 events:
-
-```bash
-# Deploy Lambda function
-bash aws/lambdas/deploy_lambda.sh svs_processor
-```
-
-### S3 Event Triggers
-
-S3 buckets are configured to trigger Lambda functions:
-
-```bash
-# Configure S3 trigger
-bash aws/configure_s3_trigger.sh
-```
-
-For more details on AWS components, see [aws/README.md](aws/README.md).
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
 
 ## License
 
