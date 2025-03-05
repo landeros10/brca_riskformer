@@ -13,16 +13,26 @@ RiskFormer employs a hierarchical architecture specifically designed to handle t
 
 ### 1. **Pre-processing Pipeline**:
 Converts gigapixel WSIs into manageable representations through tissue segmentation, patch extraction, and uses pre-trained vision models to extract high-dimensional feature representations from tissue patches.
+<div align="center">
+  <img src="docs/images/f1.png" width="80%" alt="RiskFormer Pipeline Overview">
+  <p><em style="font-size: 0.9em;">Figure 1: Patient Slide Pre-Processing Pipeline</em></p>
+</div>
 
-![RiskFormer Pipeline Overview](docs/images/f1.png)
-*Figure 1: Patient Slide Pre-Processing Pipeline. The workflow demonstrates how whole slide images are processed: (A) Tissue regions are isolated and split into smaller image tiles that are embedded using a pre-trained encoder, creating variably sized arrays of tile embeddings that are split/padded into uniformly sized regions. (B) Scale comparison between individual tiles and large-scale tissue regions, showing the dimensional heatmaps for the embeddings.*
+The workflow consists of:
+- **Tissue Segmentation**: Isolates relevant tissue regions from the slide background
+- **Patch Extraction**: Splits identified tissue into smaller image tiles at high resolution
+- **Feature Embedding**: Processes tiles through a pre-trained encoder to create variably sized arrays of tile embeddings
+- **Region Formatting**: Splits and/or pads the embedding arrays into uniformly sized regions for consistent processing
 
 
 ### 2. **Hierarchical Transformer Architecture**:
-Implements a novel multi-scale transformer designed to handle the complex spatial relationships in whole slide images:
-![Transformer Architecture](docs/images/f2.png)
-*Figure 2: Risk Prediction Model Architecture. The custom transformer processes patient data as collections of large-scale regions to produce region-level and patient-level risk scores.*
+Implements a multi-scale transformer designed to handle the complex spatial relationships in whole slide images. Each patient is treated as a batch of "large-scale regions". Each large-scale region is analyzed by a transformer for intra-region analysis, and attention pooling is used to conduct inter-region analysis (between distant large-scale regions in the slide).
+<div align="center">
+  <img src="docs/images/f2.png" width="80%" alt="Transformer Architecture">
+  <p><em style="font-size: 0.9em;">Figure 2: Risk Prediction Model Architecture.</em></p>
+</div>
 
+The workflow consists of:
 - **Dimensionality Reduction**: phi (φ) to standardize embedding dimensions
 - **Multi-Scale Processing**: Deploys specialized transformer blocks with convolution operations to consolidate features spatially.
 - **Feature Consolidation**: Concatenates average and maximum region-level pooling of transformed token arrays to capture both typical and salient features
@@ -30,11 +40,18 @@ Implements a novel multi-scale transformer designed to handle the complex spatia
 - **Dual Prediction Paths**: Generates both region-level and patient-level risk scores, with the final score derived from attention-weighted embeddings
 
 
-### 3. **Risk Score Prediction**:
-Integrates histopathological features to generate personalized risk predictions on a scale from 0 to 1, which correlate with recurrence risk categories similar to those used in genetic tests like Oncotype DX™.
+### 3. **Risk Assessment & Visualization**:
+The model produces an overall risk prediction on a scale from 0 to 1, which correlates with recurrence risk categories used in genetic tests like Oncotype DX™. 
 
-![Feature Visualization](docs/images/f4.png)
-*Figure 3: Visualizing High-Risk Regions in sample slides. The model combined multiple explainability methods to identify high-risk areas in slides: Tile dropout measures which region occlusions lead to reduced risk, Region-level predictions baked into the architecture of the model, and Attention maps combining transformer block attention weights with region-level attention weights.*
+<div align="center">
+  <img src="docs/images/f4.png" width="80%" alt="Feature Visualization">
+  <p><em style="font-size: 0.9em;">Figure 3: Visualizing High-Risk Regions in sample slides.</em></p>
+</div>
+
+The model also uses multiple explainability methods to identify high-risk areas in slides. These visualization methods include: 
+- **Tile dropout**: Measures which region occlusions lead to reduced risk outputs
+- **Region-level prediction**: These are sub-slide predictions directly integrated into the architecture of the model
+- **Attention maps**: Combines fine-scale transformer block attention weights with region-level attention weights from the attention-pooling step.
 
 ## Implementation
 
