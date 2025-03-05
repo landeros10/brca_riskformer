@@ -7,6 +7,7 @@ from datetime import datetime
 import logging
 import signal
 import sys
+import base64
 
 DEBUG = True
 
@@ -236,6 +237,24 @@ def wait_for_ssh(public_dns, expanded_key_path, max_attempts=10):
                 return False
 
 
+def get_ecr_token():
+    """Get ECR authentication token."""
+    try:
+        logger.info("Getting ECR authentication token...")
+        ecr_client = boto3.client('ecr', region_name=REGION)
+        response = ecr_client.get_authorization_token()
+        token = response['authorizationData'][0]['authorizationToken']
+        # Decode the base64 token and remove the "AWS:" prefix
+        decoded_token = base64.b64decode(token).decode('utf-8')
+        if decoded_token.startswith('AWS:'):
+            decoded_token = decoded_token[4:]  # Remove "AWS:" prefix
+        logger.info("Successfully obtained ECR token")
+        return decoded_token
+    except Exception as e:
+        logger.error(f"Failed to get ECR token: {e}")
+        return None
+
+
 def main():    
     global global_ec2_client, ssh_process, public_dns, expanded_key_path
     
@@ -250,8 +269,8 @@ def main():
         return None
     
     global_ec2_client = ec2_client
-
-    ### 2.Collect DNS for SSH ###
+    
+    ### 2. Collect DNS for SSH ###
     logger.info("Pulling instance DNS...")
     try:
         desc = ec2_client.describe_instances(InstanceIds=[EC2_INSTANCE])
@@ -279,16 +298,45 @@ def main():
         logger.error(f"Failed to get AWS credentials: {e}")
         return None
 
-    ### 4. SSH into EC2 instance and run script ###
+    ### 4. Get ECR token ###
+    ecr_token = get_ecr_token()
+    if not ecr_token:
+        logger.error("Failed to get ECR token. Exiting.")
+        return None
+
+    ### 5. Connect to EC2 instance ###
     logger.info(f"Connecting to EC2 instance with key: {expanded_key_path}")
+    
+    # Wait for SSH to become available
+    if not wait_for_ssh(public_dns, expanded_key_path):
+        logger.error("Failed to establish SSH connection. Exiting.")
+        return None
+    
+    ### 6. Run orchestrator script ###
     logger.info("Running orchestrator script...")
     
-    # Construct the SSH command with AWS credentials
-    ssh_cmd = f"ssh -i {expanded_key_path} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval={SERVER_ALIVE_INTERVAL} -R {REMOTE_FORWARD} -L {LOCAL_FORWARD_1} -L {LOCAL_FORWARD_2} ec2-user@{public_dns} 'nvidia-smi; export AWS_ACCESS_KEY_ID={aws_access_key}; export AWS_SECRET_ACCESS_KEY={aws_secret_key}; export AWS_SESSION_TOKEN={aws_session_token}; export AWS_DEFAULT_REGION={REGION}; cd ~/brca_riskformer; ls -lR; git pull origin main; ./orchestrators/run_preprocess.sh'"
+    # Construct the remote command with AWS credentials and ECR token
+    remote_cmd = [
+        "ssh",
+        "-i", expanded_key_path,
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", f"ServerAliveInterval={SERVER_ALIVE_INTERVAL}",
+        "-R", REMOTE_FORWARD,
+        "-L", LOCAL_FORWARD_1,
+        "-L", LOCAL_FORWARD_2,
+        f"{SSH_USER}@{public_dns}",
+        (f"export ECR_TOKEN='{ecr_token}' && "
+         f"export AWS_ACCESS_KEY_ID='{aws_access_key}' && "
+         f"export AWS_SECRET_ACCESS_KEY='{aws_secret_key}' && "
+         f"export AWS_SESSION_TOKEN='{aws_session_token}' && "
+         f"export AWS_DEFAULT_REGION='{REGION}' && "
+         + " && ".join(REMOTE_COMMANDS))
+    ]
     
-    logger.info(f"SSH command: {ssh_cmd}")
-    ssh_process = subprocess.Popen(ssh_cmd, shell=True)
-    ssh_process.wait()  # Wait for the SSH process to finish
+    logger.info(f"SSH command: {' '.join(remote_cmd)}")
+    ssh_process = subprocess.Popen(remote_cmd)
+    ssh_process.wait()
     return ec2_client
 
 
