@@ -26,14 +26,14 @@ from __future__ import division, print_function
 import argparse
 import logging
 
-from riskformer.logger_config import logger_setup
+from riskformer.utils.logger_config import logger_setup
 from riskformer.utils import log_training_params
+from .model import RS_Predictor_ViT
 
 logger_setup()
 logger = logging.getLogger(__name__)
 
 SIZE = 256
-HOME_DIR = './'
 
 def parse_args():
     """Parse command line arguments"""

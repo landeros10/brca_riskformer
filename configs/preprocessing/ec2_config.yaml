@@ -1,0 +1,67 @@
+# EC2 Preprocessing Configuration
+# Author: landeros10
+# Created: 2025-03-05
+
+# AWS Configuration
+aws:
+  profile: "651340551631_AWSPowerUserAccess"
+  region: "us-east-1"
+  ecr_id: "651340551631.dkr.ecr.us-east-1.amazonaws.com"
+  credentials_path: "~/.aws/credentials"
+
+# S3 Configuration
+s3:
+  model_bucket: "tcga-riskformer-preprocessing-models"
+  data_bucket: "tcga-riskformer-data-2025"
+  input_dir: "raw"
+  output_dir: "preprocessed"
+
+# Docker Configuration
+docker:
+  image_name: "brca-riskformer/pytorch-svs-preprocess"
+  workspace_root: "/opt/ml/processing"
+  runtime: "nvidia"
+  user: "root"
+  memory: "0"
+  cpus: "all"  # Will be replaced with $(nproc) in script
+  capabilities:
+    - "SYS_ADMIN"
+    - "SYS_RAWIO"
+  devices:
+    - "/dev/nvidiactl"
+    - "/dev/nvidia0"
+    - "/dev/nvidia-modeset"
+    - "/dev/nvidia-uvm"
+
+# Project Directory Structure
+project:
+  root: "/home/ec2-user/brca_riskformer"
+  directories:
+    resources: "resources"
+    configs: "configs"
+    outputs: "outputs"
+    riskformer: "riskformer"
+    entrypoints: "entrypoints"
+    orchestrators: "orchestrators"
+    logs: "logs"
+
+# Configuration Files
+config_files:
+  metadata: "resources/riskformer_slide_samples.json"
+  foreground: "configs/preprocessing_foreground_config.yaml"
+  foreground_cleanup: "configs/preprocessing_foreground_cleanup_config.yaml"
+  tiling: "configs/preprocessing_tiling_config.yaml"
+
+# Model Configuration
+model:
+  type: "uni"
+  key: "uni/uni2-h"
+
+# Processing Parameters
+processing:
+  batch_size: 512
+  num_workers: 32
+  prefetch_factor: 4
+  stop_on_fail: true
+  use_cloudwatch: true
+  debug: false 

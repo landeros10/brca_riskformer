@@ -28,5 +28,5 @@ RUN pip install --upgrade pip && \
 # Set the working directory inside the container (SageMaker mounts script and data here)
 WORKDIR /opt/ml/processing
 
-# Set the entrypoint for SageMaker Processing Job
+# Set the entrypoint
 ENTRYPOINT ["python3"]
