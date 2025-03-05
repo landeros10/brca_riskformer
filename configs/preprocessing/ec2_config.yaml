@@ -4,7 +4,7 @@
 
 # AWS Configuration
 aws:
-  profile: "651340551631_AWSPowerUserAccess"
+  profile: "default"
   region: "us-east-1"
   ecr_id: "651340551631.dkr.ecr.us-east-1.amazonaws.com"
   credentials_path: "~/.aws/credentials"
