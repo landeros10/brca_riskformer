@@ -29,13 +29,15 @@ fi
 PROFILE=$(yq '.aws.profile' "$CONFIG_FILE")
 ECR_ID=$(yq '.aws.ecr_id' "$CONFIG_FILE")
 REGION=$(yq '.aws.region' "$CONFIG_FILE")
-AWS_CREDENTIALS=$(yq '.aws.credentials_path' "$CONFIG_FILE")
 
 if [ -z "$PROFILE" ] || [ -z "$ECR_ID" ] || [ -z "$REGION" ]; then
     echo "Error: Required AWS configuration not found in $CONFIG_FILE"
     exit 1
 fi
 
+# Export AWS profile and region
+export AWS_PROFILE="$PROFILE"
+export AWS_DEFAULT_REGION="$REGION"
 
 # Docker image name
 IMAGE_NAME="$ECR_ID/$(yq '.docker.image_name' "$CONFIG_FILE")"
@@ -65,7 +67,9 @@ docker run --rm --gpus all --runtime=nvidia\
     --cap-add=SYS_ADMIN --cap-add=SYS_RAWIO \
     --device=/dev/nvidiactl --device=/dev/nvidia0 \
     --device=/dev/nvidia-modeset --device=/dev/nvidia-uvm \
-    -v "$AWS_CREDENTIALS":"/root/.aws/credentials" \
+    -e AWS_PROFILE \
+    -e AWS_DEFAULT_REGION \
+    -v "$HOME/.aws":/root/.aws:ro \
     -v "$RISKFORMER_DIR":"$WORKSPACE_ROOT/riskformer" \
     -v "$ENTRYPOINTS_DIR":"$WORKSPACE_ROOT/entrypoints" \
     -v "$ORCHESTRATORS_DIR":"$WORKSPACE_ROOT/orchestrators" \

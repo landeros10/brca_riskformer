@@ -10,8 +10,6 @@ import sys
 
 DEBUG = True
 
-AWS_CREDS = "~/.aws/credentials"
-
 EC2_INSTANCE = "i-08a58080616278d9c"
 REGION = "us-east-1"
 PROFILE = "651340551631_AWSPowerUserAccess"
@@ -31,13 +29,12 @@ SSH_CONNECT_TIMEOUT = 30  # 30 seconds
 SSH_PROCESS_TIMEOUT = 5  # 5 seconds
 DOCKER_STOP_TIMEOUT = 10  # 10 seconds
 
-aws_access_key = os.environ.get("AWS_ACCESS_KEY_ID")
-aws_secret_key = os.environ.get("AWS_SECRET_ACCESS_KEY")
-aws_session_token = os.environ.get("AWS_SESSION_TOKEN")
+# Set up AWS profile for boto3
+os.environ['AWS_PROFILE'] = PROFILE
+os.environ['AWS_DEFAULT_REGION'] = REGION
 
 REMOTE_COMMANDS = [
     "nvidia-smi",
-    "mkdir -p ~/.aws",
     "cd ~/brca_riskformer",
     "ls -lR",
     "git pull origin main",
@@ -270,53 +267,8 @@ def main():
         logger.error(f"Couldn't pull EC2 instance DNS: {e}")
         return None
 
-    ### 3. Copy AWS credentials to EC2 instance ###
-    logger.info("Copying AWS credentials to EC2 instance...")
-    expanded_key_path = os.path.expanduser(IDENTITY_FILE)
-    expanded_creds = os.path.expanduser(AWS_CREDS)
-
-    # Wait for SSH to become available
-    if not wait_for_ssh(public_dns, expanded_key_path):
-        logger.error("Failed to establish SSH connection. Exiting.")
-        return None
-
-    # Create .aws directory on remote machine
-    mkdir_cmd = [
-        "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-i", expanded_key_path,
-        f"{SSH_USER}@{public_dns}",
-        "mkdir", "-p", "/home/ec2-user/.aws"
-    ]
-    try:
-        subprocess.run(mkdir_cmd, check=True)
-        logger.info("Created .aws directory on remote machine.")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to create .aws directory: {e}")
-        return None
-
-    if os.path.exists(expanded_creds):
-        scp_cmd = [
-            "scp",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-i", expanded_key_path,
-            expanded_creds,
-            f"{SSH_USER}@{public_dns}:/home/ec2-user/.aws/credentials"
-        ]
-        try:
-            subprocess.run(scp_cmd, check=True)
-            logger.info("AWS credentials successfully uploaded.")
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to upload AWS credentials: {e}")
-            return None
-    else:
-        logger.error(f"AWS credentials file not found: {AWS_CREDS}")
-        return None
-            
-    ### 4. SSH into EC2 instance and run script ###
-    logger.info(f"Connecting to EC2 instance with key: {expanded_key_path}")
+    ### 3. SSH into EC2 instance and run script ###
+    logger.info("Connecting to EC2 instance with key: {expanded_key_path}")
     logger.info("Running orchestrator script...")
     
     # Use a safer approach to execute commands
