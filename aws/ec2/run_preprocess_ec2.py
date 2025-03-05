@@ -288,6 +288,8 @@ def main():
     logger.info("Getting AWS credentials...")
     try:
         # Get the current session's credentials
+        # Note for public repo: These credentials are passed securely via environment variables 
+        # and never hard-coded. In production, use IAM roles for EC2 instead.
         session = boto3.Session()
         credentials = session.get_credentials().get_frozen_credentials()
         aws_access_key = credentials.access_key
@@ -316,6 +318,8 @@ def main():
     logger.info("Running orchestrator script...")
     
     # Construct the remote command with AWS credentials and ECR token
+    # Note: In a production environment, EC2 instance profiles should be used instead
+    # of directly passing credentials. This is for development/testing only.
     remote_cmd = [
         "ssh",
         "-i", expanded_key_path,

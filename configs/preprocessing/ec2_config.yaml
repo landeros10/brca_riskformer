@@ -4,15 +4,15 @@
 
 # AWS Configuration
 aws:
-  profile: "default"
-  region: "us-east-1"
-  ecr_id: "651340551631.dkr.ecr.us-east-1.amazonaws.com"
-  credentials_path: "~/.aws/credentials"
+  profile: "default"  # Replace with your actual AWS profile
+  region: "us-east-1"  # Replace with your preferred AWS region
+  ecr_id: "651340551631.dkr.ecr.us-east-1.amazonaws.com"  # Replace with your actual ECR URI
+  credentials_path: "~/.aws/credentials"  # Path to your AWS credentials file
 
 # S3 Configuration
 s3:
-  model_bucket: "tcga-riskformer-preprocessing-models"
-  data_bucket: "tcga-riskformer-data-2025"
+  model_bucket: "tcga-riskformer-preprocessing-models"  # Replace with your model bucket
+  data_bucket: "tcga-riskformer-data-2025"  # Replace with your data bucket
   input_dir: "raw"
   output_dir: "preprocessed"
 

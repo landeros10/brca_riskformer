@@ -2,6 +2,32 @@
 
 A deep learning model for predicting BRCA-related cancer risks using transformer architecture. This project implements a novel approach to cancer risk prediction using transformer-based models to analyze genetic and clinical data.
 
+## Project Status Disclaimer
+
+**⚠️ Work in Progress:** This repository represents ongoing research work that is being refactored for deployment standards. The codebase is currently transitioning from a research prototype to an implementation ready for production use.
+
+**Current Implementation Status:**
+- ✅ Data preprocessing pipeline is implemented and functional
+- ✅ Basic AWS infrastructure integration (S3, EC2) is set up
+- ✅ Docker containerization is configured
+- ✅ Core transformer model architecture is defined
+- ⚠️ Training pipeline is partially implemented
+- ⚠️ MLOps deployment infrastructure is partially implemented
+- ❌ Inference API is not yet implemented
+- ❌ CI/CD pipeline is not yet set up
+
+This project demonstrates MLOps practices and AWS cloud integration for large-scale model training and deployment, though some components are still under active development.
+
+## Security Notice
+
+This repository uses AWS infrastructure and requires appropriate credentials for operation. When using this code:
+
+- **Do not** hard-code any AWS credentials directly in the source code
+- **Do not** commit `.env` files or credential files to the repository
+- **Do** use AWS credential provider chain (environment variables, AWS profiles, or IAM roles)
+- **Do** review code for sensitive information before committing
+
+
 ## Project Structure
 
 ```

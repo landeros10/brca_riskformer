@@ -75,10 +75,11 @@ docker run --rm --gpus all --runtime=nvidia\
     --cap-add=SYS_ADMIN --cap-add=SYS_RAWIO \
     --device=/dev/nvidiactl --device=/dev/nvidia0 \
     --device=/dev/nvidia-modeset --device=/dev/nvidia-uvm \
+    -e AWS_PROFILE \
+    -e AWS_DEFAULT_REGION \
     -e AWS_ACCESS_KEY_ID \
     -e AWS_SECRET_ACCESS_KEY \
     -e AWS_SESSION_TOKEN \
-    -e AWS_DEFAULT_REGION \
     -v "$RISKFORMER_DIR":"$WORKSPACE_ROOT/riskformer" \
     -v "$ENTRYPOINTS_DIR":"$WORKSPACE_ROOT/entrypoints" \
     -v "$ORCHESTRATORS_DIR":"$WORKSPACE_ROOT/orchestrators" \
