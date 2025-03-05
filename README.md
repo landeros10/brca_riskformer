@@ -6,6 +6,11 @@ A deep learning model for predicting BRCA-related cancer risks using transformer
 
 ```
 brca_riskformer/
+│── aws/                # AWS infrastructure components
+│   ├── config.json     # AWS configuration
+│   ├── lambdas/        # Lambda functions
+│   ├── ec2/            # EC2 scripts
+│   └── *.sh            # AWS deployment scripts
 │── bin/                 # Job execution scripts
 │── configs/             # Configuration files
 │   ├── aws/            # AWS-related configurations
@@ -115,11 +120,36 @@ docker run -it brca-riskformer
 
 ## AWS Integration
 
-The project includes AWS Batch integration for scalable processing:
+The project includes AWS integration for scalable processing:
 
-- Job definitions are located in `orchestrators/batch/`
-- AWS configurations are in `configs/aws/`
-- Batch processing scripts are in `bin/`
+### SQS-Based Job Processing
+
+The project uses AWS SQS for job queue management:
+
+```bash
+# Create SQS queue
+bash aws/create_sqs_queue.sh
+```
+
+### Lambda Functions for Event-Driven Processing
+
+Lambda functions are used to process S3 events:
+
+```bash
+# Deploy Lambda function
+bash aws/lambdas/deploy_lambda.sh svs_processor
+```
+
+### S3 Event Triggers
+
+S3 buckets are configured to trigger Lambda functions:
+
+```bash
+# Configure S3 trigger
+bash aws/configure_s3_trigger.sh
+```
+
+For more details on AWS components, see [aws/README.md](aws/README.md).
 
 ## Contributing
 

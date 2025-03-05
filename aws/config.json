@@ -1,0 +1,31 @@
+{
+    "region": "us-east-1",
+    "account_id": "YOUR_ACCOUNT_ID",
+    "s3": {
+        "svs_bucket": "your-svs-bucket-name"
+    },
+    "sqs": {
+        "queue_name": "svs-processing-queue",
+        "visibility_timeout": 1800,
+        "message_retention_period": 345600
+    },
+    "lambda": {
+        "svs_processor": {
+            "function_name": "svs-processor",
+            "memory_size": 128,
+            "timeout": 30,
+            "role": "lambda-svs-processor-role"
+        }
+    },
+    "iam": {
+        "roles": {
+            "lambda-svs-processor-role": {
+                "policies": [
+                    "AWSLambdaBasicExecutionRole",
+                    "AmazonS3ReadOnlyAccess",
+                    "AmazonSQSFullAccess"
+                ]
+            }
+        }
+    }
+} 
