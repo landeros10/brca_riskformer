@@ -178,7 +178,8 @@ def main():
               gpu_available=torch.cuda.is_available(), 
               gpu_count=torch.cuda.device_count())
     
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    # Use project root from config instead of calculating it
+    project_root = config['docker']['workspace_root']
     tmp_dir = os.path.join(project_root, "tmp")
     model_dir = os.path.join(tmp_dir, config['model']['key'])
     local_input_dir = os.path.join(tmp_dir, config['s3']['input_dir'])
