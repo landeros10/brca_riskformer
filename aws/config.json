@@ -1,7 +1,0 @@
-{
-    "region": "us-east-1",
-    "account_id": "YOUR_ACCOUNT_ID",
-    "s3": {
-        "svs_bucket": "tcga-riskformer-data-2025"
-    }
-} 

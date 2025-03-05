@@ -65,57 +65,6 @@ def split_riskformer_data(svs_paths_data_dict, label_var="odx85", positive_label
 def main():
     # set up arg parsing
     parser = argparse.ArgumentParser(description="Data loading script")
-    parser.add_argument("--profile", type=str, default="651340551631_AWSPowerUserAccess", help="AWS profile name")
-    parser.add_argument("--bucket", type=str, default="tcga-riskformer-data-2025", help="S3 bucket name")
-    parser.add_argument("--region", type=str, default="us-east-1", help="AWS region")
-    parser.add_argument("--input_dir", type=str, default="raw", help="Path to input data")
-    parser.add_argument("--output_dir", type=str, default="processed", help="Path to output data")
-    parser.add_argument("--svs_paths_file", type=str, default="/data/resources/riskformer_slides.json", help="Path to slides list")
-
-    parser.add_argument("--test_split_ratio", type=float, default=0.2, help="Train/test split ratio")
-    parser.add_argument("--label_var", type=str, default="odx85", help="Variable name to use as label")
-    parser.add_argument("--positive_label", type=str, default="H", help="Positive label value")
-    parser.add_argument("--model_type", type=str, default="standard", help="Model type")
-    
-    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
-    args = parser.parse_args()
-
-    logger_setup(debug=args.debug)
-    logger.setLevel(logging.DEBUG if args.debug else logging.INFO)
-
-    # Set up AWS
-    os.environ["AWS_REGION"] = args.region
-    s3_client, session = initialize_s3_client(
-        args.profile,
-        region_name=args.region,
-        return_session=True)
-    logger.debug(f"Using AWS profile: {args.profile}")
-    logger.debug(f"Using AWS region: {args.region}")
-    logger.debug("Initialized S3 client.")
-
-    sagemaker_session = sagemaker.Session(boto_session=session)
-    logger.debug(f"Using SageMaker session: {sagemaker_session}")
-    try:
-        role = sagemaker.get_execution_role(sagemaker_session=sagemaker_session)
-        logger.debug(f"Using IAM role from Sagemaker: {role}")
-    except Exception as e:
-        logger.warning(f"Failed to get IAM role from Sagemaker: {e}")
-        role = None
-    
-    processor = ScriptProcessor(
-        role=role,
-        image_uri="763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training:1.9.1-cpu-py38",        command=["python3"],
-        instance_count=1,
-        instance_type="ml.m5.xlarge",
-        sagemaker_session=sagemaker_session,
-    )
-    logger.debug(f"Loaded SageMaker processor with config: {vars(processor)}")
-    
-    # TODO
-    # create train test split json file
-    # Set up processor
-
-    logger.debug(f"Processing job completed and saved to s3://{args.bucket}/{args.output_dir}/")
 
 if __name__ == "__main__":
     main()

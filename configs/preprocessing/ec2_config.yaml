@@ -48,9 +48,9 @@ project:
 # Configuration Files
 config_files:
   metadata: "resources/riskformer_slide_samples.json"
-  foreground: "configs/preprocessing_foreground_config.yaml"
-  foreground_cleanup: "configs/preprocessing_foreground_cleanup_config.yaml"
-  tiling: "configs/preprocessing_tiling_config.yaml"
+  foreground: "configs/preprocessing/foreground_config.yaml"
+  foreground_cleanup: "configs/preprocessing/foreground_cleanup_config.yaml"
+  tiling: "configs/preprocessing/tiling_config.yaml"
 
 # Model Configuration
 model:
