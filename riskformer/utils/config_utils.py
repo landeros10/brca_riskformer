@@ -157,3 +157,21 @@ def load_yaml_config(config_path, schema):
         logger.warning(f"Invalid values in {config_path}. Using defaults. Error: {e}")
         return schema()
     
+
+def load_train_config(config_path: str) -> Dict:
+    """Load training configuration from a YAML file.
+    
+    Args:
+        config_path: Path to the YAML configuration file
+
+    Returns:
+        Dictionary containing the configuration
+    """
+    if not os.path.isfile(config_path):
+        return {}
+        # raise FileNotFoundError(f"Config file {config_path} not found")
+
+    with open(config_path, "r") as f:
+        config_dict = yaml.safe_load(f)
+
+    return config_dict

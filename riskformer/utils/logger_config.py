@@ -56,6 +56,7 @@ def logger_setup(
         use_cloudwatch: bool = False,
         profile_name: str = None,
         region_name: str = None,
+        log_dir: str = "/opt/ml/processing/logs",
 ) -> None:
     """
     Sets up Python logging. If `use_cloudwatch` is True, logs to AWS CloudWatch using
@@ -67,9 +68,11 @@ def logger_setup(
         use_cloudwatch (bool): Whether to enable CloudWatch logging.
         profile_name (str, optional): AWS profile name for CloudWatch logging.
         region_name (str, optional): AWS region for CloudWatch logging.
+        log_dir (str, optional): Directory to save logs.
     """    
-    LOG_PATH = "/opt/ml/processing/logs"
-    os.makedirs(LOG_PATH, exist_ok=True)
+    print(1)
+    print(log_dir)
+    os.makedirs(log_dir, exist_ok=True)
     log_filename = f"{log_group}.log"
 
     root_logger = logging.getLogger()
