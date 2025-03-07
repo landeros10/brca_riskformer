@@ -22,6 +22,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 
 from riskformer.utils.data_utils import sample_slide_image
+from riskformer.utils.training_utils import PatchInfo
 from riskformer.utils.randstainna import RandStainNA
 from riskformer.utils.aws_utils import initialize_s3_client, list_bucket_files, is_s3_path
 from riskformer.utils.logger_config import log_event
@@ -191,8 +192,7 @@ class RiskFormerDataset(Dataset):
             self.feature_dim = f['features'].shape[1]
             
         self._prefetch_executor = ThreadPoolExecutor(max_workers=4)
-        self._prefetch_all_files()
-    
+        self._prefetch_all_files() 
     
     def _prefetch_all_files(self):
         """Start background download of all S3 files."""
@@ -280,61 +280,6 @@ class RiskFormerDataset(Dataset):
         labeled_mask = label(binary_mask.cpu().numpy())
         return regionprops(labeled_mask)
     
-    def _split_and_pad_features(
-            self,
-            features_list: List[torch.Tensor],
-            max_dim: int = 32,
-            overlap: float = 0.1,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Split features into patches and pad them to the same size.
-        
-        Args:
-            features_list: List of dense feature tensors, each of shape (H, W, D)
-            max_dim: Maximum dimension for patches
-            overlap: Fraction of overlap between patches (default: 0.1)
-            
-        Returns:
-            Tuple containing:
-                - patches: Tensor of shape (N, max_dim, max_dim, D) where N is total number of patches
-                - patch_info: Tensor containing patch information for reconstruction
-        """
-        from riskformer.utils.training_utils import PatchInfo
-        
-        # Ensure we have at least one feature tensor
-        if not features_list or len(features_list) == 0:
-            empty_patches = torch.zeros((0, max_dim, max_dim, self.feature_dim))
-            empty_info = torch.zeros((0, 10), dtype=torch.int32)  # Changed from 8 to 10 columns
-            return empty_patches, empty_info
-        
-        all_patches = []
-        all_patch_info = []
-        
-        for feature_id, features in enumerate(features_list):
-            logger.debug(f'feature set {feature_id}, shape {features.shape}')
-            
-            # Create regionprops
-            rprops = self._create_feature_regionprops(features)
-            logger.debug(f"Number of regions: {len(rprops)}")
-            
-            # Process each region
-            for region_id, region in enumerate(rprops):
-                region_patches, region_info = self._process_region(
-                    feature_id, region_id, region, features, max_dim, overlap
-                )
-                all_patches.extend(region_patches)
-                all_patch_info.extend(region_info)
-        
-        if not all_patches:
-            empty_patches = torch.zeros((0, max_dim, max_dim, self.feature_dim))
-            empty_info = torch.zeros((0, 10), dtype=torch.int32)  # Changed from 8 to 10 columns
-            return empty_patches, empty_info
-        
-        # Convert patch info to tensor
-        patch_info_tensor = torch.stack([info.to_tensor() for info in all_patch_info], dim=0)
-        
-        return torch.stack(all_patches, dim=0), patch_info_tensor
-    
     def _process_region(
             self, 
             feature_id: int, 
@@ -360,7 +305,6 @@ class RiskFormerDataset(Dataset):
                 - List of patch tensors
                 - List of PatchInfo objects
         """
-        from riskformer.utils.training_utils import PatchInfo
         
         region_patches = []
         region_info = []
@@ -425,7 +369,6 @@ class RiskFormerDataset(Dataset):
                 - Padded patch tensor
                 - PatchInfo object
         """
-        from riskformer.utils.training_utils import PatchInfo
         
         # Extract patch
         patch = region_features[row_start:row_end, col_start:col_end]
@@ -523,6 +466,60 @@ class RiskFormerDataset(Dataset):
         
         return result
 
+    def split_and_pad_features(
+            self,
+            features_list: List[torch.Tensor],
+            max_dim: int = 32,
+            overlap: float = 0.1,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Split features into patches and pad them to the same size.
+        
+        Args:
+            features_list: List of dense feature tensors, each of shape (H, W, D)
+            max_dim: Maximum dimension for patches
+            overlap: Fraction of overlap between patches (default: 0.1)
+            
+        Returns:
+            Tuple containing:
+                - patches: Tensor of shape (N, max_dim, max_dim, D) where N is total number of patches
+                - patch_info: Tensor containing patch information for reconstruction
+        """
+        
+        # Ensure we have at least one feature tensor
+        if not features_list or len(features_list) == 0:
+            empty_patches = torch.zeros((0, max_dim, max_dim, self.feature_dim))
+            empty_info = torch.zeros((0, 10), dtype=torch.int32)  # Changed from 8 to 10 columns
+            return empty_patches, empty_info
+        
+        all_patches = []
+        all_patch_info = []
+        
+        for feature_id, features in enumerate(features_list):
+            logger.debug(f'feature set {feature_id}, shape {features.shape}')
+            
+            # Create regionprops
+            rprops = self._create_feature_regionprops(features)
+            logger.debug(f"Number of regions: {len(rprops)}")
+            
+            # Process each region
+            for region_id, region in enumerate(rprops):
+                region_patches, region_info = self._process_region(
+                    feature_id, region_id, region, features, max_dim, overlap
+                )
+                all_patches.extend(region_patches)
+                all_patch_info.extend(region_info)
+        
+        if not all_patches:
+            empty_patches = torch.zeros((0, max_dim, max_dim, self.feature_dim))
+            empty_info = torch.zeros((0, 10), dtype=torch.int32)  # Changed from 8 to 10 columns
+            return empty_patches, empty_info
+        
+        # Convert patch info to tensor
+        patch_info_tensor = torch.stack([info.to_tensor() for info in all_patch_info], dim=0)
+        
+        return torch.stack(all_patches, dim=0), patch_info_tensor
+    
     def __getitem__(
             self,
             idx: int,
@@ -550,15 +547,16 @@ class RiskFormerDataset(Dataset):
         )
         
         # Process features into patches
-        patches_xl, patch_info = self._split_and_pad_features(
+        patches_xl, patch_info = self.split_and_pad_features(
             features_list=dense_features,
             max_dim=self.max_dim,
             overlap=self.overlap,
         )
+
+        # TODO: dataset-wide normalization
         
         # Return patches and patient data
-        return patches_xl, patch_info, patient_id, patient_data, dense_features
-
+        return patches_xl, patch_info, patient_id, patient_data
     
     def __del__(self):
         """Cleanup background threads."""
