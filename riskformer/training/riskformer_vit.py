@@ -977,3 +977,11 @@ class RiskFormer_ViT(nn.Module):
             "noise_aug": self.noise_aug,
             "attnpool_mode": self.attnpool_mode,
         } 
+    
+class Risk_Assessor():
+    def __init__(self, model, device):
+        self.model = model
+        self.device = device
+
+    def assess_risk(self, x):
+        return self.model(x)
