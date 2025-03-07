@@ -285,7 +285,7 @@ class RiskFormerDataset(Dataset):
             features_list: List[torch.Tensor],
             max_dim: int = 32,
             overlap: float = 0.1,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Split features into patches and pad them to the same size.
         
@@ -295,15 +295,21 @@ class RiskFormerDataset(Dataset):
             overlap: Fraction of overlap between patches (default: 0.1)
             
         Returns:
-            patches: Tensor of shape (N, max_dim, max_dim, D) where N is total number of patches
+            Tuple containing:
+                - patches: Tensor of shape (N, max_dim, max_dim, D) where N is total number of patches
+                - patch_info: Tensor containing patch information for reconstruction
         """
-        all_patches = []
-        patch_info = []
+        from riskformer.utils.training_utils import PatchInfo
         
         # Ensure we have at least one feature tensor
         if not features_list or len(features_list) == 0:
-            return torch.zeros((0, max_dim, max_dim, self.feature_dim))
-            
+            empty_patches = torch.zeros((0, max_dim, max_dim, self.feature_dim))
+            empty_info = torch.zeros((0, 10), dtype=torch.int32)  # Changed from 8 to 10 columns
+            return empty_patches, empty_info
+        
+        all_patches = []
+        all_patch_info = []
+        
         for feature_id, features in enumerate(features_list):
             logger.debug(f'feature set {feature_id}, shape {features.shape}')
             
@@ -311,76 +317,211 @@ class RiskFormerDataset(Dataset):
             rprops = self._create_feature_regionprops(features)
             logger.debug(f"Number of regions: {len(rprops)}")
             
-            # Process each region in the labeled mask
+            # Process each region
             for region_id, region in enumerate(rprops):
-                min_row, min_col, max_row, max_col = region.bbox
-                height, width = max_row - min_row, max_col - min_col
-                
-                # Extract the region
-                region_features = features[min_row:max_row, min_col:max_col]
-                
-                # Calculate number of splits needed
-                num_splits_row = max(1, int(np.ceil(height / max_dim)))
-                num_splits_col = max(1, int(np.ceil(width / max_dim)))
-                
-                if num_splits_row == 1 and num_splits_col == 1:
-                    # If region is smaller than max_dim, pad it
-                    # Make sure to pad feature dimension last (dimension ordering: H, W, D)
-                    padded = F.pad(
-                        region_features,
-                        (0, 0,  # feature dimension - no padding
-                         0, max_dim - width,  # width padding
-                         0, max_dim - height)  # height padding
-                    )
-                    all_patches.append(padded)
-                    patch_info.append((feature_id, region_id, min_row, min_col, max_row, max_col, 0, 0, height, width))
-                else:
-                    # Calculate step sizes with overlap
-                    row_step = max(1, int(max_dim * (1 - overlap)))
-                    col_step = max(1, int(max_dim * (1 - overlap)))
-                    
-                    # Loop bounds to ensure we cover the entire region
-                    row_end_limit = max(0, height - max_dim)
-                    col_end_limit = max(0, width - max_dim)
-                    
-                    # Generate splits with overlap
-                    for row_start in range(0, row_end_limit + row_step, row_step):
-                        for col_start in range(0, col_end_limit + col_step, col_step):
-                            # Ensure we don't exceed boundaries
-                            row_end = min(row_start + max_dim, height)
-                            col_end = min(col_start + max_dim, width)
-                            
-                            # Adjust start positions for last patches to ensure they are max_dim sized
-                            if row_end == height and height > max_dim:
-                                row_start = height - max_dim
-                            if col_end == width and width > max_dim:
-                                col_start = width - max_dim
-                            
-                            # Extract patch
-                            patch = region_features[row_start:row_end, col_start:col_end]
-                            patch_info.append((feature_id, region_id, min_row, min_col, max_row, max_col, row_start, col_start, row_end, col_end))
-                            
-                            # Pad patch if needed
-                            if patch.shape[0] < max_dim or patch.shape[1] < max_dim:
-                                patch = F.pad(
-                                    patch,
-                                    (0, 0,  # feature dimension - no padding
-                                     0, max_dim - patch.shape[1],  # width padding 
-                                     0, max_dim - patch.shape[0])  # height padding
-                                )
-                            
-                            # Verify patch has the correct shape
-                            assert patch.shape[0] == max_dim, f"Expected height {max_dim}, got {patch.shape[0]}"
-                            assert patch.shape[1] == max_dim, f"Expected width {max_dim}, got {patch.shape[1]}"
-                            assert patch.shape[2] == self.feature_dim, f"Expected feature dim {self.feature_dim}, got {patch.shape[2]}"
-                            
-                            all_patches.append(patch)
-        if not all_patches:
-            all_patches = torch.zeros((0, max_dim, max_dim, self.feature_dim))
-            patch_info = torch.zeros((0, 8), dtype=torch.int32)
+                region_patches, region_info = self._process_region(
+                    feature_id, region_id, region, features, max_dim, overlap
+                )
+                all_patches.extend(region_patches)
+                all_patch_info.extend(region_info)
         
-        patch_info = torch.tensor(patch_info, dtype=torch.int32)
-        return torch.stack(all_patches, dim=0), patch_info
+        if not all_patches:
+            empty_patches = torch.zeros((0, max_dim, max_dim, self.feature_dim))
+            empty_info = torch.zeros((0, 10), dtype=torch.int32)  # Changed from 8 to 10 columns
+            return empty_patches, empty_info
+        
+        # Convert patch info to tensor
+        patch_info_tensor = torch.stack([info.to_tensor() for info in all_patch_info], dim=0)
+        
+        return torch.stack(all_patches, dim=0), patch_info_tensor
+    
+    def _process_region(
+            self, 
+            feature_id: int, 
+            region_id: int, 
+            region: object, 
+            features: torch.Tensor,
+            max_dim: int, 
+            overlap: float
+    ) -> Tuple[List[torch.Tensor], List['PatchInfo']]:
+        """
+        Process a single region and extract patches with their metadata.
+        
+        Args:
+            feature_id: ID of the feature being processed
+            region_id: ID of the region within the feature
+            region: Region properties object
+            features: Feature tensor
+            max_dim: Maximum dimension for patches
+            overlap: Fraction of overlap between patches
+            
+        Returns:
+            Tuple containing:
+                - List of patch tensors
+                - List of PatchInfo objects
+        """
+        from riskformer.utils.training_utils import PatchInfo
+        
+        region_patches = []
+        region_info = []
+        
+        # Extract region bounding box
+        min_row, min_col, max_row, max_col = region.bbox
+        height, width = max_row - min_row, max_col - min_col
+        
+        # Extract the region
+        region_features = features[min_row:max_row, min_col:max_col]
+        
+        if height <= max_dim and width <= max_dim:
+            # Small region case - just pad it
+            patch, info = self._create_single_patch(
+                feature_id, region_id, region_features, 
+                min_row, min_col, max_row, max_col, 
+                0, 0, height, width, max_dim
+            )
+            region_patches.append(patch)
+            region_info.append(info)
+        else:
+            # Large region case - split into overlapping patches
+            patches_info = self._split_large_region(
+                feature_id, region_id, region_features,
+                min_row, min_col, max_row, max_col,
+                height, width, max_dim, overlap
+            )
+            for patch, info in patches_info:
+                region_patches.append(patch)
+                region_info.append(info)
+        
+        return region_patches, region_info
+    
+    def _create_single_patch(
+            self,
+            feature_id: int,
+            region_id: int,
+            region_features: torch.Tensor,
+            min_row: int,
+            min_col: int,
+            max_row: int,
+            max_col: int,
+            row_start: int,
+            col_start: int,
+            row_end: int,
+            col_end: int,
+            max_dim: int
+    ) -> Tuple[torch.Tensor, 'PatchInfo']:
+        """
+        Create a single patch and its metadata.
+        
+        Args:
+            feature_id: ID of the feature
+            region_id: ID of the region
+            region_features: Features for this region
+            min_row, min_col, max_row, max_col: Region bounding box
+            row_start, col_start, row_end, col_end: Patch coordinates within region
+            max_dim: Maximum dimension for patches
+            
+        Returns:
+            Tuple containing:
+                - Padded patch tensor
+                - PatchInfo object
+        """
+        from riskformer.utils.training_utils import PatchInfo
+        
+        # Extract patch
+        patch = region_features[row_start:row_end, col_start:col_end]
+        
+        # Pad patch if needed
+        if patch.shape[0] < max_dim or patch.shape[1] < max_dim:
+            patch = F.pad(
+                patch,
+                (0, 0,  # feature dimension - no padding
+                 0, max_dim - patch.shape[1],  # width padding
+                 0, max_dim - patch.shape[0])  # height padding
+            )
+        
+        # Verify patch has the correct shape
+        assert patch.shape[0] == max_dim, f"Expected height {max_dim}, got {patch.shape[0]}"
+        assert patch.shape[1] == max_dim, f"Expected width {max_dim}, got {patch.shape[1]}"
+        assert patch.shape[2] == self.feature_dim, f"Expected feature dim {self.feature_dim}, got {patch.shape[2]}"
+        
+        # Create patch info
+        patch_info = PatchInfo(
+            feature_id=feature_id,
+            region_id=region_id,
+            region_min_row=min_row,
+            region_min_col=min_col,
+            region_max_row=max_row,
+            region_max_col=max_col,
+            patch_row_start=row_start,
+            patch_col_start=col_start,
+            patch_row_end=row_end,
+            patch_col_end=col_end
+        )
+        
+        return patch, patch_info
+    
+    def _split_large_region(
+            self,
+            feature_id: int,
+            region_id: int,
+            region_features: torch.Tensor,
+            min_row: int,
+            min_col: int,
+            max_row: int,
+            max_col: int,
+            height: int,
+            width: int,
+            max_dim: int,
+            overlap: float
+    ) -> List[Tuple[torch.Tensor, 'PatchInfo']]:
+        """
+        Split a large region into overlapping patches.
+        
+        Args:
+            feature_id: ID of the feature
+            region_id: ID of the region
+            region_features: Features for this region
+            min_row, min_col, max_row, max_col: Region bounding box
+            height, width: Height and width of the region
+            max_dim: Maximum dimension for patches
+            overlap: Fraction of overlap between patches
+            
+        Returns:
+            List of tuples containing (patch, patch_info)
+        """
+        result = []
+        
+        # Calculate step sizes with overlap
+        row_step = max(1, int(max_dim * (1 - overlap)))
+        col_step = max(1, int(max_dim * (1 - overlap)))
+        
+        # Loop bounds to ensure we cover the entire region
+        row_end_limit = max(0, height - max_dim)
+        col_end_limit = max(0, width - max_dim)
+        
+        # Generate splits with overlap
+        for row_start in range(0, row_end_limit + row_step, row_step):
+            for col_start in range(0, col_end_limit + col_step, col_step):
+                # Ensure we don't exceed boundaries
+                row_end = min(row_start + max_dim, height)
+                col_end = min(col_start + max_dim, width)
+                
+                # Adjust start positions for last patches to ensure they are max_dim sized
+                if row_end == height and height > max_dim:
+                    row_start = height - max_dim
+                if col_end == width and width > max_dim:
+                    col_start = width - max_dim
+                
+                # Create patch and its info
+                patch, info = self._create_single_patch(
+                    feature_id, region_id, region_features,
+                    min_row, min_col, max_row, max_col,
+                    row_start, col_start, row_end, col_end, max_dim
+                )
+                
+                result.append((patch, info))
+        
+        return result
 
     def __getitem__(
             self,

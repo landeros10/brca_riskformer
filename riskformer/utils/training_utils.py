@@ -12,8 +12,100 @@ import torch
 import numpy as np
 import random
 import logging
+from dataclasses import dataclass
+from typing import List, Tuple, Optional
 
 logger = logging.getLogger(__name__)
+
+@dataclass
+class PatchInfo:
+    """
+    Data class to store information about a patch for reconstruction.
+    
+    Attributes:
+        feature_id: ID of the feature this patch belongs to
+        region_id: ID of the region within the feature
+        region_min_row: Minimum row coordinate of the region in the feature
+        region_min_col: Minimum column coordinate of the region in the feature
+        region_max_row: Maximum row coordinate of the region in the feature
+        region_max_col: Maximum column coordinate of the region in the feature
+        patch_row_start: Starting row of the patch within the region
+        patch_col_start: Starting column of the patch within the region
+        patch_row_end: Ending row of the patch within the region
+        patch_col_end: Ending column of the patch within the region
+    """
+    feature_id: int
+    region_id: int
+    region_min_row: int
+    region_min_col: int
+    region_max_row: int
+    region_max_col: int
+    patch_row_start: int
+    patch_col_start: int
+    patch_row_end: int
+    patch_col_end: int
+    
+    @classmethod
+    def from_tensor(cls, tensor: torch.Tensor) -> 'PatchInfo':
+        """Convert a tensor row to a PatchInfo instance."""
+        if len(tensor) >= 10:
+            return cls(
+                feature_id=int(tensor[0].item()),
+                region_id=int(tensor[1].item()),
+                region_min_row=int(tensor[2].item()),
+                region_min_col=int(tensor[3].item()),
+                region_max_row=int(tensor[4].item()),
+                region_max_col=int(tensor[5].item()),
+                patch_row_start=int(tensor[6].item()),
+                patch_col_start=int(tensor[7].item()),
+                patch_row_end=int(tensor[8].item()),
+                patch_col_end=int(tensor[9].item())
+            )
+        raise ValueError(f"Expected tensor with at least 10 elements, got {len(tensor)}")
+    
+    @classmethod
+    def from_tensor_batch(cls, tensor_batch: torch.Tensor) -> List['PatchInfo']:
+        """Convert a batch of tensor rows to a list of PatchInfo instances."""
+        return [cls.from_tensor(row) for row in tensor_batch]
+    
+    def to_tensor(self) -> torch.Tensor:
+        """Convert a PatchInfo instance to a tensor."""
+        return torch.tensor([
+            self.feature_id, self.region_id,
+            self.region_min_row, self.region_min_col, self.region_max_row, self.region_max_col,
+            self.patch_row_start, self.patch_col_start, self.patch_row_end, self.patch_col_end
+        ], dtype=torch.int32)
+    
+    @property
+    def patch_height(self) -> int:
+        """Get the height of the patch."""
+        return self.patch_row_end - self.patch_row_start
+    
+    @property
+    def patch_width(self) -> int:
+        """Get the width of the patch."""
+        return self.patch_col_end - self.patch_col_start
+    
+    @property
+    def region_row_start(self) -> int:
+        """Get the starting row of the patch in the feature space."""
+        return self.region_min_row + self.patch_row_start
+    
+    @property
+    def region_col_start(self) -> int:
+        """Get the starting column of the patch in the feature space."""
+        return self.region_min_col + self.patch_col_start
+    
+    @property
+    def region_row_end(self) -> int:
+        """Get the ending row of the patch in the feature space."""
+        return self.region_row_start + self.patch_height
+    
+    @property
+    def region_col_end(self) -> int:
+        """Get the ending column of the patch in the feature space."""
+        return self.region_col_start + self.patch_width
+
 
 def set_seed(seed):
     """
@@ -45,38 +137,48 @@ def rearrange_xl_patches(xl_patches, patch_info):
     max_dim = xl_patches.shape[1]
     feature_dim = xl_patches.shape[-1]
 
-    n_features = int(patch_info[:, 0].max()) + 1
+    # Convert tensor to PatchInfo objects for easier handling
+    patch_infos = PatchInfo.from_tensor_batch(patch_info)
+    
+    # Get number of unique features
+    if not patch_infos:
+        return []
+    
+    feature_ids = set(info.feature_id for info in patch_infos)
+    
     reconstructed_features = []
     patch_id = 0
-    for feature_id in range(n_features):
-        feature_info = patch_info[patch_info[:, 0] == feature_id, :]
-        n_regions = int(feature_info[:, 1].max()) + 1
-
-        feature_size_rows = max(feature_info[:, 4])
-        feature_size_cols = max(feature_info[:, 5])
-        single_feature = torch.zeros((feature_size_rows, feature_size_cols, feature_dim))
-
-        for region_id in range(n_regions):
-            single_region_info = feature_info[feature_info[:, 1] == region_id, :]
-            region_bbox = single_region_info[0, 2:6]
-            min_row, min_col, max_row, max_col = region_bbox
+    
+    for feature_id in sorted(feature_ids):
+        # Get all patches for this feature
+        feature_patches = [p for p in patch_infos if p.feature_id == feature_id]
+        
+        # Get all region IDs for this feature
+        region_ids = set(p.region_id for p in feature_patches)
+        
+        # Get feature dimensions
+        feature_max_row = max(p.region_max_row for p in feature_patches)
+        feature_max_col = max(p.region_max_col for p in feature_patches)
+        
+        # Create empty feature tensor
+        single_feature = torch.zeros((feature_max_row, feature_max_col, feature_dim))
+        
+        # Fill in patches
+        for patch_info in feature_patches:
             
-            for patch_bbox in single_region_info[:, 6:]:
-                patch_row_start, patch_col_start, patch_row_end, patch_col_end = patch_bbox
-                
-                # Calculate actual patch dimensions (might be smaller than max_dim)
-                patch_height = patch_row_end - patch_row_start
-                patch_width = patch_col_end - patch_col_start
-                
-                # Calculate region coordinates
-                region_row_start = patch_row_start + min_row
-                region_col_start = patch_col_start + min_col
-                region_row_end = region_row_start + patch_height
-                region_col_end = region_col_start + patch_width
-                
-                # Use the correct slice of the patch (up to patch_height and patch_width)
-                single_feature[region_row_start:region_row_end, region_col_start:region_col_end, :] = xl_patches[patch_id, :patch_height, :patch_width, :]
-                patch_id += 1
+            # Get the patch
+            patch = xl_patches[patch_id]
+            
+            # Place the patch in the feature
+            single_feature[
+                patch_info.region_row_start:patch_info.region_row_end,
+                patch_info.region_col_start:patch_info.region_col_end,
+                :
+            ] = patch[:patch_info.patch_height, :patch_info.patch_width, :]
+            
+            patch_id += 1
+            
         reconstructed_features.append(single_feature)
+    
     return reconstructed_features
         
