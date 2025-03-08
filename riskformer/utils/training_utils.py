@@ -186,3 +186,80 @@ def rearrange_xl_patches(xl_patches, patch_info):
         reconstructed_features.append(single_feature)
     
     return reconstructed_features, (set(row_starts), set(col_starts))
+
+
+def slide_level_loss(
+        predictions, 
+        labels,
+        class_loss_map,
+        regional_coeff=0.0,
+        ):
+    """
+    Calculate the slide-level loss for a batch of predictions and labels. Assumes multilabel 
+    classification with per-class loss function given by class_loss_map.
+    
+    Args:
+        predictions (torch.Tensor): The predictions from the model, shape (batch_size, num_classes)
+        labels (torch.Tensor): The labels for the batch, shape (num_classes)
+        class_loss_map (dict): A dictionary mapping class index to loss function
+        regional_coeff (float): Coefficient for weighting local vs global loss
+        
+    Returns:
+        torch.Tensor: The slide-level loss.
+    """
+    # Global Loss - vectorized approach
+    global_pred = predictions[0]  # (num_classes,)
+    
+    # Calculate all class losses at once if using the same loss function
+    if len(set(class_loss_map.values())) == 1:
+        # If all classes use the same loss function
+        loss_fn = next(iter(class_loss_map.values()))
+        global_loss = loss_fn(global_pred, labels)
+    else:
+        # If different classes use different loss functions
+        global_loss = torch.tensor(0.0, device=predictions.device)
+        for class_idx, loss_fn in class_loss_map.items():
+            class_pred = global_pred[class_idx].unsqueeze(0)
+            class_label = labels[class_idx].unsqueeze(0)
+            global_loss += loss_fn(class_pred, class_label)
+    
+    global_loss = global_loss * (1 - regional_coeff)
+
+    # Skip local loss calculation if regional_coeff is 0
+    if regional_coeff == 0:
+        return global_loss
+
+    # Top-K Instance Local Loss
+    total_instances = predictions.shape[0] - 1
+    if total_instances == 0:
+        return global_loss
+        
+    k = max(1, total_instances // 10)
+
+    # Choose top k based on first class
+    instance_preds = predictions[1:]  # All instance predictions
+    top_k_values, top_k_indices = torch.topk(instance_preds[:, 0], k=k)
+    
+    # More efficient gathering of top-k predictions
+    top_k_preds = instance_preds[top_k_indices]
+    
+    # Calculate instance loss for each in top k
+    if len(set(class_loss_map.values())) == 1:
+        # If all classes use the same loss function
+        loss_fn = next(iter(class_loss_map.values()))
+        # Expand labels to match top_k_preds shape
+        expanded_labels = labels.unsqueeze(0).expand(k, -1)
+        local_loss = loss_fn(top_k_preds, expanded_labels)
+    else:
+        local_loss = torch.tensor(0.0, device=predictions.device)
+        for class_idx, loss_fn in class_loss_map.items():
+            class_pred = top_k_preds[:, class_idx]
+            class_label = labels[class_idx].expand(k)
+            local_loss += loss_fn(class_pred, class_label)
+    
+    local_loss = local_loss / k * regional_coeff
+    
+    return global_loss + local_loss
+    
+
+    

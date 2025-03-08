@@ -1,0 +1,57 @@
+# RiskFormer Training Configuration
+
+# Data parameters
+s3_bucket: "your-s3-bucket"
+s3_prefix: "your-s3-prefix"
+metadata_file: "path/to/metadata.json"
+cache_dir: "/tmp/riskformer_cache"
+
+# Dataset parameters
+max_dim: 32
+overlap: 0.1
+
+# DataLoader parameters
+batch_size: 32
+num_workers: 4
+val_split: 0.2
+test_split: 0.1
+seed: 42
+
+# Model parameters
+input_embed_dim: 1024
+output_embed_dim: 512
+use_phi: true
+drop_path_rate: 0.1
+drop_rate: 0.1
+num_classes: 1
+depth: 4
+global_depth: 2
+encoding_method: "sinusoidal"
+mask_num: 0
+mask_preglobal: false
+num_heads: 8
+use_attn_mask: false
+mlp_ratio: 4.0
+use_class_token: true
+global_k: 64
+
+# Optimizer parameters
+optimizer: "adam"
+learning_rate: 1.0e-4
+weight_decay: 1.0e-6
+scheduler: "plateau"
+regional_coeff: 0.0
+
+# Training parameters
+max_epochs: 100
+min_epochs: 10
+patience: 10
+precision: "32"
+accelerator: "auto"
+devices: 1
+
+# Logging parameters
+log_dir: "lightning_logs"
+experiment_name: "riskformer"
+use_wandb: false
+wandb_project: "riskformer" 
