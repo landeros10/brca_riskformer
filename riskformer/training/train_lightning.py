@@ -15,8 +15,8 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
-from riskformer.training.lightning_module import RiskFormerLightningModule
-from riskformer.data.lightning_datamodule import RiskFormerDataModule
+from riskformer.training.model import RiskFormerLightningModule
+from riskformer.data.datasets import RiskFormerDataModule
 from riskformer.utils.logger_config import logger_setup
 
 
