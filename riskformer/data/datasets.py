@@ -17,6 +17,7 @@ import logging
 import json
 
 import torch
+import torchvision.transforms as transforms
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 import pytorch_lightning as pl
@@ -683,7 +684,7 @@ class RiskFormerDataset(Dataset):
             
         Returns:
             patches: Tensor of shape (N, max_dim, max_dim, D) where N is total number of patches
-            patient_data: Dictionary containing patient metadata
+            metadata: Dictionary containing patient metadata including labels for multiple tasks
         """
         patient_id = self.patient_ids[idx]
         patient_data = self.patient_examples[patient_id]
@@ -706,8 +707,53 @@ class RiskFormerDataset(Dataset):
 
         # TODO: dataset-wide normalization
         
-        # Return patches and patient data
-        return patches_xl, patch_info, patient_id, patient_data
+        # Create metadata dictionary with patch info and patient ID
+        metadata = {
+            'patch_info': patch_info,
+            'patient_id': patient_id,
+            'labels': {}  # Dictionary to store multiple labels for different tasks
+        }
+        
+        # Process labels for different tasks - convert to tensors
+        # Binary classification tasks
+        if 'odx85' in patient_data:
+            metadata['labels']['odx85'] = torch.tensor([float(patient_data['odx85'])], dtype=torch.float32)
+        
+        if 'mphr' in patient_data:
+            metadata['labels']['mphr'] = torch.tensor([float(patient_data['mphr'])], dtype=torch.float32)
+        
+        if 'necrosis' in patient_data:
+            metadata['labels']['necrosis'] = torch.tensor([float(patient_data['necrosis'])], dtype=torch.float32)
+        
+        if 'pleo' in patient_data:
+            metadata['labels']['pleo'] = torch.tensor([float(patient_data['pleo'])], dtype=torch.float32)
+        
+        # Regression tasks
+        if 'odx_train' in patient_data:
+            metadata['labels']['odx_train'] = torch.tensor([float(patient_data['odx_train'])], dtype=torch.float32)
+        
+        if 'dfm' in patient_data:
+            metadata['labels']['dfm'] = torch.tensor([float(patient_data['dfm'])], dtype=torch.float32)
+        
+        # For backward compatibility, set a default 'label' to the first available label
+        if metadata['labels']:
+            first_label_key = next(iter(metadata['labels']))
+            metadata['label'] = metadata['labels'][first_label_key]
+        else:
+            # Default to zeros if no recognized label is found
+            metadata['label'] = torch.zeros(1, dtype=torch.float32)
+            
+        # Add any other relevant patient data
+        for key, value in patient_data.items():
+            if key not in ['coords_paths', 'features_paths', 'odx85', 'mphr', 'necrosis', 'pleo', 'odx_train', 'dfm']:
+                # Convert values to tensors if they're numeric
+                if isinstance(value, (int, float)):
+                    metadata[key] = torch.tensor([float(value)], dtype=torch.float32)
+                else:
+                    metadata[key] = value
+        
+        # Return patches and metadata
+        return patches_xl, metadata
     
     def __del__(self):
         """Cleanup background threads."""

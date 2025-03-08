@@ -200,13 +200,20 @@ def slide_level_loss(
     
     Args:
         predictions (torch.Tensor): The predictions from the model, shape (batch_size, num_classes)
-        labels (torch.Tensor): The labels for the batch, shape (num_classes)
+        labels (torch.Tensor): The labels for the batch, shape (num_classes) or (1,) for binary
         class_loss_map (dict): A dictionary mapping class index to loss function
         regional_coeff (float): Coefficient for weighting local vs global loss
         
     Returns:
         torch.Tensor: The slide-level loss.
     """
+    # Ensure predictions has the right shape
+    if len(predictions.shape) == 1:
+        predictions = predictions.unsqueeze(0)
+    
+    # Handle binary classification case
+    is_binary = predictions.shape[1] == 1 or (len(class_loss_map) == 1 and 0 in class_loss_map)
+    
     # Global Loss - vectorized approach
     global_pred = predictions[0]  # (num_classes,)
     
@@ -214,13 +221,36 @@ def slide_level_loss(
     if len(set(class_loss_map.values())) == 1:
         # If all classes use the same loss function
         loss_fn = next(iter(class_loss_map.values()))
-        global_loss = loss_fn(global_pred, labels)
+        
+        # For binary classification with a single label value
+        if is_binary and len(labels.shape) == 1 and labels.shape[0] == 1:
+            # Binary classification with a single label
+            if global_pred.shape[0] > 1:
+                # If prediction has multiple outputs but we're treating it as binary
+                # Use the first output
+                global_loss = loss_fn(global_pred[0].unsqueeze(0), labels)
+            else:
+                global_loss = loss_fn(global_pred, labels)
+        else:
+            # Multi-class or properly shaped binary
+            global_loss = loss_fn(global_pred, labels)
     else:
         # If different classes use different loss functions
         global_loss = torch.tensor(0.0, device=predictions.device)
         for class_idx, loss_fn in class_loss_map.items():
             class_pred = global_pred[class_idx].unsqueeze(0)
-            class_label = labels[class_idx].unsqueeze(0)
+            
+            # Handle different label shapes
+            if len(labels.shape) == 1 and labels.shape[0] == 1 and len(class_loss_map) > 1:
+                # Single label value but multiple classes - use the same label for all
+                class_label = labels
+            elif len(labels.shape) >= 1 and class_idx < labels.shape[0]:
+                # Multiple labels, one per class
+                class_label = labels[class_idx].unsqueeze(0)
+            else:
+                # Default case - use the first label
+                class_label = labels[0].unsqueeze(0)
+                
             global_loss += loss_fn(class_pred, class_label)
     
     global_loss = global_loss * (1 - regional_coeff)
@@ -238,28 +268,67 @@ def slide_level_loss(
 
     # Choose top k based on first class
     instance_preds = predictions[1:]  # All instance predictions
-    top_k_values, top_k_indices = torch.topk(instance_preds[:, 0], k=k)
     
-    # More efficient gathering of top-k predictions
-    top_k_preds = instance_preds[top_k_indices]
-    
-    # Calculate instance loss for each in top k
-    if len(set(class_loss_map.values())) == 1:
-        # If all classes use the same loss function
-        loss_fn = next(iter(class_loss_map.values()))
-        # Expand labels to match top_k_preds shape
-        expanded_labels = labels.unsqueeze(0).expand(k, -1)
-        local_loss = loss_fn(top_k_preds, expanded_labels)
+    # Handle different prediction shapes
+    if instance_preds.shape[1] > 0:
+        top_k_values, top_k_indices = torch.topk(instance_preds[:, 0], k=min(k, instance_preds.shape[0]))
+        
+        # More efficient gathering of top-k predictions
+        top_k_preds = instance_preds[top_k_indices]
+        
+        # Calculate instance loss for each in top k
+        if len(set(class_loss_map.values())) == 1:
+            # If all classes use the same loss function
+            loss_fn = next(iter(class_loss_map.values()))
+            
+            # For binary classification with a single label value
+            if is_binary and len(labels.shape) == 1 and labels.shape[0] == 1:
+                # Expand single label to match top_k_preds shape for binary classification
+                expanded_labels = labels.expand(top_k_indices.shape[0])
+                if top_k_preds.shape[1] > 1:
+                    # If prediction has multiple outputs but we're treating it as binary
+                    local_loss = loss_fn(top_k_preds[:, 0], expanded_labels)
+                else:
+                    local_loss = loss_fn(top_k_preds.squeeze(1), expanded_labels)
+            else:
+                # Expand labels to match top_k_preds shape for multiclass
+                expanded_labels = labels.unsqueeze(0).expand(top_k_indices.shape[0], -1)
+                local_loss = loss_fn(top_k_preds, expanded_labels)
+        else:
+            local_loss = torch.tensor(0.0, device=predictions.device)
+            for class_idx, loss_fn in class_loss_map.items():
+                class_pred = top_k_preds[:, class_idx]
+                
+                # Handle different label shapes
+                if len(labels.shape) == 1 and labels.shape[0] == 1 and len(class_loss_map) > 1:
+                    # Single label value but multiple classes - use the same label for all
+                    class_label = labels.expand(top_k_indices.shape[0])
+                elif len(labels.shape) >= 1 and class_idx < labels.shape[0]:
+                    # Multiple labels, one per class
+                    class_label = labels[class_idx].expand(top_k_indices.shape[0])
+                else:
+                    # Default case - use the first label
+                    class_label = labels[0].expand(top_k_indices.shape[0])
+                    
+                local_loss += loss_fn(class_pred, class_label)
+        
+        local_loss = local_loss / k * regional_coeff
+        
+        return global_loss + local_loss
     else:
-        local_loss = torch.tensor(0.0, device=predictions.device)
-        for class_idx, loss_fn in class_loss_map.items():
-            class_pred = top_k_preds[:, class_idx]
-            class_label = labels[class_idx].expand(k)
-            local_loss += loss_fn(class_pred, class_label)
-    
-    local_loss = local_loss / k * regional_coeff
-    
-    return global_loss + local_loss
-    
+        # No instance predictions
+        return global_loss
 
-    
+
+def convert_to_soft_label(score, beta=1.50):
+    cutoff = 0.7169
+    min_score = -2.009
+    max_score = 2.744
+    if score <= cutoff:
+        soft_label = (score - min_score) / (cutoff - min_score)
+        return 0.50 * soft_label ** beta
+    else:
+        soft_label = (score - cutoff) / (max_score - cutoff)
+        return 1 - 0.50 * (1 - soft_label) ** beta
+    return soft_label
+
