@@ -133,6 +133,7 @@ def rearrange_xl_patches(xl_patches, patch_info):
         
     Returns:
         torch.Tensor: The rearranged patches.
+        tuple: The row and column starts for each feature.
     """
     max_dim = xl_patches.shape[1]
     feature_dim = xl_patches.shape[-1]
@@ -148,6 +149,8 @@ def rearrange_xl_patches(xl_patches, patch_info):
     
     reconstructed_features = []
     patch_id = 0
+    row_starts = []
+    col_starts = []
     
     for feature_id in sorted(feature_ids):
         # Get all patches for this feature
@@ -177,8 +180,9 @@ def rearrange_xl_patches(xl_patches, patch_info):
             ] = patch[:patch_info.patch_height, :patch_info.patch_width, :]
             
             patch_id += 1
+            row_starts.append((feature_id, patch_info.region_row_start))
+            col_starts.append((feature_id, patch_info.region_col_start))
             
         reconstructed_features.append(single_feature)
     
-    return reconstructed_features
-        
+    return reconstructed_features, (set(row_starts), set(col_starts))

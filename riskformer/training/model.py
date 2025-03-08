@@ -324,10 +324,27 @@ class SlideLevelModel:
 
 
 class RS_Predictor_ViT(SlideLevelModel):
-    def __init__(self, in_dim, out_dim, drop_path_rate, drop_rate,
-                 num_embed, num_classes, max_dim,
-                 depth, num_heads,
-                 log_path, out_path, data_dir):
+    """
+    RiskFormer model for predicting risk scores from WSI images.
+    """
+    def __init__(
+            self,
+            in_dim: int,
+            out_dim: int,
+            drop_path_rate: float,
+            drop_rate: float,
+            num_embed: int,
+            num_classes: int,
+            max_dim: int,
+            depth: int,
+            num_heads: int,
+            log_path: str,
+            out_path: str,
+            data_dir: str
+    ):
+        """
+        Initialize the RiskFormer model.
+        """
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.drop_path_rate = drop_path_rate

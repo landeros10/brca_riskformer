@@ -1,39 +1,39 @@
+from typing import Optional
+import math
 import torch
 import torch.nn as nn
 from riskformer.training.layers import MultiScaleBlock, GlobalMaxPoolLayer, SinusoidalPositionalEncoding2D
-import math
 
 class RiskFormer_ViT(nn.Module):
     """Vision Transformer for Whole Slide Image processing with multiscale attention."""
     
     def __init__(
         self,
-        input_embed_dim,
-        output_embed_dim,
-        use_phi,
-        drop_path_rate,
-        drop_rate,
-        num_classes,
-        max_dim,
-        depth,
-        global_depth,
-        encoding_method,
-        mask_num,
-        mask_preglobal,
-        num_heads,
-        use_attn_mask,
-        mlp_ratio,
-        use_class_token,
-        global_k,
-        phi_dim=None,
-        downscale_depth=1,
-        downscale_multiplier=1.25,
-        downscale_stride_q=2,
-        downscale_stride_k=2,
-        noise_aug=0.1,
-        data_dir=None,
-        attnpool_mode="conv",
-        name=None,
+        input_embed_dim: int,
+        output_embed_dim: int,
+        use_phi: bool,
+        drop_path_rate: float,
+        drop_rate: float,
+        num_classes: int,
+        max_dim: int,
+        depth: int,
+        global_depth: int,
+        encoding_method: str,
+        mask_num: int,
+        mask_preglobal: bool,
+        num_heads: int,
+        use_attn_mask: bool,
+        mlp_ratio: float,
+        use_class_token: bool,
+        global_k: int,
+        phi_dim: Optional[int] = None,
+        downscale_depth: int = 1,
+        downscale_multiplier: float = 1.25,
+        downscale_stride_q: int = 2,
+        downscale_stride_k: int = 2,
+        noise_aug: float = 0.1,
+        attnpool_mode: str = "conv",
+        name: Optional[str] = None,
         **kwargs
     ):
         """Initialize the model.
@@ -93,7 +93,6 @@ class RiskFormer_ViT(nn.Module):
         self.downscale_stride_q = downscale_stride_q
         self.downscale_stride_k = downscale_stride_k
         self.noise_aug = noise_aug
-        self.data_dir = data_dir
         self.attnpool_mode = attnpool_mode
         self.downscale_first = True  # Always set to True
         self.name = name
