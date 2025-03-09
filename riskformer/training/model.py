@@ -50,6 +50,10 @@ class RiskFormer_ViT(nn.Module):
         noise_aug: float = 0.1,
         attnpool_mode: str = "conv",
         name: Optional[str] = None,
+        background_tile_path: Optional[str] = None,
+        hflip_prob: float = 0.5,
+        vflip_prob: float = 0.5,
+        rotate_prob: float = 0.5,
         **kwargs
     ):
         """Initialize the model.
@@ -109,6 +113,23 @@ class RiskFormer_ViT(nn.Module):
         self.noise_aug = noise_aug
         self.attnpool_mode = attnpool_mode
         self.name = name
+        self.hflip_prob = hflip_prob
+        self.vflip_prob = vflip_prob
+        self.rotate_prob = rotate_prob
+        
+        # Load background tile if data_dir is provided
+        if background_tile_path is not None:
+            import os
+            import numpy as np
+            background_tile_path = os.path.join(background_tile_path, "background_tile_norm.npy")
+            if os.path.exists(background_tile_path):
+                print(f"Using Background tile located: {background_tile_path}")
+                self.background_tile = torch.tensor(np.load(background_tile_path))
+            else:
+                print(f"Background tile not found at {background_tile_path}, using zeros instead")
+                self.background_tile = torch.zeros(self.input_embed_dim)
+        else:
+            self.background_tile = torch.zeros(self.input_embed_dim)
         
         # Set model dimension
         self.model_dim = self.phi_dim if use_phi else input_embed_dim
@@ -441,64 +462,172 @@ class RiskFormer_ViT(nn.Module):
         """Generate attention masks for a batch of tensors.
         
         Args:
-            x: Input tensor of shape [B, H, W, C]
+            x: Input tensor of shape [B, C, H, W]
         
         Returns:
-            Boolean masks of shape [B, H*W] or [B, H*W+1] if use_class_token is True
+            Boolean masks of shape [B, H*W]
         """
         if not self.use_attn_mask:
-            return None  # No need to generate masks
+            return None
         
-        # Check if any value in the feature dimension is non-zero
-        # This creates a mask where True indicates a valid token
-        mask = torch.any(x != 0, dim=-1)  # Shape: [B, H, W]
+        mask = torch.any(x != 0, dim=1)  # Shape: [B, H, W]
         
         # Reshape to [B, H*W]
         batch_size = x.shape[0]
         mask = mask.reshape(batch_size, -1)  # Shape: [B, H*W]
-        
-        # Note: We don't add class token mask here as it's added in prepare_tokens
-        # after the positional encoding is applied
-        
         return mask
         
-    def apply_token_augment(self, x):
-        """ Apply augmentations to tokens 
+    def _random_apply(self, x, transform_fn, p=0.5, batch_wise=False, **kwargs):
+        """Apply a transformation with probability p.
         
         Args:
-            x: Input tensor of shape [B, C, S, S]
+            x: Input tensor of shape [B, C, H, W]
+            transform_fn: Function to apply to the tensor
+            p: Probability of applying the transformation
+            batch_wise: Whether to apply the same transformation to all samples in the batch
+            **kwargs: Additional arguments to pass to transform_fn
+            
+        Returns:
+            Transformed tensor with same shape as input
+        """
+        if p <= 0:
+            return x
+            
+        batch_size = x.shape[0]
+        device = x.device
+        
+        if batch_wise:
+            # Apply same transformation to all samples in batch with probability p
+            if torch.rand(1, device=device).item() < p:
+                return transform_fn(x, **kwargs)
+            return x
+        else:
+            # Apply transformation to each sample independently with probability p
+            mask = torch.rand(batch_size, 1, 1, 1, device=device) < p
+            if not mask.any():
+                return x
+                
+            # Apply transformation only to selected samples
+            x_transformed = transform_fn(x, **kwargs)
+            return torch.where(mask, x_transformed, x)
+    
+    def _apply_noise(self, x, noise_level=0.1, masks=None):
+        """Apply random noise to a tensor.
+        
+        Args:
+            x: Input tensor of shape [B, C, H, W]
+            noise_level: Standard deviation of the noise
+            masks: Optional masks to apply noise only to masked regions
+            
+        Returns:
+            Noisy tensor
+        """
+        if noise_level <= 0:
+            return x
+            
+        batch_size, channels, height, width = x.shape
+        
+        # Generate random noise
+        noise = torch.randn_like(x) * noise_level
+        
+        # If masks are provided, only apply noise to unmasked regions
+        if masks is not None:
+            # Reshape mask to match x dimensions for broadcasting
+            mask_expanded = masks.view(batch_size, 1, height, width)
+            # Apply noise only to unmasked regions
+            return x + noise * mask_expanded
+        else:
+            # Apply noise to all regions
+            return x + noise
+    
+    def _random_rotate(self, x, angles=[1, 2, 3]):
+        """Apply random rotation to each sample in the batch.
+        
+        Args:
+            x: Input tensor of shape [B, C, H, W]
+            angles: List of rotation angles in multiples of 90 degrees
+            
+        Returns:
+            Rotated tensor
+        """
+        batch_size = x.shape[0]
+        device = x.device
+        
+        # Make a copy of x to modify
+        x_rotated = x.clone()
+        
+        # Generate random rotation angles for each sample
+        rot_angles = torch.randint(0, len(angles), (batch_size,), device=device)
+        
+        # Apply rotation to each sample
+        for i in range(batch_size):
+            angle_idx = rot_angles[i].item()
+            if angle_idx > 0:  # Skip angle 0 (no rotation)
+                k = angles[angle_idx]
+                x_rotated[i] = torch.rot90(x[i], k=k, dims=[1, 2])  # For single sample, dims are [C, H, W]
+                
+        return x_rotated
+    
+    def apply_token_augment(self, x):
+        """ Apply augmentations to tokens in a vectorized manner
+        
+        Args:
+            x: Input tensor of shape [B, C, H, W]
             
         Returns:
             Augmented tensor
         """
-        # Random horizontal flip
-
-        # Random vertical flip
-
-        # Random 90-degree rotation
-
-        # Random noise
-
-        return x
+        if not self.training:
+            return x
+            
+        batch_size, channels, height, width = x.shape
         
+        # Apply horizontal flip with probability hflip_prob
+        x = self._random_apply(x, lambda x: torch.flip(x, dims=[3]), p=self.hflip_prob)
+        
+        # Apply vertical flip with probability vflip_prob
+        x = self._random_apply(x, lambda x: torch.flip(x, dims=[2]), p=self.vflip_prob)
+        
+        # Apply rotation with probability rotate_prob
+        x = self._random_apply(x, self._random_rotate, p=self.rotate_prob)
+        
+        # Generate temporary masks for noise augmentation
+        if self.use_attn_mask:
+            # Create a mask where True indicates a valid token (any non-zero value)
+            temp_masks = torch.any(x != 0, dim=1)  # Shape: [B, H, W]
+            temp_masks = temp_masks.reshape(batch_size, -1)  # Shape: [B, H*W]
+        else:
+            temp_masks = None
+            
+        # Apply random noise augmentation
+        x = self._apply_noise(x, noise_level=self.noise_aug, masks=temp_masks)
+        
+        return x
+    
     def forward_phi(self, x, masks=None):
         """Apply phi network to tokens.
         
         Args:
-            x: Input tensor of shape [B, C, S, S]
+            x: Input tensor of shape [B, C, H, W]
             masks: Attention masks
             
         Returns:
-            Input tensor with reduced dimensionality
+            Input tensor with reduced dimensionality in shape [B, H, W, C']
         """
-        batch_size, height, width, channels = x.shape
-        x_flat = x.reshape(-1, channels)
-        x_flat = self.phi(x_flat)
+        batch_size, channels, height, width = x.shape
+        # TODO: Check the reshaping of x here
+        
+        x_flat = x.reshape(-1, channels)  # [B*H*W, C]
+        x_flat = self.phi(x_flat)  # [B*H*W, C']
         
         if masks is not None:
             mask_flat = masks.reshape(-1, 1)
             x_flat = x_flat * mask_flat
-        x = x_flat.reshape(batch_size, height, width, -1)
+            
+        # Reshape back to spatial format in channels-last format
+        x = x_flat.reshape(batch_size, height, width, -1)  # [B, H, W, C']
+        
+        # Keep in channels-last format as expected by subsequent operations
         return x
     
     def add_class_token(self, x, masks=None):
@@ -521,10 +650,34 @@ class RiskFormer_ViT(nn.Module):
             masks = torch.cat((cls_mask, masks), dim=1)
         return x, masks
     
+    def fill_blanks(self, x):
+        """
+        Fill the background regions in x with self.background_tile.
+
+        Args:
+            x (Tensor): Input tensor of shape (batch_size, C, h, w).
+
+        Returns:
+            Tensor: The tensor with background regions filled.
+        """
+        batch_size, channels, height, width = x.shape
+        
+        # Create a mask for background regions (all zeros in the feature dimension)
+        background_mask = torch.all(x == 0, dim=1, keepdim=True)  # Shape: (batch_size, 1, h, w)
+        
+        # Reshape background_tile for broadcasting
+        # TODO: Check to make sure background_tile is the right shape
+        background_feat = self.background_tile.view(1, -1, 1, 1)
+        background_feat = background_feat.to(x.dtype).to(x.device)
+        background_tiled = background_feat.expand(batch_size, -1, height, width)
+        
+        # Replace background regions with the background tile
+        return torch.where(background_mask, background_tiled, x)
+
     def prepare_tokens(self, x):
         """Prepare input tokens for transformer processing.
         Input x is a 2-D array of small patch embeddings and
-        has shape [B, C, S, S]
+        has shape [B, C, H, W]
         
         This method handles:
         1. Reshaping input for transformer processing
@@ -534,7 +687,7 @@ class RiskFormer_ViT(nn.Module):
         5. Adding class token if required
         
         Args:
-            x: Input tensor of shape [B, C, S, S]
+            x: Input tensor of shape [B, C, H, W]
             
         Returns:
             Processed tensor and attention masks
@@ -544,6 +697,9 @@ class RiskFormer_ViT(nn.Module):
         if self.training:
             x = self.apply_token_augment(x)
         
+        # Fill background regions with background_tile
+        x = self.fill_blanks(x)
+        
         # Generate attention masks if needed
         if self.use_attn_mask:
             masks = self.generate_masks(x)
@@ -552,7 +708,11 @@ class RiskFormer_ViT(nn.Module):
         
         # Apply phi network if used (dimensionality adjustment)
         if self.use_phi:
+            # forward_phi expects channels-first and returns channels-last
             x = self.forward_phi(x, masks)
+        else:
+            # Convert to channels-last format for consistency
+            x = x.permute(0, 2, 3, 1)  # [B, H, W, C]
 
         # Reshape into sequence format [B, N, C] for transformer
         batch_size, height, width, channels = x.shape
@@ -566,78 +726,6 @@ class RiskFormer_ViT(nn.Module):
             x, masks = self.add_class_token(x, masks)
         return x, masks, (height, width)
         
-    def flip_rotate(self, x):
-        """Apply random flip and rotation augmentation.
-        
-        Args:
-            x: Input tensor
-            
-        Returns:
-            Augmented tensor
-        """
-        # Only apply augmentation during training
-        if not self.training:
-            return x
-            
-        batch_size, height, width, channels = x.shape
-        augmented_batch = []
-        
-        for i in range(batch_size):
-            img = x[i]  # [H, W, C]
-            
-            # Random horizontal flip (50% probability)
-            if torch.rand(1).item() > 0.5:
-                img = torch.flip(img, dims=[1])
-                
-            # Random vertical flip (50% probability)
-            if torch.rand(1).item() > 0.5:
-                img = torch.flip(img, dims=[0])
-                
-            # Random 90-degree rotation (25% probability for each rotation)
-            rot_choice = torch.randint(0, 4, (1,)).item()
-            if rot_choice == 1:  # 90 degrees
-                img = img.permute(1, 0, 2).flip(dims=[0])
-            elif rot_choice == 2:  # 180 degrees
-                img = torch.flip(img, dims=[0, 1])
-            elif rot_choice == 3:  # 270 degrees
-                img = img.permute(1, 0, 2).flip(dims=[1])
-                
-            augmented_batch.append(img)
-            
-        # Stack back into a batch
-        return torch.stack(augmented_batch)
-    
-    def random_noise(self, x, masks):
-        """Apply random noise augmentation.
-        
-        Args:
-            x: Input tensor
-            masks: Attention masks
-            
-        Returns:
-            Noisy tensor
-        """
-        # Only apply noise during training and if noise_aug > 0
-        if not self.training or self.noise_aug <= 0:
-            return x
-            
-        batch_size, height, width, channels = x.shape
-        
-        # Generate random noise
-        noise = torch.randn_like(x) * self.noise_aug
-        
-        # If masks are provided, only apply noise to unmasked regions
-        if masks is not None:
-            # Expand mask to match x dimensions
-            mask_expanded = masks.unsqueeze(-1).expand_as(x)
-            # Apply noise only to unmasked regions
-            noisy_x = x + noise * mask_expanded
-        else:
-            # Apply noise to all regions
-            noisy_x = x + noise
-            
-        return noisy_x
-    
     def process_downscale_blocks(self, x, hw_shape, masks=None):
         """Process through downscale blocks.
         
@@ -690,8 +778,7 @@ class RiskFormer_ViT(nn.Module):
         for i, block in enumerate(self.global_blocks):
             x = block(x, attention_mask=masks)
 
-        return x, hw_shape
-    
+        return x, hw_shape    
 
     def produce_preds(self, x, masks=None, return_weights=False):
         """Create predictions from global transformer blocks.
@@ -880,7 +967,10 @@ class RiskFormer_ViT(nn.Module):
             "downscale_stride_k": self.downscale_stride_k,
             "noise_aug": self.noise_aug,
             "attnpool_mode": self.attnpool_mode,
-            "name": self.name
+            "name": self.name,
+            "hflip_prob": self.hflip_prob,
+            "vflip_prob": self.vflip_prob,
+            "rotate_prob": self.rotate_prob
         }
         return config
         

@@ -704,7 +704,7 @@ class RiskFormerDataset(Dataset):
             idx: Index of patient in dataset
             
         Returns:
-            patches: Tensor of shape (N, max_dim, max_dim, D) where N is total number of patches
+            patches: Batch of channels-first tensors of shape (B, C, H, W)
             metadata: Dictionary containing patient metadata including labels for multiple tasks
                 The 'labels' field contains a nested dictionary with:
                 - Task name as key
