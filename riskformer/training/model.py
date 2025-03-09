@@ -1112,18 +1112,28 @@ class RiskFormerLightningModule(pl.LightningModule):
         
         Args:
             predictions: Model predictions
-            labels: Ground truth labels
+            labels: Dictionary of labels or a tensor for a specific task
             task: Task name
             stage: 'train', 'val', or 'test'
             
         Returns:
             Loss value for the task
         """
-        if task not in labels:
-            # Skip tasks without labels
-            return None
+        # If labels is a dictionary, extract the task-specific labels
+        if isinstance(labels, dict):
+            if task not in labels:
+                # Skip tasks without labels
+                return None
+            task_labels = labels[task]
+        else:
+            # If labels is already a tensor, use it directly
+            task_labels = labels
         
-        task_labels = labels[task]
+        # Check if task exists in class_loss_map
+        if task not in self.class_loss_map or task not in self.task_types:
+            # Skip non-existent tasks
+            return None
+            
         task_loss_map = self.class_loss_map[task]
         task_type = self.task_types[task]
         
@@ -1156,8 +1166,8 @@ class RiskFormerLightningModule(pl.LightningModule):
         # For binary tasks, we need logits for metrics
         task_type = self.task_types[task]
         
-        # Get labels
-        task_labels = labels
+        # Use the task_labels from earlier in the method, not the original labels
+        # task_labels = labels
         
         # Log metrics based on task type
         if task_type == "binary":

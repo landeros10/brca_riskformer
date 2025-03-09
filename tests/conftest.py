@@ -12,11 +12,33 @@ import h5py
 
 
 @pytest.fixture
+def temp_dir():
+    """Create a temporary directory for testing."""
+    temp_dir = tempfile.mkdtemp()
+    yield temp_dir
+    shutil.rmtree(temp_dir)
+
+@pytest.fixture
 def mock_output_dir(temp_dir):
     """Create a temporary output directory."""
     output_dir = os.path.join(temp_dir, "output")
     os.makedirs(output_dir, exist_ok=True)
     return output_dir
+
+@pytest.fixture
+def mock_model_dir(temp_dir):
+    """Create a temporary model directory."""
+    model_dir = os.path.join(temp_dir, "models")
+    os.makedirs(model_dir, exist_ok=True)
+    
+    # Create dummy model files
+    with open(os.path.join(model_dir, "model.pth"), "wb") as f:
+        f.write(b"dummy model file")
+    
+    with open(os.path.join(model_dir, "config.json"), "w") as f:
+        f.write('{"model_type": "resnet18"}')
+    
+    return model_dir
 
 @pytest.fixture
 def mock_config():

@@ -1,7 +1,7 @@
 import pytest
 import torch
 import numpy as np
-from riskformer.training.riskformer_vit import RiskFormer_ViT
+from riskformer.training.model import RiskFormer_ViT
 import torch.nn as nn
 
 class TestRiskFormerIntegration:

@@ -2,7 +2,8 @@ import pytest
 import torch
 import math
 import numpy as np
-from riskformer.training.riskformer_vit import RiskFormer_ViT, SinusoidalPositionalEncoding2D
+from riskformer.training.model import RiskFormer_ViT
+from riskformer.training.layers import SinusoidalPositionalEncoding2D
 
 # Fixtures for commonly used test parameters
 @pytest.fixture

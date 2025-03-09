@@ -107,7 +107,7 @@ def preprocess_one_slide(
         )
         if len(sample_coords) == 0:
             logger.error(f"No valid sample points found for {input_filename}")
-            return
+            return True
     except Exception as e:
         logger.error(f"Failed to get sample points for {input_filename}. Error: {e}")
         raise e
@@ -185,6 +185,7 @@ def preprocess_one_slide(
         raise e
     logger.info("Output data saved successfully to local output dir.")
     slide_dataset.close_slide()
+    return True
 
 
 def parse_args():

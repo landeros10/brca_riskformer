@@ -1,9 +1,9 @@
 # RiskFormer Training Configuration
 
 # Data parameters
-s3_bucket: "your-s3-bucket"
-s3_prefix: "your-s3-prefix"
-metadata_file: "path/to/metadata.json"
+s3_bucket: "tcga-riskformer-data-2025"
+s3_prefix: "preprocessed/uni/uni2-h"
+metadata_file: "resources/riskformer_slide_samples.json"
 cache_dir: "/tmp/riskformer_cache"
 
 # Dataset parameters

@@ -479,6 +479,12 @@ def get_mask_samplepoints(
 
     # Get slide bounding box
     fg_bbox = get_bbox(foreground_mask)
+    
+    # Handle case when fg_bbox is an empty list (no foreground detected)
+    if len(fg_bbox) == 0:
+        logger.warning("No valid bounding box found. Returning empty coordinates array.")
+        return np.array([], dtype=np.int32).reshape(0, 2)
+        
     slide_bbox = np.around(fg_bbox.astype(float) * fg_scale).astype(int)
     logger.debug(f"Foreground bbox: {fg_bbox}, Slide bbox: {slide_bbox}")
 

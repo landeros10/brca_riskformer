@@ -109,7 +109,7 @@ class TestRiskFormerMultiTask:
     
     @patch('riskformer.training.model.RiskFormer_ViT')
     @patch('riskformer.training.model.slide_level_loss')
-    def test_calculate_task_loss(self, mock_slide_level_loss, mock_model, model_config, 
+    def test_calculate_task_loss(self, mock_slide_level_loss, mock_model, model_config,
                                 optimizer_config, multitask_class_loss_map, mock_batch):
         """Test that _calculate_task_loss handles different tasks correctly."""
         # Configure mocks
@@ -129,21 +129,61 @@ class TestRiskFormerMultiTask:
         # Skip metrics calculation by patching the log_metrics method
         lightning_model.log_metrics = MagicMock()
         
+        # Mock the metrics to avoid shape mismatch errors
+        mock_metric = MagicMock()
+        mock_metric.return_value = torch.tensor(0.8)
+        
+        # Replace the metrics dictionary with mocks
+        lightning_model.metrics = {
+            'binary_task': {
+                'train_acc': mock_metric,
+                'train_auc': mock_metric,
+                'val_acc': mock_metric,
+                'val_auc': mock_metric,
+                'test_acc': mock_metric,
+                'test_auc': mock_metric
+            },
+            'multiclass_task': {
+                'train_acc': mock_metric,
+                'train_f1': mock_metric,
+                'train_auc': mock_metric,
+                'val_acc': mock_metric,
+                'val_f1': mock_metric,
+                'val_auc': mock_metric,
+                'test_acc': mock_metric,
+                'test_f1': mock_metric,
+                'test_auc': mock_metric
+            },
+            'regression_task': {
+                'train_mse': mock_metric,
+                'train_mae': mock_metric,
+                'val_mse': mock_metric,
+                'val_mae': mock_metric,
+                'test_mse': mock_metric,
+                'test_mae': mock_metric
+            }
+        }
+        
+        # Add task types
+        lightning_model.task_types = {
+            'binary_task': 'binary',
+            'multiclass_task': 'multiclass',
+            'regression_task': 'regression'
+        }
+        
         # Get predictions and labels
         features, metadata = mock_batch
         predictions = torch.rand(5, 3)  # 5 instances, 3 outputs (one per task)
         labels = metadata['labels']
         
-        # Extract individual labels for simplicity in tests
-        binary_label = labels['binary_task']
-        
-        # Test for binary task
-        binary_loss = lightning_model._calculate_task_loss(predictions, binary_label, 'binary_task', 'train')
+        # Test for binary task - extract just the binary_task label
+        binary_task_label = labels['binary_task']
+        binary_loss = lightning_model._calculate_task_loss(predictions, binary_task_label, 'binary_task', 'train')
         assert binary_loss is not None
         assert binary_loss.item() == 0.5
         mock_slide_level_loss.assert_called_with(
             predictions, 
-            binary_label, 
+            binary_task_label, 
             lightning_model.class_loss_map['binary_task'], 
             regional_coeff=lightning_model.regional_coeff
         )
@@ -161,7 +201,7 @@ class TestRiskFormerMultiTask:
         assert multiclass_loss.item() == 0.5
         
         # Test for non-existent task
-        nonexistent_loss = lightning_model._calculate_task_loss(predictions, binary_label, 'nonexistent_task', 'train')
+        nonexistent_loss = lightning_model._calculate_task_loss(predictions, labels['binary_task'], 'nonexistent_task', 'train')
         assert nonexistent_loss is None
     
     @patch('riskformer.training.model.RiskFormer_ViT')
