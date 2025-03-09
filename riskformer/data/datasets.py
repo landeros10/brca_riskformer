@@ -756,6 +756,7 @@ class RiskFormerDataset(Dataset):
             metadata['label'] = torch.zeros(1, dtype=torch.float32)
         
         # Return patches and metadata
+        patches_xl = patches_xl.permute(0, 3, 1, 2)
         return patches_xl, metadata
     
     def __del__(self):

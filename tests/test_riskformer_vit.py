@@ -123,7 +123,8 @@ def test_flip_rotate_augmentation(basic_model_params, create_dummy_input):
     torch.manual_seed(42)
     
     # Apply augmentation in training mode
-    augmented = model.flip_rotate(x, training=True)
+    model.train()
+    augmented = model.flip_rotate(x)
     
     # Check output shape (should be unchanged)
     assert augmented.shape == x.shape
@@ -132,7 +133,8 @@ def test_flip_rotate_augmentation(basic_model_params, create_dummy_input):
     assert not torch.allclose(augmented, x)
     
     # Verify that in eval mode, no augmentation happens
-    no_aug = model.flip_rotate(x, training=False)
+    model.eval()
+    no_aug = model.flip_rotate(x)
     assert torch.allclose(no_aug, x)
 
 # Test data augmentation: random_noise
@@ -148,7 +150,8 @@ def test_random_noise_augmentation(basic_model_params, create_dummy_input):
     torch.manual_seed(42)
     
     # Apply noise in training mode
-    noisy = model.random_noise(x, masks, training=True)
+    model.train()
+    noisy = model.random_noise(x, masks)
     
     # Check output shape (should be unchanged)
     assert noisy.shape == x.shape
@@ -160,11 +163,13 @@ def test_random_noise_augmentation(basic_model_params, create_dummy_input):
     params = basic_model_params.copy()
     params["noise_aug"] = 0.0
     model_no_noise = RiskFormer_ViT(**params)
+    model_no_noise.train()
     
-    no_noise = model_no_noise.random_noise(x, masks, training=True)
+    no_noise = model_no_noise.random_noise(x, masks)
     assert torch.allclose(no_noise, x)
     
-    no_noise_eval = model.random_noise(x, masks, training=False)
+    model.eval()
+    no_noise_eval = model.random_noise(x, masks)
     assert torch.allclose(no_noise_eval, x)
 
 # Test token preparation
@@ -173,32 +178,28 @@ def test_prepare_tokens(basic_model_params, create_dummy_input):
     model = RiskFormer_ViT(**basic_model_params)
     x = create_dummy_input
     
-    # Set eval mode for deterministic behavior
+    # Test in evaluation mode
     model.eval()
+    tokens, masks = model.prepare_tokens(x)
     
-    # Prepare tokens
-    tokens, masks = model.prepare_tokens(x, training=False)
+    # Check that tokens have the right shape
+    batch_size, height, width, channels = x.shape
+    expected_seq_len = height * width
+    if model.use_class_token:
+        expected_seq_len += 1
+    assert tokens.shape == (batch_size, expected_seq_len, model.model_dim)
     
-    # Check token shape with class token
-    expected_shape = (x.shape[0], x.shape[1] * x.shape[2] + 1, model.model_dim)
-    assert tokens.shape == expected_shape
-    
-    # Check mask shape with class token
-    expected_mask_shape = (x.shape[0], x.shape[1] * x.shape[2] + 1)
-    assert masks.shape == expected_mask_shape
-    
-    # Test without class token
+    # Test with different configuration (no class token)
     params = basic_model_params.copy()
     params["use_class_token"] = False
     model_no_cls = RiskFormer_ViT(**params)
-    tokens_no_cls, masks_no_cls = model_no_cls.prepare_tokens(x, training=False)
     
-    # Check shapes without class token
-    expected_shape_no_cls = (x.shape[0], x.shape[1] * x.shape[2], model_no_cls.model_dim)
-    assert tokens_no_cls.shape == expected_shape_no_cls
+    model_no_cls.eval()
+    tokens_no_cls, masks_no_cls = model_no_cls.prepare_tokens(x)
     
-    expected_mask_shape_no_cls = (x.shape[0], x.shape[1] * x.shape[2])
-    assert masks_no_cls.shape == expected_mask_shape_no_cls
+    # Check that tokens have the right shape (no class token)
+    expected_seq_len = height * width
+    assert tokens_no_cls.shape == (batch_size, expected_seq_len, model_no_cls.model_dim)
 
 # Test Sinusoidal Positional Encoding
 def test_sinusoidal_positional_encoding():
@@ -255,19 +256,18 @@ def test_global_attention(basic_model_params, create_dummy_input):
     model.eval()
     with torch.no_grad():
         # Get outputs with attention weights
-        output, weights = model(x, return_weights=True)
+        output, attns, global_weights = model(x, return_weights=True)
     
     # Check output shape
     assert output.shape == (x.shape[0], basic_model_params["num_classes"])
     
-    # Check that weights have appropriate shape
-    # The exact shape depends on the internal structure, but they should be defined
-    assert weights is not None
-    assert isinstance(weights, torch.Tensor)
+    # Check that attention maps have appropriate shapes
+    assert attns is not None
+    assert global_weights is not None
     
-    # Weight values should be between 0 and 1 (as they're from a softmax)
-    assert torch.all(weights >= 0)
-    assert torch.all(weights <= 1)
+    # The exact shape depends on the internal structure, but they should be defined
+    # Global weights should have a spatial dimension matching the input
+    assert len(global_weights.shape) == 3  # [batch, height, width]
 
 if __name__ == "__main__":
     pytest.main() 

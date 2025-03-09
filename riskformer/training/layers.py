@@ -117,8 +117,8 @@ class DropPath(nn.Module):
         super().__init__()
         self.drop_prob = drop_prob
 
-    def forward(self, x, training=False):
-        return drop_path(x, self.drop_prob, training)
+    def forward(self, x):
+        return drop_path(x, self.drop_prob, self.training)
 
 class Mlp(nn.Module):
     """
@@ -628,7 +628,10 @@ class GlobalMaxPoolLayer(nn.Module):
         super().__init__()
         self.use_class_token = use_class_token
         
-    def forward(self, x, attention_mask=None, training=False, h=0, w=0):
+    def forward(self, x, attention_mask=None, h=0, w=0):
+        if not self.training:
+            return x, None, (h, w), attention_mask
+        
         # If we have class tokens, separate them
         if self.use_class_token:
             cls_token, x = torch.tensor_split(x, [1], dim=1)

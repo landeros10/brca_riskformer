@@ -1701,6 +1701,7 @@ class VisionTransformerWSI(tf.keras.Model):
         return all_preds
 
 
+
 class VisionTransformerWSI_256(VisionTransformerWSI):
 
     def __init__(self, *args,

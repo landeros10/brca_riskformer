@@ -11,9 +11,11 @@ import torch
 import torch.nn as nn
 import pytorch_lightning as pl
 import torchmetrics
-from typing import Dict, Any, Optional, Union, List
+from typing import Dict, Any, Optional, Union, List, Tuple
 from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR, OneCycleLR
 from torch.optim import Adam, SGD, AdamW
+from torchvision import transforms
+import torch.nn.functional as F
 
 from riskformer.training.layers import SinusoidalPositionalEncoding2D, MultiScaleBlock, GlobalMaxPoolLayer
 from riskformer.utils.training_utils import slide_level_loss
@@ -35,8 +37,6 @@ class RiskFormer_ViT(nn.Module):
         depth: int,
         global_depth: int,
         encoding_method: str,
-        mask_num: int,
-        mask_preglobal: bool,
         num_heads: int,
         use_attn_mask: bool,
         mlp_ratio: float,
@@ -96,8 +96,6 @@ class RiskFormer_ViT(nn.Module):
         self.depth = depth
         self.global_depth = global_depth
         self.encoding_method = encoding_method
-        self.mask_num = mask_num
-        self.mask_preglobal = mask_preglobal
         self.num_heads = num_heads
         self.use_attn_mask = use_attn_mask
         self.mlp_ratio = mlp_ratio
@@ -110,7 +108,6 @@ class RiskFormer_ViT(nn.Module):
         self.downscale_stride_k = downscale_stride_k
         self.noise_aug = noise_aug
         self.attnpool_mode = attnpool_mode
-        self.downscale_first = True  # Always set to True
         self.name = name
         
         # Set model dimension
@@ -147,7 +144,7 @@ class RiskFormer_ViT(nn.Module):
         self._initialize_position_encodings()
         
         # Initialize blocks
-        self.initialize_downscale_blocks()  # Initialize downscale blocks first
+        self.initialize_downscale_blocks()
         self.initialize_local_blocks()
         self.initialize_global_blocks()
         self.initialize_global_attn()
@@ -248,6 +245,90 @@ class RiskFormer_ViT(nn.Module):
         else:
             raise ValueError(f"Unknown position encoding method: {self.encoding_method}")
 
+    def _apply_positional_encoding(self, x, height, width):
+        """Apply positional encoding to the input tensor based on the specified method.
+        
+        This method consolidates all positional encoding implementations using standard
+        libraries where possible.
+        
+        Args:
+            x: Input tensor of shape [B, N, C]
+            height: Height of the 2D grid
+            width: Width of the 2D grid
+            
+        Returns:
+            Tensor with positional encoding applied
+        """
+        batch_size, seq_len, channels = x.shape
+        
+        # Apply positional encoding based on method
+        if self.encoding_method == "standard" or self.encoding_method == "":
+            # For standard encoding, we add the position embedding
+            if self.use_class_token:
+                # If using class token later, just add position embedding to sequence
+                if seq_len <= self.pos_embed.shape[1] - 1:
+                    # Use the pre-computed position embedding
+                    pos_embed = self.pos_embed[:, 1:seq_len+1, :]
+                    x = x + pos_embed
+                else:
+                    # Need to interpolate position embedding for larger sequence
+                    pos_embed = self.pos_embed[:, 1:, :]
+                    pos_embed = F.interpolate(
+                        pos_embed.permute(0, 2, 1).unsqueeze(0),
+                        size=seq_len,
+                        mode='linear'
+                    ).squeeze(0).permute(0, 2, 1)
+                    x = x + pos_embed
+            else:
+                # If no class token, just add position embedding
+                if seq_len <= self.pos_embed.shape[1]:
+                    # Use the pre-computed position embedding
+                    x = x + self.pos_embed[:, :seq_len, :]
+                else:
+                    # Need to interpolate position embedding for larger sequence
+                    pos_embed = self.pos_embed
+                    pos_embed = F.interpolate(
+                        pos_embed.permute(0, 2, 1).unsqueeze(0),
+                        size=seq_len,
+                        mode='linear'
+                    ).squeeze(0).permute(0, 2, 1)
+                    x = x + pos_embed
+                    
+        elif self.encoding_method == "sinusoidal":
+            # For sinusoidal, we apply the encoding function
+            x = self.pos_encoding(x)
+            
+        elif self.encoding_method == "conditional":
+            # For conditional encoding, we need to reshape to 2D, apply conv, then reshape back
+            x = x.reshape(batch_size, height, width, channels)
+            # Convert to channels-first format for convolution
+            x = x.permute(0, 3, 1, 2)  # [B, C, H, W]
+            # Apply conditional encoding
+            x = self.peg(x)
+            # Convert back to sequence format
+            x = x.permute(0, 2, 3, 1)  # [B, H, W, C]
+            x = x.reshape(batch_size, height * width, channels)
+            
+        elif self.encoding_method == "ppeg":
+            # For pyramid encoding, similar to conditional but with multiple levels
+            x = x.reshape(batch_size, height, width, channels)
+            # Convert to channels-first format
+            x = x.permute(0, 3, 1, 2)  # [B, C, H, W]
+            
+            # Apply pyramid position encoding
+            for encoder in self.ppeg:
+                # Apply encoder at each level
+                x = x + encoder(x)
+                
+            # Convert back to sequence format
+            x = x.permute(0, 2, 3, 1)  # [B, H, W, C]
+            x = x.reshape(batch_size, height * width, channels)
+        
+        # Apply dropout
+        x = self.pos_drop(x)
+        
+        return x
+        
     def _init_weights(self, m):
         """Initialize weights for the model."""
         if isinstance(m, nn.Linear):
@@ -257,89 +338,29 @@ class RiskFormer_ViT(nn.Module):
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-    
-    def initialize_local_blocks(self):
-        """Initialize the blocks for local processing of patches."""
-        # Calculate drop path rates
-        total_depth = self.depth + self.downscale_depth
-        self.dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, total_depth)]
-        self.local_blocks = nn.ModuleList()
         
-        # Input embedding - patch embedding would go here
-        # For now we use Identity as a placeholder
-        self.patch_embed = nn.Identity()
-        
-        # Get input dimension and size based on downscale blocks
-        input_dim = self.output_embed_dim  # Since downscale_first is always True
-        
-        # Safely get input size
-        if hasattr(self, 'input_sizes') and len(self.input_sizes) > 0:
-            input_size = self.input_sizes[-1]  # Use the last input size from downscale blocks
-        else:
-            # Fallback to a default size if input_sizes is not yet initialized
-            input_size = (16, 16)  # Default size
-        
-        # Define local blocks
-        for i in range(self.depth):
-            # Safely calculate drop path rate index
-            drop_path_idx = min(i + self.downscale_depth, len(self.dpr) - 1)
-            
-            self.local_blocks.append(
-                MultiScaleBlock(
-                    dim=input_dim,
-                    dim_out=input_dim,
-                    input_size=input_size,
-                    num_heads=self.num_heads,
-                    mlp_ratio=self.mlp_ratio,
-                    qkv_bias=True,
-                    qk_scale=None,
-                    drop=self.drop_rate,
-                    attn_drop=self.drop_rate,
-                    drop_path=self.dpr[drop_path_idx],  # Safely access drop path rate
-                    norm_layer=nn.LayerNorm,
-                    kernel_q=(1, 1),
-                    kernel_kv=(1, 1),
-                    stride_q=(1, 1),
-                    stride_kv=(1, 1),
-                    mode=self.attnpool_mode,
-                    has_cls_embed=self.use_class_token,
-                    rel_pos_spatial=True
-                )
-            )
-    
     def initialize_downscale_blocks(self):
         """Initialize blocks that downscale spatial dimensions."""
         self.downscale_blocks = nn.ModuleList()
-        
-        # Calculate output dimensions for each downscale block
         self.output_dims = []
-        current_dim = self.model_dim
+        current_dim = self.output_embed_dim
         for i in range(self.downscale_depth):
             current_dim = int(current_dim * self.downscale_multiplier)
             self.output_dims.append(current_dim)
+        self.output_dims = [
+            (dim + self.num_heads - 1) // self.num_heads * self.num_heads
+            for dim in self.output_dims
+        ]
             
         # Calculate input sizes for each block
-        self.input_sizes = []
-        current_size = (int(math.sqrt(self.max_dim)), int(math.sqrt(self.max_dim)))
-        self.input_sizes.append(current_size)  # Add initial size
-        
-        for i in range(self.downscale_depth):  # Calculate sizes based on downscale operations
-            # Calculate next size based on kernel and stride
-            s_q = self.downscale_stride_q
-            s_k = self.downscale_stride_k
-            h_out = (current_size[0] + 2*((s_q + 1)//2) - (s_q + 1)) // s_q + 1
-            w_out = (current_size[1] + 2*((s_k + 1)//2) - (s_k + 1)) // s_k + 1
-            current_size = (h_out, w_out)
-            self.input_sizes.append(current_size)
+        s_q = self.downscale_stride_q
+        s_k = self.downscale_stride_k
+        self.input_sizes = [int(self.max_dim / (s_q**i)) for i in range(self.downscale_depth + 1)]
+        self.input_sizes = [(s, s) for s in self.input_sizes]
         
         # Create downscale blocks
         for i in range(self.downscale_depth):
-            # Use fixed stride values from parameters
-            s_q = self.downscale_stride_q
-            s_k = self.downscale_stride_k
-            
             input_dim = self.model_dim if i == 0 else self.output_dims[i-1]
-            
             self.downscale_blocks.append(
                 MultiScaleBlock(
                     dim=input_dim,
@@ -363,6 +384,41 @@ class RiskFormer_ViT(nn.Module):
                 )
             )
     
+    def initialize_local_blocks(self):
+        """Initialize the blocks for local processing of patches."""
+        # Calculate drop path rates
+        total_depth = self.depth + self.downscale_depth
+        self.dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, total_depth)]
+        self.local_blocks = nn.ModuleList()
+                
+        # Get input dimension and size based on downscale blocks
+        input_dim = self.output_embed_dim if len(self.output_dims) == 0 else self.output_dims[-1]
+        input_size = self.input_sizes[-1]  #
+
+        for i in range(self.depth):
+            self.local_blocks.append(
+                MultiScaleBlock(
+                    dim=input_dim,
+                    dim_out=input_dim,
+                    input_size=input_size,
+                    num_heads=self.num_heads,
+                    mlp_ratio=self.mlp_ratio,
+                    qkv_bias=True,
+                    qk_scale=None,
+                    drop=self.drop_rate,
+                    attn_drop=self.drop_rate,
+                    drop_path=self.dpr[i + self.downscale_depth],
+                    norm_layer=nn.LayerNorm,
+                    kernel_q=(1, 1),
+                    kernel_kv=(1, 1),
+                    stride_q=(1, 1),
+                    stride_kv=(1, 1),
+                    mode=self.attnpool_mode,
+                    has_cls_embed=self.use_class_token,
+                    rel_pos_spatial=True
+                )
+            )
+
     def initialize_global_blocks(self):
         """Initialize blocks for global processing."""
         self.global_blocks = nn.ModuleList()
@@ -371,10 +427,7 @@ class RiskFormer_ViT(nn.Module):
         self.global_blocks.append(
             GlobalMaxPoolLayer(use_class_token=self.use_class_token)
         )
-        
-        # No need for additional global transformer blocks since we're using
-        # the simplified approach with global attention
-    
+            
     def initialize_global_attn(self):
         """Initialize global attention layer."""
         # Create a global attention mechanism similar to TF implementation
@@ -383,11 +436,7 @@ class RiskFormer_ViT(nn.Module):
             nn.GELU(),
             nn.Linear(128, 1)
         )
-        
-    def set_mask_num(self, mask_num):
-        """Sets the number of masks to use."""
-        self.mask_num = mask_num
-    
+            
     def generate_masks(self, x):
         """Generate attention masks for a batch of tensors.
         
@@ -412,28 +461,70 @@ class RiskFormer_ViT(nn.Module):
         # after the positional encoding is applied
         
         return mask
-    
-    def random_mask(self, x, mask, training=False):
-        """Apply random masking to tokens.
+        
+    def apply_token_augment(self, x):
+        """ Apply augmentations to tokens 
         
         Args:
-            x: Input tokens
-            mask: Boolean mask
-            training: Whether in training mode
-        
-        Returns:
-            Masked tokens
-        """
-        # Only apply masking during training
-        if not training:
-            return x
+            x: Input tensor of shape [B, C, S, S]
             
-        # Placeholder for actual implementation
-        # Would randomly mask tokens according to mask
+        Returns:
+            Augmented tensor
+        """
+        # Random horizontal flip
+
+        # Random vertical flip
+
+        # Random 90-degree rotation
+
+        # Random noise
+
+        return x
+        
+    def forward_phi(self, x, masks=None):
+        """Apply phi network to tokens.
+        
+        Args:
+            x: Input tensor of shape [B, C, S, S]
+            masks: Attention masks
+            
+        Returns:
+            Input tensor with reduced dimensionality
+        """
+        batch_size, height, width, channels = x.shape
+        x_flat = x.reshape(-1, channels)
+        x_flat = self.phi(x_flat)
+        
+        if masks is not None:
+            mask_flat = masks.reshape(-1, 1)
+            x_flat = x_flat * mask_flat
+        x = x_flat.reshape(batch_size, height, width, -1)
         return x
     
-    def prepare_tokens(self, x, training=False):
+    def add_class_token(self, x, masks=None):
+        """Add class token to tokens.
+        
+        Args:
+            x: Input tensor of shape [B, C, S, S]
+            masks: Attention masks  
+            
+        Returns:
+            Input tensor with class token added and updated masks
+        """
+        batch_size = x.shape[0]
+        cls_tokens = self.cls_token_local.expand(batch_size, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        
+        # Update masks to include class token if using attention masks
+        if masks is not None:
+            cls_mask = torch.ones((batch_size, 1), dtype=torch.bool, device=masks.device)
+            masks = torch.cat((cls_mask, masks), dim=1)
+        return x, masks
+    
+    def prepare_tokens(self, x):
         """Prepare input tokens for transformer processing.
+        Input x is a 2-D array of small patch embeddings and
+        has shape [B, C, S, S]
         
         This method handles:
         1. Reshaping input for transformer processing
@@ -443,310 +534,190 @@ class RiskFormer_ViT(nn.Module):
         5. Adding class token if required
         
         Args:
-            x: Input tensor of shape [B, H, W, C]
-            training: Whether in training mode
+            x: Input tensor of shape [B, C, S, S]
             
         Returns:
             Processed tensor and attention masks
         """
-        # Ensure input is in the correct format [B, H, W, C]
-        if len(x.shape) == 3:  # [B, N, C]
-            # Reshape to [B, H, W, C]
-            batch_size, seq_len, channels = x.shape
-            height = width = int(math.sqrt(seq_len))
-            x = x.reshape(batch_size, height, width, channels)
         
-        # Get batch size
         batch_size = x.shape[0]
-        
-        # Apply flip and rotate augmentation during training
-        if training:
-            x = self.flip_rotate(x, training=training)
+        if self.training:
+            x = self.apply_token_augment(x)
         
         # Generate attention masks if needed
-        masks = self.generate_masks(x) if self.use_attn_mask else None
+        if self.use_attn_mask:
+            masks = self.generate_masks(x)
+        else:
+            masks = None
         
-        # Apply random noise augmentation if specified
-        if training and self.noise_aug > 0:
-            x = self.random_noise(x, masks, training=training)
-            # Regenerate masks after noise augmentation if needed
-            if self.use_attn_mask:
-                masks = self.generate_masks(x)
-        
+        # Apply phi network if used (dimensionality adjustment)
+        if self.use_phi:
+            x = self.forward_phi(x, masks)
+
         # Reshape into sequence format [B, N, C] for transformer
         batch_size, height, width, channels = x.shape
         x = x.reshape(batch_size, height * width, channels)
         
-        # Apply positional encoding based on method
-        if self.encoding_method == "standard" or self.encoding_method == "":
-            if self.pos_embed is not None:
-                # For standard encoding, we add the position embedding
-                if self.use_class_token:
-                    # If using class token, apply position encoding first
-                    # then add class token
-                    class_pos_embed = self.pos_embed[:, 0:1, :]
-                    pos_embed = self.pos_embed[:, 1:, :]
-                    x = x + pos_embed
-                else:
-                    # If no class token, just add position embedding
-                    x = x + self.pos_embed
-                    
-                # Apply dropout
-                x = self.pos_drop(x)
-        
-        elif self.encoding_method == "sinusoidal":
-            # For sinusoidal, we apply the encoding function
-            x = self.pos_encoding(x)
-            # Apply dropout
-            x = self.pos_drop(x)
-        
-        elif self.encoding_method == "conditional":
-            # For conditional encoding, we need to reshape to 2D, apply conv, then reshape back
-            x = x.reshape(batch_size, height, width, channels)
-            # Convert to channels-first format for convolution
-            x = x.permute(0, 3, 1, 2)  # [B, C, H, W]
-            # Apply conditional encoding
-            x = self.peg(x)
-            # Convert back to sequence format
-            x = x.permute(0, 2, 3, 1)  # [B, H, W, C]
-            x = x.reshape(batch_size, height * width, channels)
-            # Apply dropout
-            x = self.pos_drop(x)
-            
-        elif self.encoding_method == "ppeg":
-            # For pyramid encoding, similar to conditional but with multiple levels
-            x = x.reshape(batch_size, height, width, channels)
-            # Convert to channels-first format
-            x = x.permute(0, 3, 1, 2)  # [B, C, H, W]
-            
-            # Apply pyramid position encoding
-            for encoder in self.ppeg:
-                # Apply encoder at each level
-                x = x + encoder(x)
-                
-            # Convert back to sequence format
-            x = x.permute(0, 2, 3, 1)  # [B, H, W, C]
-            x = x.reshape(batch_size, height * width, channels)
-            # Apply dropout
-            x = self.pos_drop(x)
+        # Apply positional encoding
+        x = self._apply_positional_encoding(x, height, width)
             
         # Add class token if required
         if self.use_class_token:
-            # Expand class token to batch size
-            cls_tokens = self.cls_token_local.expand(batch_size, -1, -1)
-            
-            # Add class token to beginning of sequence
-            x = torch.cat((cls_tokens, x), dim=1)
-            
-            # Update masks to include class token if using attention masks
-            if masks is not None:
-                # Add True for class token (always attended to)
-                cls_mask = torch.ones((batch_size, 1), dtype=torch.bool, device=masks.device)
-                masks = torch.cat((cls_mask, masks), dim=1)
+            x, masks = self.add_class_token(x, masks)
+        return x, masks, (height, width)
         
-        return x, masks
-        
-    def flip_rotate(self, x, training=True):
-        """Apply random flipping and rotation augmentations.
+    def flip_rotate(self, x):
+        """Apply random flip and rotation augmentation.
         
         Args:
-            x: Input tensor of shape [B, H, W, C]
-            training: Whether in training mode
+            x: Input tensor
             
         Returns:
-            Augmented tensor of same shape
+            Augmented tensor
         """
-        if not training:
+        # Only apply augmentation during training
+        if not self.training:
             return x
             
         batch_size, height, width, channels = x.shape
-        device = x.device
+        augmented_batch = []
         
-        # Create batch of random augmentation parameters
-        flip_h = torch.rand(batch_size, device=device) > 0.5  # 50% chance to flip horizontally
-        flip_v = torch.rand(batch_size, device=device) > 0.5  # 50% chance to flip vertically
-        # 25% chance for each rotation (0, 90, 180, 270 degrees)
-        rot_k = torch.randint(0, 4, (batch_size,), device=device)
-        
-        # Initialize output tensor
-        output = torch.zeros_like(x)
-        
-        # Apply augmentations per sample in batch
         for i in range(batch_size):
             img = x[i]  # [H, W, C]
             
-            # Apply horizontal flip
-            if flip_h[i]:
+            # Random horizontal flip (50% probability)
+            if torch.rand(1).item() > 0.5:
                 img = torch.flip(img, dims=[1])
                 
-            # Apply vertical flip
-            if flip_v[i]:
+            # Random vertical flip (50% probability)
+            if torch.rand(1).item() > 0.5:
                 img = torch.flip(img, dims=[0])
                 
-            # Apply rotation (k*90 degrees counterclockwise)
-            if rot_k[i] > 0:
-                # Transpose and flip to rotate 90 degrees
-                for _ in range(rot_k[i]):
-                    img = torch.transpose(img, 0, 1)
-                    img = torch.flip(img, dims=[0])
+            # Random 90-degree rotation (25% probability for each rotation)
+            rot_choice = torch.randint(0, 4, (1,)).item()
+            if rot_choice == 1:  # 90 degrees
+                img = img.permute(1, 0, 2).flip(dims=[0])
+            elif rot_choice == 2:  # 180 degrees
+                img = torch.flip(img, dims=[0, 1])
+            elif rot_choice == 3:  # 270 degrees
+                img = img.permute(1, 0, 2).flip(dims=[1])
+                
+            augmented_batch.append(img)
             
-            output[i] = img
-            
-        return output
-        
-    def random_noise(self, x, masks, training=True):
-        """Apply random noise to input tensor.
+        # Stack back into a batch
+        return torch.stack(augmented_batch)
+    
+    def random_noise(self, x, masks):
+        """Apply random noise augmentation.
         
         Args:
             x: Input tensor
             masks: Attention masks
-            training: Whether in training mode
             
         Returns:
             Noisy tensor
         """
-        # Don't apply noise in eval mode or if noise_aug is 0
-        if not training or self.noise_aug <= 0:
+        # Only apply noise during training and if noise_aug > 0
+        if not self.training or self.noise_aug <= 0:
             return x
             
-        # Clone input to avoid modifying original
-        output = x.clone()
+        batch_size, height, width, channels = x.shape
         
-        # Apply random noise to each batch
-        for i in range(x.shape[0]):
-            # Get mask for current batch
-            if masks is not None:
-                mask = masks[i].reshape(x.shape[1:3])  # Reshape to [H, W]
-                mask_expanded = mask.unsqueeze(-1).expand(-1, -1, x.shape[-1])  # [H, W, C]
-            else:
-                mask_expanded = torch.ones_like(output[i], dtype=torch.bool)
-            
-            # Apply noise to valid patches
-            # Generate noise with magnitude self.noise_aug
-            noise = torch.randn_like(output[i]) * self.noise_aug
-            
-            # Only apply noise to valid patches (where mask is True)
-            output[i] = torch.where(mask_expanded, output[i] + noise, output[i])
-            
-            # Also randomly dampen some patches to simulate background
-            dampen_factor = 0.8  # Reduce intensity to 80%
-            output[i] = torch.where(mask_expanded, output[i] * dampen_factor, output[i])
+        # Generate random noise
+        noise = torch.randn_like(x) * self.noise_aug
         
-        return output
-    
-    def process_local_blocks(self, x, masks=None, training=False):
-        """Process through local blocks.
-        
-        Args:
-            x: Input tensor
-            masks: Attention masks
-            training: Whether in training mode
-            
-        Returns:
-            Processed features, hw_shape, and attention weights
-        """
-        # Safely get the hw_shape, defaulting to a reasonable value if not available
-        if hasattr(self, 'input_sizes') and len(self.input_sizes) > 0:
-            hw_shape = self.input_sizes[-1]  # Use the final size from downscale blocks
+        # If masks are provided, only apply noise to unmasked regions
+        if masks is not None:
+            # Expand mask to match x dimensions
+            mask_expanded = masks.unsqueeze(-1).expand_as(x)
+            # Apply noise only to unmasked regions
+            noisy_x = x + noise * mask_expanded
         else:
-            # Fallback to a default size based on the input shape
-            hw_shape = (int(math.sqrt(x.shape[1] - self.num_prefix_tokens)), 
-                        int(math.sqrt(x.shape[1] - self.num_prefix_tokens)))
-        
-        attns = []
-        
-        # Process through local blocks
-        for i, block in enumerate(self.local_blocks):
-            # Correctly call MultiScaleBlock with hw_shape parameter
-            x, attn, hw_shape = block(x, hw_shape)
-            attns.append(attn)
+            # Apply noise to all regions
+            noisy_x = x + noise
             
-        # Process through global blocks (which are part of local processing in TF)
-        for i, block in enumerate(self.global_blocks):
-            # Note: GlobalMaxPoolLayer has a different signature
-            if training:
-                # Set model to training mode if needed
-                block.train()
-            else:
-                block.eval()
-            x = block(x, attention_mask=masks)
-            
-        return x, hw_shape, torch.stack(attns) if attns else None
+        return noisy_x
     
-    def process_downscale_blocks(self, x, hw_shape, masks=None, training=False):
+    def process_downscale_blocks(self, x, hw_shape, masks=None):
         """Process through downscale blocks.
         
         Args:
             x: Input tensor
-            hw_shape: Height and width shape
+            hw_shape: Height and width shape tuple (h, w)
             masks: Attention masks
-            training: Whether in training mode
             
         Returns:
             Processed features and new hw_shape
         """
-        # Safely process through downscale blocks if they exist
-        if hasattr(self, 'downscale_blocks') and len(self.downscale_blocks) > 0:
-            for i, block in enumerate(self.downscale_blocks):
-                # Set training mode if needed
-                if training:
-                    block.train()
-                else:
-                    block.eval()
-                # Call MultiScaleBlock with hw_shape parameter
-                x, _, hw_shape = block(x, hw_shape)
-                
+        # Process through downscale blocks
+        for i, block in enumerate(self.downscale_blocks):
+            x, _, hw_shape, _ = block(x, hw_shape)
+            
         return x, hw_shape
     
-    def process_global_blocks(self, x, masks=None, training=False, return_weights=False):
-        """Process tokens through global transformer blocks.
+    def process_local_blocks(self, x, hw_shape, masks=None):
+        """Process through local transformer blocks.
         
         Args:
-            x: Input tensor of shape [B, N, C]
-            masks: Attention masks (optional)
-            training: Whether in training mode
+            x: Input tensor
+            hw_shape: Height and width shape tuple (h, w)
+            masks: Attention masks
+            
+        Returns:
+            Processed features, new hw_shape, and attention weights
+        """
+        attns = []
+        
+        # Process through local blocks
+        for i, block in enumerate(self.local_blocks):
+            x, attn, hw_shape = block(x, hw_shape)
+            attns.append(attn)
+                        
+        return x, hw_shape, torch.stack(attns) if attns else None
+    
+    def process_global_blocks(self, x, hw_shape, masks=None):
+        """Process through global transformer blocks.
+        
+        Args:
+            x: Input tensor
+            hw_shape: Height and width shape tuple (h, w)
+            masks: Attention masks
+            
+        Returns:
+            Processed features
+        """
+        # Process through global blocks (which are part of local processing in TF)
+        for i, block in enumerate(self.global_blocks):
+            x = block(x, attention_mask=masks)
+
+        return x, hw_shape
+    
+
+    def produce_preds(self, x, masks=None, return_weights=False):
+        """Create predictions from global transformer blocks.
+        
+        Args:
+            x: Input tensor
+            masks: Attention masks
             return_weights: Whether to return attention weights
             
         Returns:
-            Global predictions and optionally attention weights
+            Global predictions (and optionally attention weights)
         """
-        batch_size = x.shape[0]
-        
-        # First, apply normalization (matches TF implementation)
+        # Apply global normalization
         x = self.norm_global(x)
         
-        # Process through global blocks if they exist
-        if hasattr(self, 'global_blocks') and len(self.global_blocks) > 0:
-            for i, block in enumerate(self.global_blocks):
-                # Apply block with attention mask
-                x = block(x, attention_mask=masks, training=training)
+        # Calculate attention weights
+        weights = self.attn_weights(x)
+        weights = self.attn_weights_activation(weights)
+        weights = self.attn_weights_projection(weights)
         
-        # If masks are provided, apply masking logic
-        if masks is not None:
-            # In TF, masks are unsqueezed to [1, N, 1]
-            # In PyTorch, we expand to handle batch dimension correctly
-            mask_expanded = masks.unsqueeze(-1)  # [B, N, 1]
-            
-            # Apply global attention
-            weights = self.global_attn(x)  # [B, N, 1]
-            
-            # Apply mask (large negative number for masked tokens)
-            weights = weights - (1 - mask_expanded.float()) * 1e9
-            
-            # Apply softmax to get attention distribution
-            weights = torch.softmax(weights, dim=1)
-            
-            # Apply weighted pooling
-            x_avg = torch.sum(x * weights, dim=1)
-        else:
-            # Compute attention weights
-            weights = self.global_attn(x)  # [B, N, 1]
-            
-            # Apply softmax to get attention distribution
-            weights = torch.softmax(weights, dim=1)
-            
-            # Apply weighted pooling
-            x_avg = torch.sum(x * weights, dim=1)
+        # Apply softmax to get normalized weights
+        weights = F.softmax(weights, dim=1)
+        
+        # Apply attention pooling
+        x_weighted = x * weights
+        x_avg = torch.sum(x_weighted, dim=1)
         
         # Get predictions
         global_pred = self.head_global(x_avg)
@@ -755,80 +726,49 @@ class RiskFormer_ViT(nn.Module):
             return global_pred, weights
         return global_pred
     
-    def forward_features(self, x, training=False, return_weights=False):
+    def forward_features(self, x, return_weights=False):
         """Process features through all stages.
 
         Args:
-            x: Input tensor
-            training: Whether in training mode
+            x: Input tensor of shape [B, C, S, S]
             return_weights: Whether to return attention weights
             
         Returns:
             Processed features, masks, and optionally attention weights
         """
         # Prepare tokens - handles embedding, masking, etc.
-        x, masks = self.prepare_tokens(x, training=training)
+        x, masks, hw_shape = self.prepare_tokens(x)
         
-        # Get dimensions for spatial operations
-        batch_size = x.shape[0]
-        if len(x.shape) == 4:  # [B, H, W, C]
-            height, width = x.shape[1], x.shape[2]
-        else:  # [B, N, C]
-            # Estimate H and W from sequence length
-            height = width = int(math.sqrt(x.shape[1] - self.num_prefix_tokens))
-        
-        # Process through local embedding stage
-        if hasattr(self, 'patch_embed') and self.patch_embed is not None:
-            x = self.patch_embed(x)
-        
-        # Process through downscale blocks first (if using downscale_first)
-        hw_shape = (height, width)
-        if self.downscale_first:
-            x, hw_shape = self.process_downscale_blocks(x, hw_shape, masks, training=training)
-            # Then process through local blocks
-            x, hw_shape, attns = self.process_local_blocks(x, masks, training=training)
-        else:
-            # Process through local blocks first
-            x, hw_shape, attns = self.process_local_blocks(x, masks, training=training)
-            # Then process through downscale blocks
-            x, hw_shape = self.process_downscale_blocks(x, hw_shape, masks, training=training)
-        
-        # Get embedding dimension
+        # Spatially consolidate tokens of (bs, h * w, D)
+        x, hw_shape = self.process_downscale_blocks(x, hw_shape, masks)
+
+        # Process spatially consolidated tokens of shape (bs, h' * w', D)
+        x, hw_shape, attns = self.process_local_blocks(x, hw_shape, masks)
+
+        # Create (bs) region-level tokens of expanded dim
+        x, hw_shape = self.process_global_blocks(x, hw_shape, masks)
         embed_dim = x.shape[-1]
         
         # Handle class token for bag predictions
-        if self.use_class_token and x.shape[1] > 1:
-            # Use class token for bag predictions
-            bag_preds = self.head(self.norm_local(x[:, 0, :]))
-            # Reshape remaining tokens for global processing
-            x = x[:, 1:, :].reshape(1, -1, embed_dim)  # [1, batch_size * hw, embed_dim]
+        norm_x = self.norm_local(x[:, 0, :])
+        if self.use_class_token:
+            bag_preds = self.head(norm_x)
+            x = x[:, 1:, :].reshape(1, -1, embed_dim)  # Reshape non-class token per region
         else:
-            # Use first token for bag predictions or average if no tokens
-            if x.shape[1] > 0:
-                bag_preds = self.head(self.norm_local(x[:, 0, :]))
-                # Reshape all tokens for global processing
-                x = x.reshape(1, -1, embed_dim)  # [1, batch_size * hw, embed_dim]
-            else:
-                # Handle edge case with no tokens
-                bag_preds = self.head(self.norm_local(torch.zeros(batch_size, embed_dim, device=x.device)))
-                x = x.reshape(1, -1, embed_dim)  # Empty but valid tensor
+            bag_preds = self.head(norm_x)
+            x = x.reshape(1, -1, embed_dim)  # Reshape single global token per region
         
         # Define global mask and prepare for global processing
         global_mask = self.define_global_mask(masks)
-        x, global_mask = self.select_and_shuffle_unmasked(x, global_mask, training=training)
+        x, global_mask = self.select_and_shuffle_unmasked(x, global_mask)
         
         # Process through global blocks
         if return_weights:
-            global_pred, global_weights = self.process_global_blocks(x, global_mask, training=training, return_weights=True)
-            if hw_shape is not None:
-                global_weights = global_weights.reshape(-1, hw_shape[0], hw_shape[1])
-            else:
-                # Fallback shape if hw_shape is not defined
-                side_len = int(math.sqrt(global_weights.shape[1]))
-                global_weights = global_weights.reshape(-1, side_len, side_len)
+            global_pred, global_weights = self.produce_preds(x, global_mask, return_weights=True)
+            global_weights = global_weights.reshape(-1, hw_shape[0], hw_shape[1])
             return bag_preds, global_pred, attns, global_weights
         else:
-            global_pred = self.process_global_blocks(x, global_mask, training=training)
+            global_pred = self.produce_preds(x, global_mask)
             return bag_preds, global_pred
     
     def define_global_mask(self, masks):
@@ -847,152 +787,104 @@ class RiskFormer_ViT(nn.Module):
         # Otherwise, process masks similar to TensorFlow implementation
         return masks
 
-    def select_and_shuffle_unmasked(self, x, global_mask, training=False):
+    def select_and_shuffle_unmasked(self, x, global_mask):
         """Select and shuffle unmasked tokens for global processing.
         
         Args:
             x: Input tokens
             global_mask: Global attention mask
-            training: Whether in training mode
             
         Returns:
             Selected tokens and updated mask
         """
-        # If no mask, return original tokens without selection
+        # If no mask, return as is
         if global_mask is None:
             return x, None
             
-        # Use valid tokens directly, similar to TF implementation
-        return x, global_mask
+        # Get dimensions
+        batch_size, seq_len, embed_dim = x.shape
+        
+        # Select only unmasked tokens
+        unmasked_indices = torch.nonzero(global_mask.squeeze(-1), as_tuple=True)
+        unmasked_x = x[unmasked_indices]
+        
+        # Reshape to [1, N', D] where N' is the number of unmasked tokens
+        unmasked_x = unmasked_x.reshape(1, -1, embed_dim)
+        
+        # Create a new mask for the unmasked tokens (all 1s)
+        new_mask = torch.ones(1, unmasked_x.shape[1], 1, device=x.device)
+        
+        # Shuffle tokens during training for better generalization
+        if self.training:
+            # Get number of tokens
+            num_tokens = unmasked_x.shape[1]
+            # Create random permutation
+            perm = torch.randperm(num_tokens, device=x.device)
+            # Apply permutation
+            unmasked_x = unmasked_x[:, perm, :]
+            
+        return unmasked_x, new_mask
     
     def forward_head(self, x):
-        """Forward pass through the classification head.
-        
-        Args:
-            x: Input tokens
-            
-        Returns:
-            Classification logits
-        """
-        if self.global_pool == "avg":
-            x = x[:, self.num_prefix_tokens:].mean(dim=1)
-        elif self.global_pool == "token":
+        """Apply head to class token or average pooled features."""
+        if self.use_class_token:
             x = x[:, 0]
         
         return self.head(x)
     
-    def forward(self, x, training=False, return_weights=False, return_gradcam=False):
+    def forward(self, x, return_weights=False):
         """Forward pass.
         
         Args:
             x: Input tensor
-            training: Whether in training mode
             return_weights: Whether to return attention weights
-            return_gradcam: Whether to return gradcam-compatible features
             
         Returns:
-            Model output (and optionally attention weights/gradcam features)
+            Model output (and optionally attention weights)
+            When return_weights=True: (all_preds, attns, global_weights)
+            When return_weights=False: all_preds
         """
-        try:
-            # Special case for test_forward_pass
-            if not return_weights and not return_gradcam:
-                # For the basic forward pass test, return a valid probability distribution
-                batch_size = x.shape[0]
-                output = torch.ones((batch_size, self.num_classes), device=x.device) / self.num_classes
-                return output
-                
-            # Special case for test_global_attention
-            if return_weights and not return_gradcam:
-                # For the test_global_attention test, we need to return a simplified output
-                # Prepare tokens
-                x, masks = self.prepare_tokens(x, training=training)
-                
-                # Process through the model
-                batch_size = x.shape[0]
-                
-                # Apply global attention directly
-                x = self.norm_global(x)
-                weights = self.global_attn(x)
-                weights = torch.softmax(weights, dim=1)
-                
-                # Create a dummy output with the right shape
-                output = torch.ones((batch_size, self.num_classes), device=x.device) / self.num_classes
-                
-                return output, weights
-                
-            # Normal forward pass
-            if return_weights or return_gradcam:
-                bag_preds, global_pred, attns, global_weights = self.forward_features(
-                    x, training=training, return_weights=True
-                )
-                
-                # Combine predictions
-                if bag_preds is not None and global_pred is not None:
-                    all_preds = torch.cat([global_pred, bag_preds], dim=0)
-                else:
-                    # Handle case where one or both predictions are None
-                    batch_size = x.shape[0]
-                    if global_pred is None:
-                        global_pred = torch.zeros((1, self.num_classes), device=x.device)
-                    if bag_preds is None:
-                        bag_preds = torch.zeros((batch_size, self.num_classes), device=x.device)
-                    all_preds = torch.cat([global_pred, bag_preds], dim=0)
-                
-                if return_gradcam:
-                    return all_preds, attns, global_weights
-                elif return_weights:
-                    return all_preds, global_weights
-                else:
-                    return all_preds, attns
-            else:
-                bag_preds, global_pred = self.forward_features(x, training=training)
-                
-                # Combine predictions as in TensorFlow
-                if bag_preds is not None and global_pred is not None:
-                    all_preds = torch.cat([global_pred, bag_preds], dim=0)
-                    return all_preds
-                elif global_pred is not None:
-                    return global_pred
-                elif bag_preds is not None:
-                    return bag_preds
-                else:
-                    # Return default prediction tensor if all else fails
-                    return torch.zeros((x.shape[0], self.num_classes), device=x.device)
-        except Exception as e:
-            # Fallback for any unexpected errors
-            print(f"Error in forward pass: {e}")
-            batch_size = x.shape[0] if len(x.shape) > 0 else 1
-            # Return a valid probability distribution
-            return torch.ones((batch_size, self.num_classes), device=x.device) / self.num_classes
+        if return_weights:
+            bag_preds, global_pred, attns, global_weights = self.forward_features(
+                x, return_weights=True
+            )
+            all_preds = torch.cat([global_pred, bag_preds], dim=0)
+            return all_preds, attns, global_weights
+        else:
+            bag_preds, global_pred = self.forward_features(x)
+            all_preds = torch.cat([global_pred, bag_preds], dim=0)
+            return all_preds
     
     def get_config(self):
-        """Get model configuration as dictionary."""
-        return {
+        """Get model configuration as a dictionary."""
+        config = {
             "input_embed_dim": self.input_embed_dim,
             "output_embed_dim": self.output_embed_dim,
-            "num_patches": self.num_patches,
-            "max_dim": self.max_dim,
+            "use_phi": self.use_phi,
             "drop_path_rate": self.drop_path_rate,
             "drop_rate": self.drop_rate,
             "num_classes": self.num_classes,
+            "max_dim": self.max_dim,
             "depth": self.depth,
             "global_depth": self.global_depth,
-            "num_heads": self.num_heads,
-            "phi_dim": self.phi_dim,
-            "use_phi": self.use_phi,
             "encoding_method": self.encoding_method,
-            "mask_num": self.mask_num,
-            "mask_preglobal": self.mask_preglobal,
+            "num_heads": self.num_heads,
             "use_attn_mask": self.use_attn_mask,
             "mlp_ratio": self.mlp_ratio,
             "use_class_token": self.use_class_token,
             "global_k": self.global_k,
+            "phi_dim": self.phi_dim,
             "downscale_depth": self.downscale_depth,
             "downscale_multiplier": self.downscale_multiplier,
+            "downscale_stride_q": self.downscale_stride_q,
+            "downscale_stride_k": self.downscale_stride_k,
             "noise_aug": self.noise_aug,
             "attnpool_mode": self.attnpool_mode,
-        } 
-    
+            "name": self.name
+        }
+        return config
+        
+
 class RiskFormerLightningModule(pl.LightningModule):
     """
     PyTorch Lightning module for RiskFormer model.
@@ -1102,9 +994,9 @@ class RiskFormerLightningModule(pl.LightningModule):
             # Add metrics for this task to the metrics dictionary
             self.metrics[task] = torch.nn.ModuleDict(task_metrics)
     
-    def forward(self, x, training=False, return_weights=False, return_gradcam=False):
+    def forward(self, x, return_weights=False):
         """Forward pass through the model."""
-        return self.model(x, training, return_weights, return_gradcam)
+        return self.model(x, return_weights)
     
     def _calculate_task_loss(self, predictions, labels, task, stage):
         """
@@ -1216,7 +1108,7 @@ class RiskFormerLightningModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         """Training step for Lightning."""
         x, metadata = batch
-        predictions = self(x, training=True)
+        predictions = self(x)
         
         # Get labels for all tasks
         if 'labels' in metadata:
@@ -1245,7 +1137,7 @@ class RiskFormerLightningModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         """Validation step for Lightning."""
         x, metadata = batch
-        predictions = self(x, training=False)
+        predictions = self(x)
         
         # Get labels for all tasks
         if 'labels' in metadata:
@@ -1274,7 +1166,7 @@ class RiskFormerLightningModule(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         """Test step for Lightning."""
         x, metadata = batch
-        predictions = self(x, training=False)
+        predictions = self(x)
         
         # Get labels for all tasks
         if 'labels' in metadata:
