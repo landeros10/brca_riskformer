@@ -23,7 +23,7 @@ from torch.utils.data import Dataset, DataLoader, random_split
 import pytorch_lightning as pl
 
 from riskformer.utils.data_utils import sample_slide_image
-from riskformer.utils.training_utils import PatchInfo
+from riskformer.utils.training_utils import PatchInfo, split_riskformer_data
 from riskformer.utils.randstainna import RandStainNA
 from riskformer.utils.aws_utils import initialize_s3_client, list_bucket_files, is_s3_path
 from riskformer.utils.logger_config import log_event
@@ -58,6 +58,9 @@ class RiskFormerDataModule(pl.LightningDataModule):
         test_split: float = 0.1,
         seed: int = 42,
         pin_memory: bool = True,
+        config_path: Optional[str] = None,
+        include_labels: Optional[List[str]] = None,
+        task_types_map: Optional[Dict[str, str]] = None,
     ):
         """
         Initialize the RiskFormer DataModule.
@@ -77,6 +80,9 @@ class RiskFormerDataModule(pl.LightningDataModule):
             test_split: Fraction of data to use for testing
             seed: Random seed for reproducibility
             pin_memory: Whether to pin memory for dataloaders
+            config_path: Path to config file (optional, overrides include_labels and task_types)
+            include_labels: List of label names to include in the dataset (optional)
+            task_types_map: Dictionary mapping label names to task types (optional)
         """
         super().__init__()
         self.save_hyperparameters()
@@ -98,6 +104,11 @@ class RiskFormerDataModule(pl.LightningDataModule):
         self.test_split = test_split
         self.seed = seed
         self.pin_memory = pin_memory
+        
+        # Config and label selection parameters
+        self.config_path = config_path
+        self.include_labels = include_labels
+        self.task_types_map = task_types_map
         
         # Datasets
         self.dataset = None
@@ -133,22 +144,89 @@ class RiskFormerDataModule(pl.LightningDataModule):
                 metadata_file=self.metadata_file,
                 cache_dir=self.cache_dir,
                 profile_name=self.profile_name,
-                region_name=self.region_name
+                region_name=self.region_name,
+                config_path=self.config_path,
+                include_labels=self.include_labels,
+                task_types_map=self.task_types_map,
             )
         
         # Split the dataset
         if stage == 'fit' or stage is None:
-            dataset_size = len(self.dataset)
-            val_size = int(dataset_size * self.val_split)
-            test_size = int(dataset_size * self.test_split)
-            train_size = dataset_size - val_size - test_size
+            # Determine which label to use for stratification
+            label_var = "odx85"  # Default label for stratification
             
-            # Use random_split with generator for reproducibility
-            generator = torch.Generator().manual_seed(self.seed)
-            self.train_dataset, self.val_dataset, self.test_dataset = random_split(
-                self.dataset, 
-                [train_size, val_size, test_size],
-                generator=generator
+            # If include_labels is provided, use the first binary label for stratification
+            if self.include_labels and len(self.include_labels) > 0:
+                label_var = self.include_labels[0]
+                
+            # If config is available, use the first label from config
+            if self.config and 'labels' in self.config and 'include' in self.config['labels']:
+                if len(self.config['labels']['include']) > 0:
+                    label_var = self.config['labels']['include'][0]
+            
+            log_event("debug", "RiskFormerDataModule.setup", "splitting_dataset", 
+                     label_var=label_var,
+                     test_split=self.test_split)
+                
+            # Convert patient_examples to format expected by split_riskformer_data
+            svs_paths_data_dict = {patient_id: data for patient_id, data in self.dataset.patient_examples.items()}
+            
+            # Split dataset for training and validation
+            train_data, test_data = split_riskformer_data(
+                svs_paths_data_dict=svs_paths_data_dict,
+                label_var=label_var,
+                positive_label="H",
+                test_split_ratio=self.test_split
+            )
+            
+            # Create training and validation datasets
+            self.train_dataset = RiskFormerDataset(
+                patient_examples=train_data,
+                max_dim=self.max_dim,
+                overlap=self.overlap,
+                cache_dir=self.cache_dir,
+                config_path=self.config_path,
+                include_labels=self.include_labels,
+                task_types_map=self.task_types_map,
+            )
+            
+            # Further split train data into train and validation
+            if self.val_split > 0:
+                train_data, val_data = split_riskformer_data(
+                    svs_paths_data_dict=train_data,
+                    label_var=label_var,
+                    positive_label="H",
+                    test_split_ratio=self.val_split / (1 - self.test_split)
+                )
+                
+                self.train_dataset = RiskFormerDataset(
+                    patient_examples=train_data,
+                    max_dim=self.max_dim,
+                    overlap=self.overlap,
+                    cache_dir=self.cache_dir,
+                    config_path=self.config_path,
+                    include_labels=self.include_labels,
+                    task_types_map=self.task_types_map,
+                )
+                
+                self.val_dataset = RiskFormerDataset(
+                    patient_examples=val_data,
+                    max_dim=self.max_dim,
+                    overlap=self.overlap,
+                    cache_dir=self.cache_dir,
+                    config_path=self.config_path,
+                    include_labels=self.include_labels,
+                    task_types_map=self.task_types_map,
+                )
+            
+            self.test_dataset = RiskFormerDataset(
+                patient_examples=test_data,
+                max_dim=self.max_dim,
+                overlap=self.overlap,
+                cache_dir=self.cache_dir,
+                config_path=self.config_path,
+                include_labels=self.include_labels,
+                task_types_map=self.task_types_map,
             )
     
     def train_dataloader(self):
@@ -329,7 +407,22 @@ class RiskFormerDataset(Dataset):
         max_dim: int = 32,
         overlap: float = 0.1,
         cache_dir: Optional[str] = None,
+        config_path: Optional[str] = None,
+        include_labels: Optional[List[str]] = None,
+        task_types_map: Optional[Dict[str, str]] = None,
     ):
+        """
+        Initialize the RiskFormer dataset.
+        
+        Args:
+            patient_examples: Dictionary of patient examples
+            max_dim: Maximum dimension of patches
+            overlap: Overlap between patches
+            cache_dir: Directory to cache downloaded files
+            config_path: Path to config file (overrides include_labels and task_types_map)
+            include_labels: List of label names to include
+            task_types_map: Dictionary mapping label names to task types
+        """
         self.patient_examples = patient_examples
         self.patient_ids = list(patient_examples.keys())
         self.s3_cache = S3Cache(cache_dir)
@@ -337,6 +430,27 @@ class RiskFormerDataset(Dataset):
         self.max_dim = max_dim
         self.overlap = overlap
         
+        # Load config if provided
+        self.config = None
+        if config_path:
+            import yaml
+            try:
+                with open(config_path, 'r') as f:
+                    self.config = yaml.safe_load(f)
+            except Exception as e:
+                print(f"Warning: Failed to load config file: {e}")
+        
+        # Set up labels to include
+        self.include_labels = include_labels
+        self.task_types_map = task_types_map or {}
+        
+        # Override with config if available
+        if self.config and 'labels' in self.config:
+            if 'include' in self.config['labels']:
+                self.include_labels = self.config['labels']['include']
+            if 'task_types' in self.config['labels']:
+                self.task_types_map = self.config['labels']['task_types']
+                
         # Determine feature dimension
         test_features_s3_path = patient_examples[self.patient_ids[0]]["features_paths"][0]
         test_features_local_path = self.s3_cache.download_if_needed(test_features_s3_path)
@@ -344,7 +458,7 @@ class RiskFormerDataset(Dataset):
             self.feature_dim = f['features'].shape[1]
             
         self._prefetch_executor = ThreadPoolExecutor(max_workers=4)
-        self._prefetch_all_files() 
+        self._prefetch_all_files()
     
     def _prefetch_all_files(self):
         """Start background download of all S3 files."""
@@ -685,6 +799,10 @@ class RiskFormerDataset(Dataset):
         Returns:
             patches: Tensor of shape (N, max_dim, max_dim, D) where N is total number of patches
             metadata: Dictionary containing patient metadata including labels for multiple tasks
+                The 'labels' field contains a nested dictionary with:
+                - Task name as key
+                - Tensor value representing label for that task
+                - 'task_type' field indicating if task is 'binary', 'regression', or 'multiclass'
         """
         patient_id = self.patient_ids[idx]
         patient_data = self.patient_examples[patient_id]
@@ -711,30 +829,96 @@ class RiskFormerDataset(Dataset):
         metadata = {
             'patch_info': patch_info,
             'patient_id': patient_id,
-            'labels': {}  # Dictionary to store multiple labels for different tasks
+            'labels': {},  # Dictionary to store multiple labels for different tasks
+            'task_types': {}  # Dictionary to store the type of each task
         }
         
-        # Process labels for different tasks - convert to tensors
-        # Binary classification tasks
-        if 'odx85' in patient_data:
-            metadata['labels']['odx85'] = torch.tensor([float(patient_data['odx85'])], dtype=torch.float32)
+        # Process labels for different tasks, considering the include_labels list if provided
+        # Function to check if a label should be included
+        def should_include_label(label_name):
+            # If no include_labels list is provided, include all labels
+            if self.include_labels is None:
+                return True
+            # Otherwise, only include labels in the list
+            return label_name.lower() in [l.lower() for l in self.include_labels]
+            
+        # Apply task type mapping if available
+        def get_task_type(label_name):
+            label_lower = label_name.lower()
+            if label_lower in self.task_types_map:
+                return self.task_types_map[label_lower]
+            return None
         
-        if 'mphr' in patient_data:
-            metadata['labels']['mphr'] = torch.tensor([float(patient_data['mphr'])], dtype=torch.float32)
+        # Binary classification tasks with special handling
+        special_binary_fields = {
+            'odx85': {'H': 1.0, 'L': 0.0},
+            'mphr': {'H': 1.0, 'L': 0.0}
+        }
         
-        if 'necrosis' in patient_data:
-            metadata['labels']['necrosis'] = torch.tensor([float(patient_data['necrosis'])], dtype=torch.float32)
+        for field, mapping in special_binary_fields.items():
+            if field in patient_data and patient_data[field] is not None and should_include_label(field):
+                if patient_data[field] in mapping:
+                    metadata['labels'][field.lower()] = torch.tensor([mapping[patient_data[field]]], dtype=torch.float32)
+                    # Use task type from map or default to 'binary'
+                    metadata['task_types'][field.lower()] = get_task_type(field) or 'binary'
         
-        if 'pleo' in patient_data:
-            metadata['labels']['pleo'] = torch.tensor([float(patient_data['pleo'])], dtype=torch.float32)
+        # Standard binary categorical variables
+        binary_fields = {
+            'ER_Status_By_IHC': {'positive': 1.0, 'negative': 0.0},
+            'pr_status_by_ihc': {'positive': 1.0, 'negative': 0.0},
+            'HER2Calc': {'positive': 1.0, 'negative': 0.0},
+            'Necrosis': {'Present': 1.0, 'Absent': 0.0},
+            'Lymphovascular Invasion (LVI)': {'Present': 1.0, 'Absent': 0.0},
+            'Overall_Survival_Status': {'dead': 1.0, 'alive': 0.0}
+        }
         
-        # Regression tasks
-        if 'odx_train' in patient_data:
-            metadata['labels']['odx_train'] = torch.tensor([float(patient_data['odx_train'])], dtype=torch.float32)
+        for field, mapping in binary_fields.items():
+            if field in patient_data and patient_data[field] is not None and should_include_label(field):
+                if patient_data[field] in mapping:
+                    field_lower = field.lower()
+                    metadata['labels'][field_lower] = torch.tensor([mapping[patient_data[field]]], dtype=torch.float32)
+                    # Use task type from map or default to 'binary'
+                    metadata['task_types'][field_lower] = get_task_type(field) or 'binary'
         
-        if 'dfm' in patient_data:
-            metadata['labels']['dfm'] = torch.tensor([float(patient_data['dfm'])], dtype=torch.float32)
+        # Regression tasks - scores that represent continuous or ordered values
+        regression_fields = [
+            'odx_train', 'Grade', 'tumor_size', 'Overall_Survival_Months', 
+            'Disease_Free_Months', 'Epithelial', 'Pleomorph', 'Grade.1', 'age_at_diagnosis'
+        ]
         
+        for field in regression_fields:
+            if field in patient_data and patient_data[field] is not None and should_include_label(field):
+                try:
+                    value = float(patient_data[field])
+                    field_lower = field.lower()
+                    metadata['labels'][field_lower] = torch.tensor([value], dtype=torch.float32)
+                    # Use task type from map or default to 'regression'
+                    metadata['task_types'][field_lower] = get_task_type(field) or 'regression'
+                except (ValueError, TypeError):
+                    # Skip if the value cannot be converted to float
+                    pass
+        
+        # Special handling for Mitosis which has ordered categories
+        if 'Mitosis' in patient_data and patient_data['Mitosis'] is not None and should_include_label('Mitosis'):
+            mitosis_text = patient_data['Mitosis']
+            if '(score = 1)' in mitosis_text:
+                score = 1.0
+            elif '(score = 2)' in mitosis_text:
+                score = 2.0
+            elif '(score = 3)' in mitosis_text:
+                score = 3.0
+            else:
+                # Try to extract numeric score if present
+                import re
+                match = re.search(r'\(score = (\d+)\)', mitosis_text)
+                score = float(match.group(1)) if match else None
+                
+            if score is not None:
+                metadata['labels']['mitosis'] = torch.tensor([score], dtype=torch.float32)
+                # Use task type from map or default to 'regression'
+                metadata['task_types']['mitosis'] = get_task_type('Mitosis') or 'regression'
+            
+        # TODO: should default to odx_train
         # For backward compatibility, set a default 'label' to the first available label
         if metadata['labels']:
             first_label_key = next(iter(metadata['labels']))
@@ -742,15 +926,6 @@ class RiskFormerDataset(Dataset):
         else:
             # Default to zeros if no recognized label is found
             metadata['label'] = torch.zeros(1, dtype=torch.float32)
-            
-        # Add any other relevant patient data
-        for key, value in patient_data.items():
-            if key not in ['coords_paths', 'features_paths', 'odx85', 'mphr', 'necrosis', 'pleo', 'odx_train', 'dfm']:
-                # Convert values to tensors if they're numeric
-                if isinstance(value, (int, float)):
-                    metadata[key] = torch.tensor([float(value)], dtype=torch.float32)
-                else:
-                    metadata[key] = value
         
         # Return patches and metadata
         return patches_xl, metadata
@@ -791,7 +966,7 @@ def create_slide_examples(
     s3_client: boto3.client,
     s3_bucket: str,
     s3_prefix: str,
-    slide_ids: Optional[Union[None, Set[str]]] = None,
+    slide_ids: Optional[Set[str]] = None,
     slide_data: Optional[Dict[str, dict]] = None,
 ) -> List[Tuple[str, str, str, str]]:
     """
@@ -864,7 +1039,7 @@ def create_patient_examples(
     s3_client: boto3.client,
     s3_bucket: str,
     s3_prefix: str,
-    slide_ids: Optional[Union[None, Set[str]]] = None,
+    slide_ids: Optional[Set[str]] = None,
     slide_data: Optional[Dict[str, dict]] = None,
 ) -> List[Tuple[str, str, str, str]]:
     """
@@ -923,6 +1098,9 @@ def create_riskformer_dataset(
     cache_dir: Optional[str] = None,
     profile_name: Optional[str] = None,
     region_name: Optional[str] = None,
+    config_path: Optional[str] = None,
+    include_labels: Optional[List[str]] = None,
+    task_types_map: Optional[Dict[str, str]] = None,
 ) -> RiskFormerDataset:
     """
     Create a RiskFormerDataset by discovering preprocessed H5 files in S3.
@@ -934,6 +1112,9 @@ def create_riskformer_dataset(
         cache_dir: Directory to cache downloaded files
         profile_name: AWS profile name (optional)
         region_name: AWS region name (optional)
+        config_path: Path to config file (optional, will override include_labels and task_types_map)
+        include_labels: List of label names to include (optional)
+        task_types_map: Dictionary mapping label names to task types (optional)
         
     Returns:
         RiskFormerDataset: Dataset containing sparse tensors for each slide
@@ -942,13 +1123,15 @@ def create_riskformer_dataset(
         dataset = create_riskformer_dataset(
             s3_bucket="tcga-riskformer-data-2025",
             s3_prefix="preprocessed/uni/uni2-h",
-            metadata_file="resources/riskformer_slide_samples.json"
+            metadata_file="resources/riskformer_slide_samples.json",
+            config_path="configs/training/riskformer_config.yaml"
         )
     """
     log_event("debug", "create_riskformer_dataset", "started",
               s3_bucket=s3_bucket, 
               s3_prefix=s3_prefix,
-              metadata_file=metadata_file)
+              metadata_file=metadata_file,
+              config_path=config_path)
     
     # Initialize S3 client
     s3_client = initialize_s3_client(profile_name, region_name)
@@ -966,11 +1149,15 @@ def create_riskformer_dataset(
             max_dim=max_dim,
             overlap=overlap,
             cache_dir=cache_dir,
+            config_path=config_path,
+            include_labels=include_labels,
+            task_types_map=task_types_map,
         )
         log_event("info", "create_riskformer_dataset", "success",
                   slide_count=len(dataset),
                   feature_dim=dataset.feature_dim,
-                  cache_dir=str(dataset.s3_cache.cache_dir))
+                  cache_dir=str(dataset.s3_cache.cache_dir),
+                  include_labels=dataset.include_labels)
         return dataset
     except Exception as e:
         log_event("error", "create_riskformer_dataset", "error",

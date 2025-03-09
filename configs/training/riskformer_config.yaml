@@ -10,6 +10,19 @@ cache_dir: "/tmp/riskformer_cache"
 max_dim: 32
 overlap: 0.1
 
+# Labels to include in the model
+labels:
+  include:
+    - odx_train  # Regression task
+    - odx85      # Binary classification task
+    - mphr       # Binary classification task
+  
+  # Task type mapping (binary, regression, multiclass)
+  task_types:
+    odx_train: regression
+    odx85: binary
+    mphr: binary
+
 # DataLoader parameters
 batch_size: 32
 num_workers: 4

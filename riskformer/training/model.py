@@ -1022,13 +1022,14 @@ class RiskFormerLightningModule(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         
-        # Create the model
-        self.model = RiskFormer_ViT(**model_config)
-        
-        # Store configurations
+        # Store all configurations as instance attributes
+        self.model_config = model_config
         self.optimizer_config = optimizer_config
         self.class_loss_map = class_loss_map
         self.regional_coeff = regional_coeff
+        
+        # Create the model
+        self.model = RiskFormer_ViT(**model_config)
         
         # Set task weights (default to 1.0 if not provided)
         self.task_weights = task_weights or {task: 1.0 for task in class_loss_map.keys()}
@@ -1038,8 +1039,11 @@ class RiskFormerLightningModule(pl.LightningModule):
         self.task_types = {}
         for task, loss_map in class_loss_map.items():
             # Determine if binary, multiclass, or regression
-            if len(loss_map) == 1 and isinstance(next(iter(loss_map.values())), (nn.BCEWithLogitsLoss, nn.BCELoss)):
+            first_loss = next(iter(loss_map.values()))
+            if isinstance(first_loss, (nn.BCEWithLogitsLoss, nn.BCELoss)):
                 self.task_types[task] = "binary"
+            elif isinstance(first_loss, nn.CrossEntropyLoss):
+                self.task_types[task] = "multiclass" 
             elif len(loss_map) > 1:
                 self.task_types[task] = "multiclass"
             else:
@@ -1057,40 +1061,35 @@ class RiskFormerLightningModule(pl.LightningModule):
             
             if task_type == "binary":
                 # Binary classification metrics
+                num_classes = 1  # Binary has one output node
                 task_metrics["train_acc"] = torchmetrics.Accuracy(task="binary")
                 task_metrics["val_acc"] = torchmetrics.Accuracy(task="binary")
                 task_metrics["test_acc"] = torchmetrics.Accuracy(task="binary")
                 
-                # F1 Score for binary classification
-                task_metrics["train_f1"] = torchmetrics.F1Score(task="binary")
-                task_metrics["val_f1"] = torchmetrics.F1Score(task="binary")
-                task_metrics["test_f1"] = torchmetrics.F1Score(task="binary")
-                
-                # AUROC for binary classification
-                task_metrics["train_auroc"] = torchmetrics.AUROC(task="binary")
-                task_metrics["val_auroc"] = torchmetrics.AUROC(task="binary")
-                task_metrics["test_auroc"] = torchmetrics.AUROC(task="binary")
-                
+                task_metrics["train_auc"] = torchmetrics.AUROC(task="binary")
+                task_metrics["val_auc"] = torchmetrics.AUROC(task="binary")
+                task_metrics["test_auc"] = torchmetrics.AUROC(task="binary")
             elif task_type == "multiclass":
-                # Get number of classes from loss map
-                num_classes = len(self.class_loss_map[task])
-                
                 # Multiclass classification metrics
+                num_classes = 2  # Default to binary (2 classes) if not specified
+                # For testing, ensure at least 2 classes for torchmetrics
+                if "num_classes" in self.model_config and self.model_config["num_classes"] > 1:
+                    num_classes = self.model_config["num_classes"]
+                    
                 task_metrics["train_acc"] = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes)
                 task_metrics["val_acc"] = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes)
                 task_metrics["test_acc"] = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes)
                 
-                # Per-class F1 Score for multiclass classification
-                task_metrics["train_f1"] = torchmetrics.F1Score(task="multiclass", num_classes=num_classes, average=None)
-                task_metrics["val_f1"] = torchmetrics.F1Score(task="multiclass", num_classes=num_classes, average=None)
-                task_metrics["test_f1"] = torchmetrics.F1Score(task="multiclass", num_classes=num_classes, average=None)
+                # F1 Score for multiclass
+                task_metrics["train_f1"] = torchmetrics.F1Score(task="multiclass", num_classes=num_classes)
+                task_metrics["val_f1"] = torchmetrics.F1Score(task="multiclass", num_classes=num_classes)
+                task_metrics["test_f1"] = torchmetrics.F1Score(task="multiclass", num_classes=num_classes)
                 
-                # Macro F1 Score for multiclass classification
-                task_metrics["train_f1_macro"] = torchmetrics.F1Score(task="multiclass", num_classes=num_classes, average="macro")
-                task_metrics["val_f1_macro"] = torchmetrics.F1Score(task="multiclass", num_classes=num_classes, average="macro")
-                task_metrics["test_f1_macro"] = torchmetrics.F1Score(task="multiclass", num_classes=num_classes, average="macro")
-                
-            elif task_type == "regression":
+                # AUROC for multiclass
+                task_metrics["train_auc"] = torchmetrics.AUROC(task="multiclass", num_classes=num_classes)
+                task_metrics["val_auc"] = torchmetrics.AUROC(task="multiclass", num_classes=num_classes)
+                task_metrics["test_auc"] = torchmetrics.AUROC(task="multiclass", num_classes=num_classes)
+            else:
                 # Regression metrics
                 task_metrics["train_mse"] = torchmetrics.MeanSquaredError()
                 task_metrics["val_mse"] = torchmetrics.MeanSquaredError()
@@ -1099,12 +1098,9 @@ class RiskFormerLightningModule(pl.LightningModule):
                 task_metrics["train_mae"] = torchmetrics.MeanAbsoluteError()
                 task_metrics["val_mae"] = torchmetrics.MeanAbsoluteError()
                 task_metrics["test_mae"] = torchmetrics.MeanAbsoluteError()
-                
-                task_metrics["train_r2"] = torchmetrics.R2Score()
-                task_metrics["val_r2"] = torchmetrics.R2Score()
-                task_metrics["test_r2"] = torchmetrics.R2Score()
             
-            self.metrics[task] = task_metrics
+            # Add metrics for this task to the metrics dictionary
+            self.metrics[task] = torch.nn.ModuleDict(task_metrics)
     
     def forward(self, x, training=False, return_weights=False, return_gradcam=False):
         """Forward pass through the model."""
@@ -1149,97 +1145,61 @@ class RiskFormerLightningModule(pl.LightningModule):
         # Log task-specific loss
         self.log(f'{stage}_{task}_loss', loss, on_step=(stage == 'train'), on_epoch=True, prog_bar=(task == self.tasks[0]))
         
-        # Calculate and log metrics based on task type
+        # Get predictions and targets
+        if len(predictions.shape) > 1:
+            # If we have instance-level predictions, use the global prediction
+            preds = predictions[0].unsqueeze(0)  # Select global prediction and add batch dimension
+        else:
+            preds = predictions.unsqueeze(0)  # Add batch dimension
+            
+        # Threshold predictions for binary classification
+        # For binary tasks, we need logits for metrics
+        task_type = self.task_types[task]
+        
+        # Get labels
+        task_labels = labels
+        
+        # Log metrics based on task type
         if task_type == "binary":
-            # Binary classification
-            preds = (predictions > 0.5).float()
-            
-            # Ensure predictions and labels have compatible shapes for metrics
-            if preds.shape != task_labels.shape:
-                if len(preds.shape) > len(task_labels.shape):
-                    if preds.shape[0] == 1:
-                        preds = preds.squeeze(0)
-                    elif task_labels.shape[0] == 1:
-                        task_labels = task_labels.expand(preds.shape)
-                elif len(task_labels.shape) > len(preds.shape):
-                    if task_labels.shape[0] == 1:
-                        task_labels = task_labels.squeeze(0)
-                    elif preds.shape[0] == 1:
-                        preds = preds.expand(task_labels.shape)
-            
-            # Calculate metrics
+            # Binary classification metrics
             acc = self.metrics[task][f"{stage}_acc"](preds, task_labels)
-            f1 = self.metrics[task][f"{stage}_f1"](preds, task_labels)
+            self.log(f'{stage}_{task}_acc', acc, on_step=False, on_epoch=True, prog_bar=False)
             
-            # For AUROC, use raw predictions
-            if predictions.shape != task_labels.shape:
-                if len(predictions.shape) > len(task_labels.shape):
-                    if predictions.shape[0] == 1:
-                        auroc_preds = predictions.squeeze(0)
-                    else:
-                        auroc_preds = predictions
-                else:
-                    auroc_preds = predictions
-            else:
-                auroc_preds = predictions
-                
+            # AUROC for binary classification
+            auroc_preds = torch.sigmoid(preds) if preds.shape[-1] == 1 else preds
             try:
-                auroc = self.metrics[task][f"{stage}_auroc"](auroc_preds, task_labels)
-                self.log(f'{stage}_{task}_auroc', auroc, on_step=False, on_epoch=True, prog_bar=False)
+                auroc = self.metrics[task][f"{stage}_auc"](auroc_preds, task_labels)
+                self.log(f'{stage}_{task}_auc', auroc, on_step=False, on_epoch=True, prog_bar=False)
             except Exception as e:
                 # AUROC can fail if all labels are the same
-                pass
-            
-            # Log metrics
-            self.log(f'{stage}_{task}_acc', acc, on_step=False, on_epoch=True, prog_bar=False)
-            self.log(f'{stage}_{task}_f1', f1, on_step=False, on_epoch=True, prog_bar=False)
-            
+                logger.warning(f"Failed to compute {stage}_{task}_auc: {e}")
+                
         elif task_type == "multiclass":
-            # Multiclass classification
-            preds = torch.argmax(predictions, dim=1)
-            
-            # Ensure labels are in the right format for multiclass metrics
-            if len(task_labels.shape) > 1 and task_labels.shape[1] > 1:
-                # If one-hot encoded, convert to class indices
-                task_labels = torch.argmax(task_labels, dim=1)
-            
-            # Calculate metrics
+            # Multiclass classification metrics
             acc = self.metrics[task][f"{stage}_acc"](preds, task_labels)
-            f1_per_class = self.metrics[task][f"{stage}_f1"](preds, task_labels)
-            f1_macro = self.metrics[task][f"{stage}_f1_macro"](preds, task_labels)
-            
-            # Log metrics
             self.log(f'{stage}_{task}_acc', acc, on_step=False, on_epoch=True, prog_bar=False)
-            self.log(f'{stage}_{task}_f1_macro', f1_macro, on_step=False, on_epoch=True, prog_bar=False)
             
-            # Log per-class F1 scores
-            num_classes = len(self.class_loss_map[task])
-            for i in range(num_classes):
-                self.log(f'{stage}_{task}_f1_class_{i}', f1_per_class[i], on_step=False, on_epoch=True)
+            # F1 Score
+            try:
+                f1 = self.metrics[task][f"{stage}_f1"](preds, task_labels)
+                self.log(f'{stage}_{task}_f1', f1, on_step=False, on_epoch=True, prog_bar=False)
+            except Exception as e:
+                logger.warning(f"Failed to compute {stage}_{task}_f1: {e}")
+            
+            # AUROC
+            try:
+                auc = self.metrics[task][f"{stage}_auc"](preds, task_labels)
+                self.log(f'{stage}_{task}_auc', auc, on_step=False, on_epoch=True, prog_bar=False)
+            except Exception as e:
+                logger.warning(f"Failed to compute {stage}_{task}_auc: {e}")
                 
         elif task_type == "regression":
-            # Regression
-            # Ensure predictions and labels have compatible shapes for metrics
-            if predictions.shape != task_labels.shape:
-                if len(predictions.shape) > len(task_labels.shape):
-                    if predictions.shape[0] == 1:
-                        preds = predictions.squeeze(0)
-                    else:
-                        preds = predictions
-                else:
-                    preds = predictions
-            else:
-                preds = predictions
-            
-            # Calculate metrics
+            # Regression metrics
             mse = self.metrics[task][f"{stage}_mse"](preds, task_labels)
             mae = self.metrics[task][f"{stage}_mae"](preds, task_labels)
-            r2 = self.metrics[task][f"{stage}_r2"](preds, task_labels)
             
-            # Log metrics
             self.log(f'{stage}_{task}_mse', mse, on_step=False, on_epoch=True, prog_bar=False)
             self.log(f'{stage}_{task}_mae', mae, on_step=False, on_epoch=True, prog_bar=False)
-            self.log(f'{stage}_{task}_r2', r2, on_step=False, on_epoch=True, prog_bar=False)
         
         return loss
     
