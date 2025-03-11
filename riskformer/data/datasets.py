@@ -756,6 +756,7 @@ class RiskFormerDataset(Dataset):
             self._prefetch_executor.shutdown(wait=False)
 
 
+# TODO: Double check this class correctly splits datasets by odx85
 class RiskFormerDataModule(pl.LightningDataModule):
     """
     PyTorch Lightning DataModule for RiskFormer datasets.

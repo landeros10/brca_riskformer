@@ -87,46 +87,43 @@ The project is implemented in PyTorch with comprehensive MLOps integration:
 - ✅ Basic AWS infrastructure integration (S3, EC2) is set up
 - ✅ Docker containerization is configured
 - ✅ Core transformer model architecture is defined
-- ⚠️ Training pipeline is partially implemented
-- ⚠️ MLOps deployment infrastructure is partially implemented
-- ❌ Inference API is not yet implemented
-- ❌ CI/CD pipeline is not yet set up
+- ✅ Docker containerization is configured
+- ⚠️ Training pipeline is implemented but needs refinement
+- ⚠️ Logging and model versioning with Weights & Biases is set up
+- ⚠️ Unit and integration tests are partially implemented
+- ❌ MLOps deployment infrastructure is under development
 
-This project demonstrates MLOps practices and AWS cloud integration for large-scale model training and deployment, though some components are still under active development.
+This project demonstrates deep learning for breast cancer risk prediction from histopathology images, though some components are still under active development for at-scale deployment.
 
 ### Project Structure
 
 ```
 brca_riskformer/
-│── aws/                # AWS infrastructure components
-│   ├── config.json     # AWS configuration
-│   ├── lambdas/        # Lambda functions
-│   ├── ec2/            # EC2 scripts
-│   └── *.sh            # AWS deployment scripts
-│── bin/                 # Job execution scripts
 │── configs/             # Configuration files
-│   ├── aws/            # AWS-related configurations
 │   ├── preprocessing/  # Preprocessing configurations
 │   ├── training/       # Model training configurations
-│   ├── inference/      # Inference configurations
+│── docker/             # Docker-related files
+│   ├── Dockerfile      # Container definition
+│── docs/               # Documentation and images
 │── entrypoints/        # Main workflow scripts
+│   ├── preprocess.py   # Preprocessing pipeline
 │── logs/               # Execution logs
-│── models/             # Trained model checkpoints
 │── notebooks/          # Jupyter notebooks
 │   ├── experiments/    # Training experiments
 │   ├── testing/        # Debugging notebooks
 │── orchestrators/      # Job orchestration scripts
-│   ├── batch/          # AWS Batch job definitions
 │── resources/          # Static dataset files
 │── riskformer/         # Core package
 │   ├── data/          # Dataset operations
-│   ├── training/      # Training logic
+│   ├── training/      # Training logic and model definitions
 │   ├── utils/         # Utility functions
 │── scripts/           # Standalone scripts
-│── testing/           # Local testing scripts
+│── src/               # Legacy source code
 │── tests/             # Unit and integration tests
-│── docker/            # Docker-related files
-│── docs/              # Documentation
+│── wandb/             # Weights & Biases logging
+│── requirements.txt   # Python dependencies
+│── LICENSE            # License file
+│── README.md          # This file
 ```
 
 
@@ -137,7 +134,7 @@ brca_riskformer/
 The preprocessing pipeline handles data preparation and feature engineering:
 
 ```bash
-python entrypoints/preprocess.py test.svs --config configs/preprocessing/config.yaml 
+python entrypoints/preprocess.py --input_file <slide_file>.svs --config configs/preprocessing/config.yaml 
 ```
 
 ### Training
@@ -145,15 +142,21 @@ python entrypoints/preprocess.py test.svs --config configs/preprocessing/config.
 Train the RiskFormer model:
 
 ```bash
-python entrypoints/train.py --config configs/training/config.yaml
+python orchestrators/run_train.py --config configs/training/config.yaml
 ```
 
-### Inference
+### Development
 
-Generate predictions using trained models:
+To set up the development environment:
 
 ```bash
-python entrypoints/inference.py test.svs
+pip install -r requirements.txt
+```
+
+Run tests with:
+
+```bash
+pytest tests/
 ```
 
 ## License

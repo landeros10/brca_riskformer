@@ -56,12 +56,13 @@ def logger_setup(
         use_cloudwatch: bool = False,
         profile_name: str = None,
         region_name: str = None,
-        log_dir: str = "/opt/ml/processing/logs",
+        log_dir: str = "./logs",
 ) -> None:
-    """
-    Sets up Python logging. If `use_cloudwatch` is True, logs to AWS CloudWatch using
-    either profile credentials or environment variables.
-
+    """Set up logging configuration.
+    
+    This function configures the Python logging system, optionally with CloudWatch integration.
+    It sets up console output and file output.
+    
     Args:
         log_group (str): Name of the log group in CloudWatch (if enabled).
         debug (bool): Whether to enable debug-level logging.

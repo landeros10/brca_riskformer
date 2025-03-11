@@ -1119,19 +1119,22 @@ class RiskFormerLightningModule(pl.LightningModule):
         """Initialize metrics for tracking model performance."""
         self.metrics = {}
         
+        # Get the current device of the model
+        device = next(self.parameters()).device
+        
         for task, task_type in self.task_types.items():
             task_metrics = {}
             
             if task_type == "binary":
                 # Binary classification metrics
                 num_classes = 1  # Binary has one output node
-                task_metrics["train_acc"] = torchmetrics.Accuracy(task="binary")
-                task_metrics["val_acc"] = torchmetrics.Accuracy(task="binary")
-                task_metrics["test_acc"] = torchmetrics.Accuracy(task="binary")
+                task_metrics["train_acc"] = torchmetrics.Accuracy(task="binary").to(device)
+                task_metrics["val_acc"] = torchmetrics.Accuracy(task="binary").to(device)
+                task_metrics["test_acc"] = torchmetrics.Accuracy(task="binary").to(device)
                 
-                task_metrics["train_auc"] = torchmetrics.AUROC(task="binary")
-                task_metrics["val_auc"] = torchmetrics.AUROC(task="binary")
-                task_metrics["test_auc"] = torchmetrics.AUROC(task="binary")
+                task_metrics["train_auc"] = torchmetrics.AUROC(task="binary").to(device)
+                task_metrics["val_auc"] = torchmetrics.AUROC(task="binary").to(device)
+                task_metrics["test_auc"] = torchmetrics.AUROC(task="binary").to(device)
             elif task_type == "multiclass":
                 # Multiclass classification metrics
                 num_classes = 2  # Default to binary (2 classes) if not specified
@@ -1139,28 +1142,28 @@ class RiskFormerLightningModule(pl.LightningModule):
                 if "num_classes" in self.model_config and self.model_config["num_classes"] > 1:
                     num_classes = self.model_config["num_classes"]
                     
-                task_metrics["train_acc"] = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes)
-                task_metrics["val_acc"] = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes)
-                task_metrics["test_acc"] = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes)
+                task_metrics["train_acc"] = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes).to(device)
+                task_metrics["val_acc"] = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes).to(device)
+                task_metrics["test_acc"] = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes).to(device)
                 
                 # F1 Score for multiclass
-                task_metrics["train_f1"] = torchmetrics.F1Score(task="multiclass", num_classes=num_classes)
-                task_metrics["val_f1"] = torchmetrics.F1Score(task="multiclass", num_classes=num_classes)
-                task_metrics["test_f1"] = torchmetrics.F1Score(task="multiclass", num_classes=num_classes)
+                task_metrics["train_f1"] = torchmetrics.F1Score(task="multiclass", num_classes=num_classes).to(device)
+                task_metrics["val_f1"] = torchmetrics.F1Score(task="multiclass", num_classes=num_classes).to(device)
+                task_metrics["test_f1"] = torchmetrics.F1Score(task="multiclass", num_classes=num_classes).to(device)
                 
                 # AUROC for multiclass
-                task_metrics["train_auc"] = torchmetrics.AUROC(task="multiclass", num_classes=num_classes)
-                task_metrics["val_auc"] = torchmetrics.AUROC(task="multiclass", num_classes=num_classes)
-                task_metrics["test_auc"] = torchmetrics.AUROC(task="multiclass", num_classes=num_classes)
+                task_metrics["train_auc"] = torchmetrics.AUROC(task="multiclass", num_classes=num_classes).to(device)
+                task_metrics["val_auc"] = torchmetrics.AUROC(task="multiclass", num_classes=num_classes).to(device)
+                task_metrics["test_auc"] = torchmetrics.AUROC(task="multiclass", num_classes=num_classes).to(device)
             else:
                 # Regression metrics
-                task_metrics["train_mse"] = torchmetrics.MeanSquaredError()
-                task_metrics["val_mse"] = torchmetrics.MeanSquaredError()
-                task_metrics["test_mse"] = torchmetrics.MeanSquaredError()
+                task_metrics["train_mse"] = torchmetrics.MeanSquaredError().to(device)
+                task_metrics["val_mse"] = torchmetrics.MeanSquaredError().to(device)
+                task_metrics["test_mse"] = torchmetrics.MeanSquaredError().to(device)
                 
-                task_metrics["train_mae"] = torchmetrics.MeanAbsoluteError()
-                task_metrics["val_mae"] = torchmetrics.MeanAbsoluteError()
-                task_metrics["test_mae"] = torchmetrics.MeanAbsoluteError()
+                task_metrics["train_mae"] = torchmetrics.MeanAbsoluteError().to(device)
+                task_metrics["val_mae"] = torchmetrics.MeanAbsoluteError().to(device)
+                task_metrics["test_mae"] = torchmetrics.MeanAbsoluteError().to(device)
             
             # Add metrics for this task to the metrics dictionary
             self.metrics[task] = torch.nn.ModuleDict(task_metrics)
@@ -1171,15 +1174,10 @@ class RiskFormerLightningModule(pl.LightningModule):
     
     def training_step(self, batch, batch_idx):
         """Training step for Lightning."""
-        x, metadata = batch
+        x = batch['features']
+        metadata = batch['metadata']
+        labels = batch['labels']
         predictions = self(x)  # This now correctly handles any return format from RiskFormer_ViT.forward
-        
-        # Get labels for all tasks
-        if 'labels' in metadata:
-            labels = metadata['labels']
-        else:
-            # For backward compatibility
-            labels = {task: metadata.get(task, metadata.get('label', None)) for task in self.tasks}
         
         # Calculate loss using the new loss function
         losses = self.loss(predictions, labels)
@@ -1201,15 +1199,11 @@ class RiskFormerLightningModule(pl.LightningModule):
     
     def validation_step(self, batch, batch_idx):
         """Validation step for Lightning."""
-        x, metadata = batch
+        x = batch['features']
+        metadata = batch['metadata']
+        labels = batch['labels']
+
         predictions = self(x)  # This now correctly handles any return format from RiskFormer_ViT.forward
-        
-        # Get labels for all tasks
-        if 'labels' in metadata:
-            labels = metadata['labels']
-        else:
-            # For backward compatibility
-            labels = {task: metadata.get(task, metadata.get('label', None)) for task in self.tasks}
         
         # Calculate loss using the new loss function
         losses = self.loss(predictions, labels)
@@ -1230,16 +1224,13 @@ class RiskFormerLightningModule(pl.LightningModule):
     
     def test_step(self, batch, batch_idx):
         """Test step for Lightning."""
-        x, metadata = batch
+        x = batch['features']
+        metadata = batch['metadata']
+        labels = batch['labels']
+
         predictions = self(x)  # This now correctly handles any return format from RiskFormer_ViT.forward
         
-        # Get labels for all tasks
-        if 'labels' in metadata:
-            labels = metadata['labels']
-        else:
-            # For backward compatibility
-            labels = {task: metadata.get(task, metadata.get('label', None)) for task in self.tasks}
-        
+
         # Calculate loss using the new loss function
         losses = self.loss(predictions, labels)
         total_loss = losses['total']
@@ -1365,6 +1356,19 @@ class RiskFormerLightningModule(pl.LightningModule):
             
         # Get task type
         task_type = self.task_types[task]
+        
+        # Get the device of the metric
+        if f"{stage}_acc" in self.metrics[task]:
+            metric_device = self.metrics[task][f"{stage}_acc"].device
+        elif f"{stage}_mse" in self.metrics[task]:
+            metric_device = self.metrics[task][f"{stage}_mse"].device
+        else:
+            # Use the first available metric's device
+            metric_device = next(self.metrics[task].values()).device
+        
+        # Ensure predictions and labels are on the same device as the metric
+        preds = preds.to(metric_device)
+        task_labels = task_labels.to(metric_device)
         
         # Update metrics based on task type
         if task_type == "binary":

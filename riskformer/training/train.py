@@ -17,17 +17,16 @@ from __future__ import division, print_function
 import os
 import argparse
 import logging
-import yaml
 import torch
-import torch.nn as nn
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
+from os.path import join
 
 from riskformer.training.model import RiskFormerLightningModule
 from riskformer.data.datasets import RiskFormerDataModule
 from riskformer.utils.logger_config import logger_setup
-from riskformer.utils import log_training_params
+from riskformer.utils.config_utils import load_train_config
 
 logger_setup()
 logger = logging.getLogger(__name__)
@@ -38,154 +37,23 @@ def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="RiskFormer Training Configurations")
 
-    # Data parameters
-    parser.add_argument("--s3_bucket", type=str, required=True,
-                        help="S3 bucket containing the data")
-    parser.add_argument("--s3_prefix", type=str, default="",
-                        help="Prefix for S3 objects")
-    parser.add_argument("--metadata_file", type=str, default=None,
-                        help="Path to metadata file")
-    parser.add_argument("--cache_dir", type=str, default=None,
-                        help="Directory to cache S3 files")
-    parser.add_argument("--profile_name", type=str, default=None,
-                        help="AWS profile name")
-    parser.add_argument("--region_name", type=str, default=None,
-                        help="AWS region name")
-    
-    # Dataset parameters
-    parser.add_argument("--max_dim", type=int, default=32,
-                        help="Maximum dimension for patches")
-    parser.add_argument("--overlap", type=float, default=0.0,
-                        help="Overlap between patches")
-    parser.add_argument("--sample_size", type=int, default=-1,
-                        help="Size of the training dataset. Set to -1 to use full dataset")
-    
-    # DataLoader parameters
-    parser.add_argument("--batch_size", type=int, default=32,
-                        help="Batch size for training")
-    parser.add_argument("--num_workers", type=int, default=4,
-                        help="Number of workers for dataloaders")
-    parser.add_argument("--val_split", type=float, default=0.2,
-                        help="Fraction of data to use for validation")
-    parser.add_argument("--test_split", type=float, default=0.1,
-                        help="Fraction of data to use for testing")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed for reproducibility")
-    
-    # Model parameters
-    parser.add_argument("--input_embed_dim", type=int, default=1024,
-                        help="Input embedding dimension")
-    parser.add_argument("--output_embed_dim", type=int, default=512,
-                        help="Output embedding dimension")
-    parser.add_argument("--use_phi", type=bool, default=True,
-                        help="Whether to use phi embedding")
-    parser.add_argument("--drop_path_rate", type=float, default=0.1,
-                        help="Drop path rate")
-    parser.add_argument("--drop_rate", type=float, default=0.1,
-                        help="Dropout rate")
-    parser.add_argument("--depth", type=int, default=4,
-                        help="Depth of the local transformer blocks")
-    parser.add_argument("--global_depth", type=int, default=2,
-                        help="Depth of the global transformer blocks")
-    parser.add_argument("--encoding_method", type=str, default="sinusoidal",
-                        help="Position encoding method")
-    parser.add_argument("--mask_num", type=int, default=0,
-                        help="Number of masks to use")
-    parser.add_argument("--mask_preglobal", type=bool, default=False,
-                        help="Whether to mask before global attention")
-    parser.add_argument("--num_heads", type=int, default=8,
-                        help="Number of attention heads")
-    parser.add_argument("--use_attn_mask", type=bool, default=False,
-                        help="Whether to use attention mask")
-    parser.add_argument("--mlp_ratio", type=float, default=4.0,
-                        help="MLP ratio")
-    parser.add_argument("--use_class_token", type=bool, default=True,
-                        help="Whether to use class token")
-    parser.add_argument("--attn_global_hidden_dim", type=int, default=128,
-                        help="Hidden dimension for global attention")
-    
-    # Optimizer parameters
-    parser.add_argument("--optimizer", type=str, default="adam",
-                        choices=["adam", "adamw", "sgd", "momentum", "nadam", "lars", "lamb"],
-                        help="Optimizer to use")
-    parser.add_argument("--learning_rate", type=float, default=1e-4,
-                        help="Learning rate")
-    parser.add_argument("--weight_decay", type=float, default=1e-6,
-                        help="Weight decay")
-    parser.add_argument("--scheduler", type=str, default="plateau",
-                        choices=["plateau", "cosine", "onecycle"],
-                        help="Learning rate scheduler")
-    parser.add_argument("--learning_rate_scaling", type=str, default="linear",
-                        choices=["linear", "sqrt"],
-                        help="How to scale the learning rate as a function of batch size.")
-    parser.add_argument("--learning_rate_warmup_epochs", type=int, default=25,
-                        help="Number of epochs for warmup.")
-    parser.add_argument("--regional_coeff", type=float, default=0.0,
-                        help="Regional coefficient for loss")
-    parser.add_argument("--patch_coeff", type=float, default=1.0,
-                        help="Weight to apply to patch-level risk predictions.")
-    parser.add_argument("--l2_coeff", type=float, default=1e-6,
-                        help="L2 regularization coefficient.")
-    
-    # Training parameters
-    parser.add_argument("--max_epochs", type=int, default=100,
-                        help="Maximum number of epochs")
-    parser.add_argument("--min_epochs", type=int, default=10,
-                        help="Minimum number of epochs")
-    parser.add_argument("--patience", type=int, default=10,
-                        help="Patience for early stopping")
-    parser.add_argument("--precision", type=str, default="32",
-                        choices=["32", "16", "bf16"],
-                        help="Precision for training")
-    parser.add_argument("--accelerator", type=str, default="auto",
-                        help="Accelerator to use")
-    parser.add_argument("--devices", type=int, default=1,
-                        help="Number of devices to use")
-    parser.add_argument("--strategy", type=str, default=None,
-                        help="Strategy for distributed training")
-    parser.add_argument("--train_steps", type=int, default=100,
-                        help="Total number of training steps.")
-    parser.add_argument("--eval_every", type=int, default=8,
-                        help="Number of training steps between evaluations.")
-    parser.add_argument("--early_stop", type=int, default=25,
-                        help="Number of epochs to wait before early stopping.")
-    
-    # Logging parameters
-    parser.add_argument("--log_dir", type=str, default="lightning_logs",
-                        help="Directory for logs")
-    parser.add_argument("--experiment_name", type=str, default="riskformer",
-                        help="Name of the experiment")
-    parser.add_argument("--use_wandb", action="store_true",
-                        help="Whether to use Weights & Biases for logging")
-    parser.add_argument("--wandb_project", type=str, default="riskformer",
-                        help="Weights & Biases project name")
-    parser.add_argument("--wandb_entity", type=str, default=None,
-                        help="Weights & Biases entity name")
-    
     # Config file
-    parser.add_argument("--config", type=str, default=None,
+    parser.add_argument("--config", type=str, required=True,
                         help="Path to config file")
     
-    # Debug mode
+    parser.add_argument("--metadata_file", type=str, default=None,
+                        help="Path to metadata file (overrides config)")
+    parser.add_argument("--log_dir", type=str, default=None,
+                        help="Directory for logs (overrides config)")
+    parser.add_argument("--experiment_name", type=str, default=None,
+                        help="Name of the experiment (overrides config)")
+    parser.add_argument("--use_wandb", action="store_true",
+                        help="Whether to use Weights & Biases for logging")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Random seed for reproducibility (overrides config)")
     parser.add_argument("--debug", action="store_true",
-                        help="Set to run in debug mode.")
-
-    args = parser.parse_args()
-    
-    # If config file is provided, load it and update args
-    if args.config is not None:
-        with open(args.config, "r") as f:
-            config = yaml.safe_load(f)
-        
-        # Update args with config values
-        for key, value in config.items():
-            if hasattr(args, key):
-                setattr(args, key, value)
-    
-    config_params = vars(args)
-    log_training_params(logger, config_params)
-    
-    return args
+                        help="Set to run in debug mode")
+    return parser.parse_args()
 
 
 def main():
@@ -196,132 +64,52 @@ def main():
     # Parse arguments
     args = parse_args()
     
+    # Load configuration from file
+    config = load_train_config(args.config)
+    if not config:
+        raise ValueError(f"Failed to load config from {args.config}")
+    
+    # Override with command-line arguments if provided
+    if args.metadata_file:
+        config['metadata_file'] = args.metadata_file
+    if args.log_dir:
+        config['log_dir'] = args.log_dir
+    if args.experiment_name:
+        config['experiment_name'] = args.experiment_name
+    if args.use_wandb:
+        config['use_wandb'] = True
+    if args.seed is not None:
+        config['seed'] = args.seed
+    if args.debug:
+        config['debug'] = True
+    
+    # Log the loaded configuration
+    logger.info(f"Loaded configuration from {args.config}")
+    
     # Set seed for reproducibility
-    pl.seed_everything(args.seed)
+    seed = config.get('seed', 42)
+    pl.seed_everything(seed)
     
     # Create data module
     data_module = RiskFormerDataModule(
-        s3_bucket=args.s3_bucket,
-        s3_prefix=args.s3_prefix,
-        max_dim=args.max_dim,
-        overlap=args.overlap,
-        metadata_file=args.metadata_file,
-        cache_dir=args.cache_dir,
-        profile_name=args.profile_name,
-        region_name=args.region_name,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        val_split=args.val_split,
-        test_split=args.test_split,
-        seed=args.seed,
+        s3_bucket=config['s3_bucket'],
+        s3_prefix=config.get('s3_prefix', ''),
+        max_dim=config.get('max_dim', 32),
+        overlap=config.get('overlap', 0.0),
+        metadata_file=config.get('metadata_file'),
+        cache_dir=config.get('cache_dir'),
+        profile_name=config.get('profile_name'),
+        region_name=config.get('region_name'),
+        batch_size=config.get('batch_size', 32),
+        num_workers=config.get('num_workers', 4),
+        val_split=config.get('val_split', 0.2),
+        test_split=config.get('test_split', 0.1),
+        seed=seed,
+        config_path=args.config,  # Pass the config path to the data module
     )
     
-    # Create task configurations
-    task_configs = {}
-    
-    # Binary classification tasks
-    if args.num_classes == 1:
-        # ODX85 - Binary classification (High/Low risk)
-        task_configs['odx85'] = {
-            'type': 'binary',
-            'num_classes': 1,
-            'loss_fn': nn.BCEWithLogitsLoss(),
-            'weight': 1.0,  # Primary task
-            'metrics': ['auroc', 'accuracy']
-        }
-        
-        # MPHR - Binary classification (High/Low risk)
-        task_configs['mphr'] = {
-            'type': 'binary',
-            'num_classes': 1,
-            'loss_fn': nn.BCEWithLogitsLoss(),
-            'weight': 0.5,  # Secondary task
-            'metrics': ['auroc', 'accuracy']
-        }
-        
-        # Necrosis - Binary classification (Present/Absent)
-        task_configs['necrosis'] = {
-            'type': 'binary',
-            'num_classes': 1,
-            'loss_fn': nn.BCEWithLogitsLoss(),
-            'weight': 0.3,  # Tertiary task
-            'metrics': ['auroc', 'accuracy']
-        }
-        
-        # Pleomorphism - Binary classification
-        task_configs['pleo'] = {
-            'type': 'binary',
-            'num_classes': 1,
-            'loss_fn': nn.BCEWithLogitsLoss(),
-            'weight': 0.3,  # Tertiary task
-            'metrics': ['auroc', 'accuracy']
-        }
-    else:
-        # Multi-class classification
-        task_configs['odx85'] = {
-            'type': 'multiclass',
-            'num_classes': args.num_classes,
-            'loss_fns': {i: nn.CrossEntropyLoss() for i in range(args.num_classes)},
-            'weight': 1.0,  # Primary task
-            'metrics': ['accuracy']
-        }
-    
-    # Regression tasks
-    task_configs['odx_train'] = {
-        'type': 'regression',
-        'num_classes': 1,
-        'loss_fn': nn.MSELoss(),
-        'weight': 0.5,  # Secondary task
-        'metrics': ['mse', 'mae']
-    }
-    
-    task_configs['dfm'] = {
-        'type': 'regression',
-        'num_classes': 1,
-        'loss_fn': nn.MSELoss(),
-        'weight': 0.3,  # Tertiary task
-        'metrics': ['mse', 'mae']
-    }
-    
-    # Model configuration
-    model_config = {
-        "input_embed_dim": args.input_embed_dim,
-        "output_embed_dim": args.output_embed_dim,
-        "use_phi": args.use_phi,
-        "drop_path_rate": args.drop_path_rate,
-        "drop_rate": args.drop_rate,
-        "max_dim": args.max_dim,
-        "depth": args.depth,
-        "global_depth": args.global_depth,
-        "encoding_method": args.encoding_method,
-        "phi_dim": args.phi_dim,
-        "mask_num": args.mask_num,
-        "mask_preglobal": args.mask_preglobal,
-        "num_heads": args.num_heads,
-        "use_attn_mask": args.use_attn_mask,
-        "mlp_ratio": args.mlp_ratio,
-        "use_class_token": args.use_class_token,
-        "attn_global_hidden_dim": args.attn_global_hidden_dim,
-        "tasks": task_configs,  # Add task configurations directly to the model config
-    }
-    
-    # Create optimizer config
-    optimizer_config = {
-        "optimizer": args.optimizer,
-        "learning_rate": args.learning_rate,
-        "weight_decay": args.weight_decay,
-        "scheduler": args.scheduler,
-        "patience": args.patience,
-        "learning_rate_scaling": args.learning_rate_scaling,
-        "learning_rate_warmup_epochs": args.learning_rate_warmup_epochs,
-    }
-    
-    # Create model
-    model = RiskFormerLightningModule(
-        model_config=model_config,
-        optimizer_config=optimizer_config,
-        regional_coeff=args.regional_coeff,
-    )
+    # Create model from config
+    model = RiskFormerLightningModule.from_config_file(args.config)
     
     # Create callbacks
     callbacks = [
@@ -333,36 +121,36 @@ def main():
         ),
         EarlyStopping(
             monitor="val_loss",
-            patience=args.early_stop,
+            patience=config.get('early_stop', 25),
             mode="min",
         ),
         LearningRateMonitor(logging_interval="epoch"),
     ]
     
     # Create logger
-    if args.use_wandb:
-        logger = WandbLogger(
-            project=args.wandb_project,
-            name=args.experiment_name,
-            entity=args.wandb_entity,
+    if config.get('use_wandb', False):
+        tb_logger = WandbLogger(
+            project=config.get('wandb_project', 'riskformer'),
+            name=config.get('experiment_name', 'riskformer'),
+            entity=config.get('wandb_entity'),
             log_model=True,
         )
     else:
-        logger = TensorBoardLogger(
-            save_dir=args.log_dir,
-            name=args.experiment_name,
+        tb_logger = TensorBoardLogger(
+            save_dir=config.get('log_dir', 'lightning_logs'),
+            name=config.get('experiment_name', 'riskformer'),
         )
     
     # Create trainer
     trainer = pl.Trainer(
-        max_epochs=args.max_epochs,
-        min_epochs=args.min_epochs,
+        max_epochs=config.get('max_epochs', 100),
+        min_epochs=config.get('min_epochs', 10),
         callbacks=callbacks,
-        logger=logger,
-        precision=args.precision,
-        accelerator=args.accelerator,
-        devices=args.devices,
-        strategy=args.strategy if args.strategy else "auto",
+        logger=tb_logger,
+        precision=config.get('precision', '32'),
+        accelerator=config.get('accelerator', 'auto'),
+        devices=config.get('devices', 1),
+        strategy=config.get('strategy', 'auto'),
         log_every_n_steps=10,
         deterministic=True,
     )
