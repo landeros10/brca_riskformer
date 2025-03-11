@@ -129,14 +129,15 @@ def rearrange_xl_patches(xl_patches, patch_info):
     Rearrange the patches into their original orders and fill in with zeros.
     
     Args:
-        xl_patches (torch.Tensor): The patches to rearrange.
+        xl_patches (torch.Tensor): The patches to rearrange. Shape (N, D, H, W)
         patch_info (torch.Tensor): The information about the patches.
         
     Returns:
         torch.Tensor: The rearranged patches.
         tuple: The row and column starts for each feature.
     """
-    max_dim = xl_patches.shape[1]
+    # R-arrange tensor to (N, H, W, D)
+    xl_patches = xl_patches.permute(0, 2, 3, 1)
     feature_dim = xl_patches.shape[-1]
 
     # Convert tensor to PatchInfo objects for easier handling

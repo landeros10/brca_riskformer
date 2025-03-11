@@ -16,6 +16,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR, OneCy
 from torch.optim import Adam, SGD, AdamW
 from torchvision import transforms
 import torch.nn.functional as F
+import yaml
 
 from riskformer.training.layers import SinusoidalPositionalEncoding2D, MultiScaleBlock, GlobalMaxPoolLayer
 from riskformer.utils.training_utils import slide_level_loss
@@ -23,8 +24,143 @@ from riskformer.utils.training_utils import slide_level_loss
 logger = logging.getLogger(__name__)
 
 class RiskFormer_ViT(nn.Module):
-    """Vision Transformer for Whole Slide Image processing with multiscale attention."""
+    """
+    Vision Transformer for Whole Slide Image processing with multiscale attention.
     
+    Args:
+        input_embed_dim: Input embedding dimension
+        output_embed_dim: Output embedding dimension
+        use_phi: Whether to use phi network
+        drop_path_rate: Drop path rate
+        drop_rate: Dropout rate
+        num_classes: Number of classes
+        max_dim: Maximum dimension
+        depth: Depth of local blocks
+        global_depth: Depth of global blocks
+        encoding_method: Position encoding method
+        num_heads: Number of attention heads
+        use_attn_mask: Whether to use attention mask
+        mlp_ratio: MLP ratio
+        use_class_token: Whether to use class token
+        attn_global_hidden_dim: Hidden dimension of global attention mlp
+        phi_dim: Phi dimension
+        downscale_depth: Depth of downscale blocks
+        downscale_multiplier: Multiplier for downscale blocks
+        downscale_stride_q: Stride for query in downscale blocks
+        downscale_stride_k: Stride for key/value in downscale blocks
+        noise_aug: Noise augmentation level
+        attnpool_mode: Attention pool mode
+        name: Model name
+        hflip_prob: Probability of horizontal flip
+        vflip_prob: Probability of vertical flip
+        rotate_prob: Probability of rotation
+        noise_aug_prob: Probability of noise augmentation
+        **kwargs: Additional arguments        
+    """
+    
+    @staticmethod
+    def load_config(config_path):
+        """
+        Load configuration from a YAML file.
+        
+        Args:
+            config_path: Path to the YAML configuration file.
+            
+        Returns:
+            A dictionary containing the configuration.
+        """
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        return config
+    
+    @classmethod
+    def from_config_file(cls, config_path):
+        """
+        Create a RiskFormer_ViT model from a configuration file.
+        
+        Args:
+            config_path: Path to the YAML configuration file.
+            
+        Returns:
+            An initialized RiskFormer_ViT model.
+        """
+        config = cls.load_config(config_path)
+        return cls.from_config(config)
+
+    @classmethod
+    def from_config(cls, config):
+        """
+        Create a RiskFormer_ViT model from a configuration dictionary.
+        
+        Args:
+            config: A dictionary containing model configuration parameters.
+                   This could be loaded from a YAML file.
+                   
+        Returns:
+            An initialized RiskFormer_ViT model.
+        """
+        # Required parameters with their keys in the config
+        required_params = {
+            'input_embed_dim': 'input_embed_dim',
+            'output_embed_dim': 'output_embed_dim',
+            'use_phi': 'use_phi',
+            'drop_path_rate': 'drop_path_rate',
+            'drop_rate': 'drop_rate',
+            'num_classes': 'num_classes',
+            'max_dim': 'max_dim',
+            'depth': 'depth',
+            'global_depth': 'global_depth',
+            'encoding_method': 'encoding_method',
+            'num_heads': 'num_heads',
+            'use_attn_mask': 'use_attn_mask',
+            'mlp_ratio': 'mlp_ratio',
+            'use_class_token': 'use_class_token',
+            'attn_global_hidden_dim': 'attn_global_hidden_dim',
+        }
+        
+        # Optional parameters with default values
+        optional_params = {
+            'phi_dim': None,
+            'downscale_depth': 1,
+            'downscale_multiplier': 1.25,
+            'downscale_stride_q': 2,
+            'downscale_stride_k': 2,
+            'noise_aug': 0.1,
+            'attnpool_mode': 'conv',
+            'name': None,
+            'background_tile_path': None,
+            'hflip_prob': 0.5,
+            'vflip_prob': 0.5,
+            'rotate_prob': 0.5,
+            'noise_aug_prob': 0.5,
+        }
+        
+        # Extract required parameters from config
+        model_args = {}
+        for param, config_key in required_params.items():
+            if config_key not in config:
+                raise ValueError(f"Required parameter '{config_key}' not found in config")
+            model_args[param] = config[config_key]
+        
+        # Extract optional parameters from config
+        for param, default_value in optional_params.items():
+            model_args[param] = config.get(param, default_value)
+        
+        # Handle special cases
+        # If num_classes is specified as a dictionary in the config 
+        # (e.g., for multiple prediction heads)
+        if isinstance(config.get('num_classes'), dict):
+            model_args['num_classes'] = config['num_classes']
+        
+        # Pass any other parameters from config
+        for key, value in config.items():
+            if key not in required_params.values() and key not in optional_params:
+                model_args[key] = value
+        
+        logger.info(f"Initializing RiskFormer_ViT from config with parameters: {model_args}")
+        
+        return cls(**model_args)
+
     def __init__(
         self,
         input_embed_dim: int,
@@ -32,7 +168,7 @@ class RiskFormer_ViT(nn.Module):
         use_phi: bool,
         drop_path_rate: float,
         drop_rate: float,
-        num_classes: int,
+        num_classes: Union[int, Dict[str, int], List[int]],
         max_dim: int,
         depth: int,
         global_depth: int,
@@ -41,7 +177,7 @@ class RiskFormer_ViT(nn.Module):
         use_attn_mask: bool,
         mlp_ratio: float,
         use_class_token: bool,
-        global_k: int,
+        attn_global_hidden_dim: int,
         phi_dim: Optional[int] = None,
         downscale_depth: int = 1,
         downscale_multiplier: float = 1.25,
@@ -54,39 +190,10 @@ class RiskFormer_ViT(nn.Module):
         hflip_prob: float = 0.5,
         vflip_prob: float = 0.5,
         rotate_prob: float = 0.5,
+        noise_aug_prob: float = 0.5,
         **kwargs
     ):
-        """Initialize the model.
-        
-        Args:
-            input_embed_dim: Input embedding dimension
-            output_embed_dim: Output embedding dimension
-            use_phi: Whether to use phi network
-            drop_path_rate: Drop path rate
-            drop_rate: Dropout rate
-            num_classes: Number of classes
-            max_dim: Maximum dimension
-            depth: Depth of local blocks
-            global_depth: Depth of global blocks
-            encoding_method: Position encoding method
-            mask_num: Number of masks
-            mask_preglobal: Whether to mask before global blocks
-            num_heads: Number of attention heads
-            use_attn_mask: Whether to use attention mask
-            mlp_ratio: MLP ratio
-            use_class_token: Whether to use class token
-            global_k: Global k value
-            phi_dim: Phi dimension
-            downscale_depth: Depth of downscale blocks
-            downscale_multiplier: Multiplier for downscale blocks
-            downscale_stride_q: Stride for query in downscale blocks
-            downscale_stride_k: Stride for key/value in downscale blocks
-            noise_aug: Noise augmentation level
-            data_dir: Data directory
-            attnpool_mode: Attention pool mode
-            name: Model name
-            **kwargs: Additional arguments
-        """
+        """Initialize the model."""
         super().__init__()
         
         # Save configuration
@@ -96,7 +203,7 @@ class RiskFormer_ViT(nn.Module):
         self.drop_path_rate = drop_path_rate
         self.drop_rate = drop_rate
         self.num_classes = num_classes
-        self.max_dim = max_dim
+        self.input_array_dim = max_dim
         self.depth = depth
         self.global_depth = global_depth
         self.encoding_method = encoding_method
@@ -104,7 +211,7 @@ class RiskFormer_ViT(nn.Module):
         self.use_attn_mask = use_attn_mask
         self.mlp_ratio = mlp_ratio
         self.use_class_token = use_class_token
-        self.global_k = global_k
+        self.attn_global_hidden_dim = attn_global_hidden_dim
         self.phi_dim = phi_dim if phi_dim is not None else output_embed_dim
         self.downscale_depth = downscale_depth
         self.downscale_multiplier = downscale_multiplier
@@ -116,36 +223,36 @@ class RiskFormer_ViT(nn.Module):
         self.hflip_prob = hflip_prob
         self.vflip_prob = vflip_prob
         self.rotate_prob = rotate_prob
+        self.noise_aug_prob = noise_aug_prob
         
-        # Load background tile if data_dir is provided
-        if background_tile_path is not None:
-            import os
-            import numpy as np
-            background_tile_path = os.path.join(background_tile_path, "background_tile_norm.npy")
-            if os.path.exists(background_tile_path):
-                print(f"Using Background tile located: {background_tile_path}")
-                self.background_tile = torch.tensor(np.load(background_tile_path))
-            else:
-                print(f"Background tile not found at {background_tile_path}, using zeros instead")
-                self.background_tile = torch.zeros(self.input_embed_dim)
-        else:
-            self.background_tile = torch.zeros(self.input_embed_dim)
+        # Define Model Dimensions
+        self.blocks_input_dim = self.phi_dim if use_phi else self.output_embed_dim
+        self.blocks_output_dim = self.blocks_input_dim
+
+        self.downscale_output_dims = []
+        current_dim = self.blocks_input_dim
+        for i in range(self.downscale_depth):
+            current_dim = current_dim * self.downscale_multiplier
+            self.downscale_output_dims.append(int(current_dim))
+        self.downscale_output_dims = [
+            (dim + self.num_heads - 1) // self.num_heads * self.num_heads
+            for dim in self.downscale_output_dims
+        ]
+        self.blocks_output_dim = self.downscale_output_dims[-1] if len(self.downscale_output_dims) > 0 else self.blocks_input_dim
         
-        # Set model dimension
-        self.model_dim = self.phi_dim if use_phi else input_embed_dim
-        
+        # Define input sizes for each block
+        s_q = self.downscale_stride_q
+        s_k = self.downscale_stride_k
+        self.input_sizes = [int(self.input_array_dim / (s_q**i)) for i in range(self.downscale_depth + 1)]
+        self.input_sizes = [(s, s) for s in self.input_sizes]
+
+        # Initialize drop path rates
+        self.total_blocks = self.depth + self.downscale_depth
+        self.drop_path_rates = torch.linspace(0, self.drop_path_rate, self.total_blocks)
+
+
         # Initialize phi network if used
-        if self.use_phi:
-            self.phi = nn.Sequential(
-                nn.Linear(self.input_embed_dim, self.phi_dim, bias=False),
-                nn.GELU()
-            )
-        else:
-            # Ensure phi is None when not used
-            self.phi = None
-            # Use delattr to completely remove the phi attribute to match test expectations
-            if hasattr(self, 'phi'):
-                delattr(self, 'phi')
+        self.initialize_phi()
         
         # Number of prefix tokens (e.g., class token)
         self.num_prefix_tokens = 1 if use_class_token else 0
@@ -154,15 +261,10 @@ class RiskFormer_ViT(nn.Module):
         self.global_pool = "token" if use_class_token else "avg"
         
         # Initialize class tokens if needed
-        if self.use_class_token:
-            self.cls_token_local = self.generate_class_tokens(self.model_dim)
-            self.cls_token_global = self.generate_class_tokens(self.output_embed_dim)
-        else:
-            self.cls_token_local = None
-            self.cls_token_global = None
+        self.initialize_class_token()
         
         # Initialize position encodings
-        self._initialize_position_encodings()
+        self.initialize_position_encodings()
         
         # Initialize blocks
         self.initialize_downscale_blocks()
@@ -171,59 +273,37 @@ class RiskFormer_ViT(nn.Module):
         self.initialize_global_attn()
         
         # Initialize normalization layers
-        self.norm = nn.LayerNorm(self.model_dim)
-        self.norm_local = nn.LayerNorm(self.model_dim)
-        self.norm_global = nn.LayerNorm(self.output_embed_dim)
-        
-        # Initialize projection layer
-        self.global_proj = nn.Linear(self.model_dim, self.output_embed_dim)
-        
-        # Initialize head for predictions
-        # Add softmax activation for classification consistency with TensorFlow
-        if num_classes > 0:
-            self.head = nn.Sequential(
-                nn.Linear(self.model_dim, num_classes),
-                nn.Softmax(dim=-1)
-            )
-            self.head_global = nn.Sequential(
-                nn.Linear(self.output_embed_dim, num_classes),
-                nn.Softmax(dim=-1)
+        self.initialize_norm_layers()
+        # Create head for predictions
+        self.initialize_heads()
+
+        # Apply weight initialization
+        self.apply(self.initialize_weights)
+
+    def initialize_phi(self):
+        """Initialize phi network."""
+        if self.use_phi:
+            self.phi = nn.Sequential(
+                nn.Linear(self.input_embed_dim, self.phi_dim, bias=False),
+                nn.GELU()
             )
         else:
-            self.head = nn.Identity()
-            self.head_global = nn.Identity()
-            
-        # Initialize global prediction layers
-        self.attn_weights = nn.Linear(self.output_embed_dim, 128)
-        self.attn_weights_activation = nn.GELU()
-        self.attn_weights_projection = nn.Linear(128, 1)
-        
-        # Apply weight initialization
-        self.apply(self._init_weights)
-        
-    def generate_class_tokens(self, dim):
-        """Generate class token with specified dimension.
-        
-        Args:
-            dim: Dimension of the class token
-            
-        Returns:
-            Class token parameter
-        """
-        # Create a trainable class token parameter
-        cls_token = nn.Parameter(torch.zeros(1, 1, dim))
-        # Initialize with truncated normal distribution
-        nn.init.trunc_normal_(cls_token, std=0.02)
-        return cls_token
+            self.phi = None
 
-    def _initialize_position_encodings(self):
+    def initialize_class_token(self):
+        """Generate class token with specified dimension."""
+        # Create a trainable class token parameter
+        self.cls_token = None
+        if self.use_class_token:
+            self.cls_token = nn.Parameter(torch.zeros(1, 1, self.blocks_input_dim))
+
+    def initialize_position_encodings(self):
         """Initialize position encodings based on the specified method."""
-        num_patches = int(math.sqrt(self.max_dim))
-        height = width = num_patches
+        num_patches = int(self.input_array_dim ** 2)
+        height = width = self.input_array_dim
         
         if self.encoding_method == "standard" or self.encoding_method == "":
-            # Use learnable positional embeddings
-            pos_embed = nn.Parameter(torch.zeros(1, self.max_dim + (1 if self.use_class_token else 0), self.model_dim))
+            pos_embed = nn.Parameter(torch.zeros(1, num_patches + (1 if self.use_class_token else 0), self.blocks_input_dim))
             nn.init.trunc_normal_(pos_embed, std=0.02)
             self.pos_embed = pos_embed
             self.pos_drop = nn.Dropout(p=self.drop_rate)
@@ -231,42 +311,15 @@ class RiskFormer_ViT(nn.Module):
         elif self.encoding_method == "sinusoidal":
             # Use fixed sinusoidal embeddings
             self.pos_encoding = SinusoidalPositionalEncoding2D(
-                channels=self.model_dim,
+                channels=self.blocks_input_dim,
                 height=height,
                 width=width
             )
             self.pos_drop = nn.Dropout(p=self.drop_rate)
-            
-        elif self.encoding_method == "conditional":
-            # Use conditional positional encoding through depth-wise convolution
-            self.peg = nn.Conv2d(
-                self.model_dim, 
-                self.model_dim, 
-                kernel_size=3, 
-                padding=1, 
-                groups=self.model_dim, 
-                bias=False
-            )
-            nn.init.normal_(self.peg.weight, std=0.02)
-            self.pos_drop = nn.Dropout(p=self.drop_rate)
-            
-        elif self.encoding_method == "ppeg":
-            # Use Pyramid Positional Encoding
-            self.ppeg = nn.ModuleList([
-                nn.Sequential(
-                    nn.Conv2d(self.model_dim, self.model_dim, kernel_size=3, padding=1, groups=self.model_dim),
-                    nn.GELU(),
-                    nn.Conv2d(self.model_dim, self.model_dim, kernel_size=3, padding=1, groups=self.model_dim),
-                    nn.GELU(),
-                    nn.Conv2d(self.model_dim, self.model_dim, kernel_size=3, padding=1, groups=self.model_dim),
-                )
-                for _ in range(3)  # Use 3 levels for pyramid encoding
-            ])
-            self.pos_drop = nn.Dropout(p=self.drop_rate)
         else:
             raise ValueError(f"Unknown position encoding method: {self.encoding_method}")
 
-    def _apply_positional_encoding(self, x, height, width):
+    def apply_positional_encoding(self, x, height, width):
         """Apply positional encoding to the input tensor based on the specified method.
         
         This method consolidates all positional encoding implementations using standard
@@ -284,73 +337,19 @@ class RiskFormer_ViT(nn.Module):
         
         # Apply positional encoding based on method
         if self.encoding_method == "standard" or self.encoding_method == "":
-            # For standard encoding, we add the position embedding
             if self.use_class_token:
-                # If using class token later, just add position embedding to sequence
-                if seq_len <= self.pos_embed.shape[1] - 1:
-                    # Use the pre-computed position embedding
-                    pos_embed = self.pos_embed[:, 1:seq_len+1, :]
-                    x = x + pos_embed
-                else:
-                    # Need to interpolate position embedding for larger sequence
-                    pos_embed = self.pos_embed[:, 1:, :]
-                    pos_embed = F.interpolate(
-                        pos_embed.permute(0, 2, 1).unsqueeze(0),
-                        size=seq_len,
-                        mode='linear'
-                    ).squeeze(0).permute(0, 2, 1)
-                    x = x + pos_embed
+                x = x + self.pos_embed[:, 1:, :]
             else:
-                # If no class token, just add position embedding
-                if seq_len <= self.pos_embed.shape[1]:
-                    # Use the pre-computed position embedding
-                    x = x + self.pos_embed[:, :seq_len, :]
-                else:
-                    # Need to interpolate position embedding for larger sequence
-                    pos_embed = self.pos_embed
-                    pos_embed = F.interpolate(
-                        pos_embed.permute(0, 2, 1).unsqueeze(0),
-                        size=seq_len,
-                        mode='linear'
-                    ).squeeze(0).permute(0, 2, 1)
-                    x = x + pos_embed
+                x = x + self.pos_embed
                     
         elif self.encoding_method == "sinusoidal":
-            # For sinusoidal, we apply the encoding function
             x = self.pos_encoding(x)
-            
-        elif self.encoding_method == "conditional":
-            # For conditional encoding, we need to reshape to 2D, apply conv, then reshape back
-            x = x.reshape(batch_size, height, width, channels)
-            # Convert to channels-first format for convolution
-            x = x.permute(0, 3, 1, 2)  # [B, C, H, W]
-            # Apply conditional encoding
-            x = self.peg(x)
-            # Convert back to sequence format
-            x = x.permute(0, 2, 3, 1)  # [B, H, W, C]
-            x = x.reshape(batch_size, height * width, channels)
-            
-        elif self.encoding_method == "ppeg":
-            # For pyramid encoding, similar to conditional but with multiple levels
-            x = x.reshape(batch_size, height, width, channels)
-            # Convert to channels-first format
-            x = x.permute(0, 3, 1, 2)  # [B, C, H, W]
-            
-            # Apply pyramid position encoding
-            for encoder in self.ppeg:
-                # Apply encoder at each level
-                x = x + encoder(x)
-                
-            # Convert back to sequence format
-            x = x.permute(0, 2, 3, 1)  # [B, H, W, C]
-            x = x.reshape(batch_size, height * width, channels)
-        
+                    
         # Apply dropout
         x = self.pos_drop(x)
-        
         return x
         
-    def _init_weights(self, m):
+    def initialize_weights(self, m):
         """Initialize weights for the model."""
         if isinstance(m, nn.Linear):
             nn.init.trunc_normal_(m.weight, std=0.02)
@@ -363,58 +362,41 @@ class RiskFormer_ViT(nn.Module):
     def initialize_downscale_blocks(self):
         """Initialize blocks that downscale spatial dimensions."""
         self.downscale_blocks = nn.ModuleList()
-        self.output_dims = []
-        current_dim = self.output_embed_dim
-        for i in range(self.downscale_depth):
-            current_dim = int(current_dim * self.downscale_multiplier)
-            self.output_dims.append(current_dim)
-        self.output_dims = [
-            (dim + self.num_heads - 1) // self.num_heads * self.num_heads
-            for dim in self.output_dims
-        ]
             
-        # Calculate input sizes for each block
-        s_q = self.downscale_stride_q
-        s_k = self.downscale_stride_k
-        self.input_sizes = [int(self.max_dim / (s_q**i)) for i in range(self.downscale_depth + 1)]
-        self.input_sizes = [(s, s) for s in self.input_sizes]
-        
         # Create downscale blocks
+        input_dim = self.blocks_input_dim
         for i in range(self.downscale_depth):
-            input_dim = self.model_dim if i == 0 else self.output_dims[i-1]
+            dim_out = self.downscale_output_dims[i]
             self.downscale_blocks.append(
                 MultiScaleBlock(
                     dim=input_dim,
-                    dim_out=self.output_dims[i],
+                    dim_out=dim_out,
                     input_size=self.input_sizes[i],
                     num_heads=1,  # Fixed to 1 head for downscale blocks
                     mlp_ratio=self.mlp_ratio,
                     qkv_bias=True,
                     qk_scale=None,
-                    drop=0.0,  # Fixed to 0.0 for downscale blocks
-                    attn_drop=0.0,  # Fixed to 0.0 for downscale blocks
-                    drop_path=0.0,  # Fixed to 0.0 for downscale blocks
+                    drop=self.drop_rate,  # Fixed to 0.0 for downscale blocks
+                    attn_drop=self.drop_rate,  # Fixed to 0.0 for downscale blocks
+                    drop_path=self.drop_path_rates[i],
                     norm_layer=nn.LayerNorm,
-                    kernel_q=(s_q + 1, s_q + 1),
-                    kernel_kv=(s_k + 1, s_k + 1),
-                    stride_q=(s_q, s_q),
-                    stride_kv=(s_k, s_k),
+                    kernel_q=(self.downscale_stride_q + 1, self.downscale_stride_q + 1),
+                    kernel_kv=(self.downscale_stride_k + 1, self.downscale_stride_k + 1),
+                    stride_q=(self.downscale_stride_q, self.downscale_stride_q),
+                    stride_kv=(self.downscale_stride_k, self.downscale_stride_k),
                     mode=self.attnpool_mode,
                     has_cls_embed=self.use_class_token,
                     rel_pos_spatial=True
                 )
             )
+            input_dim = dim_out
     
     def initialize_local_blocks(self):
         """Initialize the blocks for local processing of patches."""
-        # Calculate drop path rates
-        total_depth = self.depth + self.downscale_depth
-        self.dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, total_depth)]
         self.local_blocks = nn.ModuleList()
                 
-        # Get input dimension and size based on downscale blocks
-        input_dim = self.output_embed_dim if len(self.output_dims) == 0 else self.output_dims[-1]
-        input_size = self.input_sizes[-1]  #
+        input_dim = self.blocks_output_dim
+        input_size = self.input_sizes[-1]
 
         for i in range(self.depth):
             self.local_blocks.append(
@@ -428,7 +410,7 @@ class RiskFormer_ViT(nn.Module):
                     qk_scale=None,
                     drop=self.drop_rate,
                     attn_drop=self.drop_rate,
-                    drop_path=self.dpr[i + self.downscale_depth],
+                    drop_path=self.drop_path_rates[i + self.downscale_depth].item(),
                     norm_layer=nn.LayerNorm,
                     kernel_q=(1, 1),
                     kernel_kv=(1, 1),
@@ -441,7 +423,7 @@ class RiskFormer_ViT(nn.Module):
             )
 
     def initialize_global_blocks(self):
-        """Initialize blocks for global processing."""
+        """Initialize blocks for generating region-level tokens."""
         self.global_blocks = nn.ModuleList()
         
         # Add GlobalMaxPoolLayer as the first global block
@@ -450,34 +432,61 @@ class RiskFormer_ViT(nn.Module):
         )
             
     def initialize_global_attn(self):
-        """Initialize global attention layer."""
+        """Initialize attn layer for weighing region-level tokens."""
         # Create a global attention mechanism similar to TF implementation
-        self.global_attn = nn.Sequential(
-            nn.Linear(self.output_embed_dim, 128),
+        self.attn_global = nn.Sequential(
+            nn.Linear(self.blocks_output_dim, self.attn_global_hidden_dim),
             nn.GELU(),
-            nn.Linear(128, 1)
+            nn.Linear(self.attn_global_hidden_dim, 1)
         )
+
+    def initialize_norm_layers(self):
+        """Initialize normalization layers."""
+        self.norm = nn.LayerNorm(self.blocks_input_dim)
+        self.norm_local = nn.LayerNorm(self.blocks_output_dim)
+        self.norm_global = nn.LayerNorm(self.blocks_output_dim)
+
+    def initialize_head(self, num_classes):
+        """Initialize head for predictions. Return logits."""
+        return nn.Sequential(
+            nn.Linear(self.blocks_output_dim, num_classes),
+        )
+
+    def initialize_heads(self):
+        """Initialize heads for predictions."""
+        num_classes = self.num_classes
+
+        if isinstance(num_classes, int):
+            num_classes = [num_classes]
+        elif isinstance(num_classes, dict):
+            num_classes = list(num_classes.values())
+        
+        self.head = [self.initialize_head(num_class) for num_class in num_classes]
+        
+        # Combine for eficiency. Shape (bs, sum(num_classes))
+        self.head = lambda x: torch.cat([head(x) for head in self.head], dim=-1)
             
     def generate_masks(self, x):
         """Generate attention masks for a batch of tensors.
         
         Args:
-            x: Input tensor of shape [B, C, H, W]
+            x: Input tensor of shape [B, C, H, W] or [C, H, W].
         
         Returns:
-            Boolean masks of shape [B, H*W]
+            Boolean masks of same shape as input.
         """
-        if not self.use_attn_mask:
-            return None
+        # Handle batched and un-batched inputs
+        unbatched = False
+        if x.ndim == 3:
+            x = x.unsqueeze(0)  # Shape: [1, C, H, W]
+            unbatched = True
+
+        mask = torch.any(x != 0, dim=1)  # Shape: [B, H, W] or [1, H, W]
+        if unbatched:
+            return mask.squeeze(0)  # Shape: [H, W]
+        return mask  # Shape: [B, H, W]
         
-        mask = torch.any(x != 0, dim=1)  # Shape: [B, H, W]
-        
-        # Reshape to [B, H*W]
-        batch_size = x.shape[0]
-        mask = mask.reshape(batch_size, -1)  # Shape: [B, H*W]
-        return mask
-        
-    def _random_apply(self, x, transform_fn, p=0.5, batch_wise=False, **kwargs):
+    def random_apply(self, x, transform_fn, p=0.5, batch_wise=True, **kwargs):
         """Apply a transformation with probability p.
         
         Args:
@@ -511,36 +520,22 @@ class RiskFormer_ViT(nn.Module):
             x_transformed = transform_fn(x, **kwargs)
             return torch.where(mask, x_transformed, x)
     
-    def _apply_noise(self, x, noise_level=0.1, masks=None):
+    def apply_noise(self, x, noise_level=0.1):
         """Apply random noise to a tensor.
         
         Args:
             x: Input tensor of shape [B, C, H, W]
             noise_level: Standard deviation of the noise
-            masks: Optional masks to apply noise only to masked regions
             
         Returns:
             Noisy tensor
         """
         if noise_level <= 0:
             return x
-            
-        batch_size, channels, height, width = x.shape
-        
-        # Generate random noise
         noise = torch.randn_like(x) * noise_level
-        
-        # If masks are provided, only apply noise to unmasked regions
-        if masks is not None:
-            # Reshape mask to match x dimensions for broadcasting
-            mask_expanded = masks.view(batch_size, 1, height, width)
-            # Apply noise only to unmasked regions
-            return x + noise * mask_expanded
-        else:
-            # Apply noise to all regions
-            return x + noise
+        return x + noise
     
-    def _random_rotate(self, x, angles=[1, 2, 3]):
+    def random_rotate(self, x, angles=[1, 2, 3]):
         """Apply random rotation to each sample in the batch.
         
         Args:
@@ -553,95 +548,97 @@ class RiskFormer_ViT(nn.Module):
         batch_size = x.shape[0]
         device = x.device
         
-        # Make a copy of x to modify
         x_rotated = x.clone()
-        
-        # Generate random rotation angles for each sample
-        rot_angles = torch.randint(0, len(angles), (batch_size,), device=device)
-        
-        # Apply rotation to each sample
-        for i in range(batch_size):
-            angle_idx = rot_angles[i].item()
-            if angle_idx > 0:  # Skip angle 0 (no rotation)
-                k = angles[angle_idx]
-                x_rotated[i] = torch.rot90(x[i], k=k, dims=[1, 2])  # For single sample, dims are [C, H, W]
+        rot_indices = torch.randint(0, len(angles) + 1, (batch_size,), device=device)
+        for angle_idx, angle in enumerate(angles):                
+            mask = (rot_indices == angle_idx)
+            if not mask.any():
+                continue
+                
+            samples = x[mask]
+            rotated_samples = torch.rot90(samples, k=angle, dims=[2, 3])  # Note: dims are [2,3] for batched input
+            x_rotated[mask] = rotated_samples
                 
         return x_rotated
     
     def apply_token_augment(self, x):
-        """ Apply augmentations to tokens in a vectorized manner
+        """ Apply augmentations to tokens in a vectorized manner.
         
         Args:
-            x: Input tensor of shape [B, C, H, W]
+            x: Input tensor of shape [B, C, H, W] or [C, H, W].
             
         Returns:
-            Augmented tensor
+            Augmented tensor with same shape as input.
         """
+        # TODO: use augment_dict to implement dynamic
+        # augmentation function with variable steps
+
+        unbatched = False
+        if x.ndim == 3:
+            x = x.unsqueeze(0)
+            unbatched = True
+            
         if not self.training:
+            if unbatched:
+                return x.squeeze(0)
             return x
             
-        batch_size, channels, height, width = x.shape
+        batch_size, _, _, _ = x.shape
+        x = self.random_apply(x, lambda x: torch.flip(x, dims=[2]), p=self.vflip_prob)
+        x = self.random_apply(x, lambda x: torch.flip(x, dims=[3]), p=self.hflip_prob)
+        x = self.random_apply(x, self.random_rotate, p=self.rotate_prob)
+        x = self.random_apply(x, self.apply_noise, p=self.noise_aug_prob, noise_level=self.noise_aug)
         
-        # Apply horizontal flip with probability hflip_prob
-        x = self._random_apply(x, lambda x: torch.flip(x, dims=[3]), p=self.hflip_prob)
-        
-        # Apply vertical flip with probability vflip_prob
-        x = self._random_apply(x, lambda x: torch.flip(x, dims=[2]), p=self.vflip_prob)
-        
-        # Apply rotation with probability rotate_prob
-        x = self._random_apply(x, self._random_rotate, p=self.rotate_prob)
-        
-        # Generate temporary masks for noise augmentation
-        if self.use_attn_mask:
-            # Create a mask where True indicates a valid token (any non-zero value)
-            temp_masks = torch.any(x != 0, dim=1)  # Shape: [B, H, W]
-            temp_masks = temp_masks.reshape(batch_size, -1)  # Shape: [B, H*W]
-        else:
-            temp_masks = None
-            
-        # Apply random noise augmentation
-        x = self._apply_noise(x, noise_level=self.noise_aug, masks=temp_masks)
-        
+        if unbatched:
+            return x.squeeze(0)
         return x
     
     def forward_phi(self, x, masks=None):
         """Apply phi network to tokens.
         
         Args:
-            x: Input tensor of shape [B, C, H, W]
-            masks: Attention masks
-            
+            x: Input tensor of shape [B, C, S, S] or [C, S, S].
+            masks (optional): Attention masks
+
         Returns:
-            Input tensor with reduced dimensionality in shape [B, H, W, C']
+            Input tensor with reduced dimensionality in shape [B, D, S, S]
         """
+        batched = False
+        if x.ndim == 3:
+            x = x.unsqueeze(0)
+            batched = True
+            
         batch_size, channels, height, width = x.shape
-        # TODO: Check the reshaping of x here
         
         x_flat = x.reshape(-1, channels)  # [B*H*W, C]
-        x_flat = self.phi(x_flat)  # [B*H*W, C']
-        
         if masks is not None:
-            mask_flat = masks.reshape(-1, 1)
-            x_flat = x_flat * mask_flat
-            
-        # Reshape back to spatial format in channels-last format
-        x = x_flat.reshape(batch_size, height, width, -1)  # [B, H, W, C']
+            x_flat = self.phi(x_flat) * masks.reshape(-1, 1).to(torch.float32) # [B*H*W, D]
+        else:
+            x_flat = self.phi(x_flat) # [B*H*W, D]
         
-        # Keep in channels-last format as expected by subsequent operations
-        return x
+        x_reduced = x_flat.reshape(batch_size, -1, height, width)  # [B, D, S, S]
+        
+        if batched:
+            return x_reduced.squeeze(0)
+        return x_reduced
     
     def add_class_token(self, x, masks=None):
         """Add class token to tokens.
         
         Args:
-            x: Input tensor of shape [B, C, S, S]
+            x: Input tensor of shape [B, D, S, S]
             masks: Attention masks  
             
         Returns:
             Input tensor with class token added and updated masks
         """
+        if not self.use_class_token:
+            return x, masks
+        
         batch_size = x.shape[0]
-        cls_tokens = self.cls_token_local.expand(batch_size, -1, -1)
+
+        # self.cls_token_local: [D] -> [bs, D]
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
         
         # Update masks to include class token if using attention masks
@@ -650,44 +647,19 @@ class RiskFormer_ViT(nn.Module):
             masks = torch.cat((cls_mask, masks), dim=1)
         return x, masks
     
-    def fill_blanks(self, x):
-        """
-        Fill the background regions in x with self.background_tile.
-
-        Args:
-            x (Tensor): Input tensor of shape (batch_size, C, h, w).
-
-        Returns:
-            Tensor: The tensor with background regions filled.
-        """
-        batch_size, channels, height, width = x.shape
-        
-        # Create a mask for background regions (all zeros in the feature dimension)
-        background_mask = torch.all(x == 0, dim=1, keepdim=True)  # Shape: (batch_size, 1, h, w)
-        
-        # Reshape background_tile for broadcasting
-        # TODO: Check to make sure background_tile is the right shape
-        background_feat = self.background_tile.view(1, -1, 1, 1)
-        background_feat = background_feat.to(x.dtype).to(x.device)
-        background_tiled = background_feat.expand(batch_size, -1, height, width)
-        
-        # Replace background regions with the background tile
-        return torch.where(background_mask, background_tiled, x)
-
     def prepare_tokens(self, x):
         """Prepare input tokens for transformer processing.
-        Input x is a 2-D array of small patch embeddings and
-        has shape [B, C, H, W]
+        Input x is a single or batch of 2-D patch embedding arrays and
+        has shape [B, C, S, S] or [C, S, S].
         
         This method handles:
-        1. Reshaping input for transformer processing
-        2. Data augmentation (flip/rotate, noise)
-        3. Generating attention masks
-        4. Applying positional encoding
-        5. Adding class token if required
+        1. Data augmentation (flip/rotate, noise)
+        2. Generating attention masks
+        3. Applying positional encoding
+        4. Adding class token if required
         
         Args:
-            x: Input tensor of shape [B, C, H, W]
+            x: Input tensor of shape [B, C, S, S] or [C, S, S].
             
         Returns:
             Processed tensor and attention masks
@@ -695,61 +667,55 @@ class RiskFormer_ViT(nn.Module):
         
         batch_size = x.shape[0]
         if self.training:
-            x = self.apply_token_augment(x)
-        
-        # Fill background regions with background_tile
-        x = self.fill_blanks(x)
+            x = self.apply_token_augment(x) # [B, C, S, S]
         
         # Generate attention masks if needed
         if self.use_attn_mask:
-            masks = self.generate_masks(x)
+            attn_mask = self.generate_masks(x) # [B, H, W]
         else:
-            masks = None
+            attn_mask = None
         
         # Apply phi network if used (dimensionality adjustment)
         if self.use_phi:
-            # forward_phi expects channels-first and returns channels-last
-            x = self.forward_phi(x, masks)
-        else:
-            # Convert to channels-last format for consistency
-            x = x.permute(0, 2, 3, 1)  # [B, H, W, C]
+            x = self.forward_phi(x, attn_mask) # [B, D, S, S]
 
-        # Reshape into sequence format [B, N, C] for transformer
-        batch_size, height, width, channels = x.shape
-        x = x.reshape(batch_size, height * width, channels)
-        
+        # Reshape into sequence format [B, N, D] for transformer
+        batch_size, channels, height, width = x.shape
+        x = x.reshape(batch_size, -1, channels) # [B, H*W, D]
+        attn_mask = attn_mask.reshape(batch_size, -1) if attn_mask is not None else None # [B, H*W]
+        if self.use_class_token:
+            x, attn_mask = self.add_class_token(x, attn_mask)
+
         # Apply positional encoding
-        x = self._apply_positional_encoding(x, height, width)
+        x = self.apply_positional_encoding(x, height, width)
             
         # Add class token if required
-        if self.use_class_token:
-            x, masks = self.add_class_token(x, masks)
-        return x, masks, (height, width)
+        return x, attn_mask, (height, width)
         
-    def process_downscale_blocks(self, x, hw_shape, masks=None):
+    def process_downscale_blocks(self, x, hw_shape):
         """Process through downscale blocks.
         
         Args:
-            x: Input tensor
+            x: Input tensor of shape [B, H*W, D]
             hw_shape: Height and width shape tuple (h, w)
-            masks: Attention masks
+            attn_mask: Attention masks of shape [B, H*W]
             
         Returns:
             Processed features and new hw_shape
         """
         # Process through downscale blocks
         for i, block in enumerate(self.downscale_blocks):
-            x, _, hw_shape, _ = block(x, hw_shape)
+            x, _, hw_shape = block(x, hw_shape)
             
         return x, hw_shape
     
-    def process_local_blocks(self, x, hw_shape, masks=None):
+    def process_local_blocks(self, x, hw_shape):
         """Process through local transformer blocks.
         
         Args:
-            x: Input tensor
+            x: Input tensor of shape [B, H*W, D]
             hw_shape: Height and width shape tuple (h, w)
-            masks: Attention masks
+            attn_mask: Attention masks of shape [B, H*W]
             
         Returns:
             Processed features, new hw_shape, and attention weights
@@ -763,28 +729,28 @@ class RiskFormer_ViT(nn.Module):
                         
         return x, hw_shape, torch.stack(attns) if attns else None
     
-    def process_global_blocks(self, x, hw_shape, masks=None):
+    def process_global_blocks(self, x, hw_shape, mask=None):
         """Process through global transformer blocks.
         
         Args:
-            x: Input tensor
+            x: Input tensor of shape [B, H*W, D]
             hw_shape: Height and width shape tuple (h, w)
-            masks: Attention masks
+            mask: Attention masks of shape [B, H*W]
             
         Returns:
             Processed features
         """
         # Process through global blocks (which are part of local processing in TF)
         for i, block in enumerate(self.global_blocks):
-            x = block(x, attention_mask=masks)
+            x = block(x, mask=mask)
 
         return x, hw_shape    
 
-    def produce_preds(self, x, masks=None, return_weights=False):
+    def produce_preds(self, x, return_weights=False):
         """Create predictions from global transformer blocks.
         
         Args:
-            x: Input tensor
+            x: Input tensor of shape (B, D)
             masks: Attention masks
             return_weights: Whether to return attention weights
             
@@ -792,133 +758,60 @@ class RiskFormer_ViT(nn.Module):
             Global predictions (and optionally attention weights)
         """
         # Apply global normalization
-        x = self.norm_global(x)
+        x = self.norm_global(x) # (B, D)
         
         # Calculate attention weights
-        weights = self.attn_weights(x)
-        weights = self.attn_weights_activation(weights)
-        weights = self.attn_weights_projection(weights)
-        
-        # Apply softmax to get normalized weights
-        weights = F.softmax(weights, dim=1)
+        weights = self.attn_global(x) # (B, 1)
+        weights = F.softmax(weights, dim=0)
         
         # Apply attention pooling
-        x_weighted = x * weights
-        x_avg = torch.sum(x_weighted, dim=1)
+        x_avg = torch.sum(x * weights, dim=0) # (D,)
         
         # Get predictions
-        global_pred = self.head_global(x_avg)
+        global_pred = self.head(x_avg) # (sum(num_classes),)
         
         if return_weights:
             return global_pred, weights
         return global_pred
     
     def forward_features(self, x, return_weights=False):
-        """Process features through all stages.
+        """Process features through all stages. Expects a single pre-processed slide as input.
+        Each pre-processed slide produces B region-level token arrays of shape (C, S, S) where C
+        is the embedding dimension and S is the region-level token array size.
 
         Args:
-            x: Input tensor of shape [B, C, S, S]
+            x: Input tensor of shape [B, C, S, S] representing a patch token array.
             return_weights: Whether to return attention weights
             
         Returns:
             Processed features, masks, and optionally attention weights
         """
         # Prepare tokens - handles embedding, masking, etc.
-        x, masks, hw_shape = self.prepare_tokens(x)
+        x, attn_mask, hw_shape = self.prepare_tokens(x)
         
-        # Spatially consolidate tokens of (bs, h * w, D)
-        x, hw_shape = self.process_downscale_blocks(x, hw_shape, masks)
+        # Spatially consolidate tokens of shape (bs, H * W, D)
+        x, hw_shape = self.process_downscale_blocks(x, hw_shape)
 
-        # Process spatially consolidated tokens of shape (bs, h' * w', D)
-        x, hw_shape, attns = self.process_local_blocks(x, hw_shape, masks)
+        # Process spatially consolidated tokens of shape (bs, h * w, D')
+        x, hw_shape, attns = self.process_local_blocks(x, hw_shape)
 
-        # Create (bs) region-level tokens of expanded dim
-        x, hw_shape = self.process_global_blocks(x, hw_shape, masks)
-        embed_dim = x.shape[-1]
+        # Create (bs) region-level tokens
+        x, hw_shape = self.process_global_blocks(x, hw_shape, mask=attn_mask)
+
         
         # Handle class token for bag predictions
-        norm_x = self.norm_local(x[:, 0, :])
-        if self.use_class_token:
-            bag_preds = self.head(norm_x)
-            x = x[:, 1:, :].reshape(1, -1, embed_dim)  # Reshape non-class token per region
-        else:
-            bag_preds = self.head(norm_x)
-            x = x.reshape(1, -1, embed_dim)  # Reshape single global token per region
-        
-        # Define global mask and prepare for global processing
-        global_mask = self.define_global_mask(masks)
-        x, global_mask = self.select_and_shuffle_unmasked(x, global_mask)
+        norm_x = self.norm_local(x) # (bs, D')
+        bag_preds = self.head(norm_x) # (bs, sum(num_classes))
+
         
         # Process through global blocks
         if return_weights:
-            global_pred, global_weights = self.produce_preds(x, global_mask, return_weights=True)
-            global_weights = global_weights.reshape(-1, hw_shape[0], hw_shape[1])
+            global_pred, global_weights = self.produce_preds(x, return_weights=True)
             return bag_preds, global_pred, attns, global_weights
         else:
-            global_pred = self.produce_preds(x, global_mask)
+            global_pred = self.produce_preds(x)
             return bag_preds, global_pred
-    
-    def define_global_mask(self, masks):
-        """Define global mask from individual masks.
-        
-        Args:
-            masks: Attention masks from prepare_tokens
             
-        Returns:
-            Combined global mask
-        """
-        # If no masks, return None
-        if masks is None or not self.use_attn_mask:
-            return None
-            
-        # Otherwise, process masks similar to TensorFlow implementation
-        return masks
-
-    def select_and_shuffle_unmasked(self, x, global_mask):
-        """Select and shuffle unmasked tokens for global processing.
-        
-        Args:
-            x: Input tokens
-            global_mask: Global attention mask
-            
-        Returns:
-            Selected tokens and updated mask
-        """
-        # If no mask, return as is
-        if global_mask is None:
-            return x, None
-            
-        # Get dimensions
-        batch_size, seq_len, embed_dim = x.shape
-        
-        # Select only unmasked tokens
-        unmasked_indices = torch.nonzero(global_mask.squeeze(-1), as_tuple=True)
-        unmasked_x = x[unmasked_indices]
-        
-        # Reshape to [1, N', D] where N' is the number of unmasked tokens
-        unmasked_x = unmasked_x.reshape(1, -1, embed_dim)
-        
-        # Create a new mask for the unmasked tokens (all 1s)
-        new_mask = torch.ones(1, unmasked_x.shape[1], 1, device=x.device)
-        
-        # Shuffle tokens during training for better generalization
-        if self.training:
-            # Get number of tokens
-            num_tokens = unmasked_x.shape[1]
-            # Create random permutation
-            perm = torch.randperm(num_tokens, device=x.device)
-            # Apply permutation
-            unmasked_x = unmasked_x[:, perm, :]
-            
-        return unmasked_x, new_mask
-    
-    def forward_head(self, x):
-        """Apply head to class token or average pooled features."""
-        if self.use_class_token:
-            x = x[:, 0]
-        
-        return self.head(x)
-    
     def forward(self, x, return_weights=False):
         """Forward pass.
         
@@ -951,7 +844,7 @@ class RiskFormer_ViT(nn.Module):
             "drop_path_rate": self.drop_path_rate,
             "drop_rate": self.drop_rate,
             "num_classes": self.num_classes,
-            "max_dim": self.max_dim,
+            "max_dim": self.input_array_dim,
             "depth": self.depth,
             "global_depth": self.global_depth,
             "encoding_method": self.encoding_method,
@@ -959,7 +852,7 @@ class RiskFormer_ViT(nn.Module):
             "use_attn_mask": self.use_attn_mask,
             "mlp_ratio": self.mlp_ratio,
             "use_class_token": self.use_class_token,
-            "global_k": self.global_k,
+            "attn_global_hidden_dim": self.attn_global_hidden_dim,
             "phi_dim": self.phi_dim,
             "downscale_depth": self.downscale_depth,
             "downscale_multiplier": self.downscale_multiplier,
@@ -970,7 +863,8 @@ class RiskFormer_ViT(nn.Module):
             "name": self.name,
             "hflip_prob": self.hflip_prob,
             "vflip_prob": self.vflip_prob,
-            "rotate_prob": self.rotate_prob
+            "rotate_prob": self.rotate_prob,
+            "noise_aug_prob": self.noise_aug_prob
         }
         return config
         
@@ -982,6 +876,63 @@ class RiskFormerLightningModule(pl.LightningModule):
     This module wraps the RiskFormer_ViT model and provides the training, validation,
     and test steps for PyTorch Lightning.
     """
+    
+    @classmethod
+    def from_config(cls, config, class_loss_map, task_weights=None, regional_coeff=None):
+        """
+        Create a RiskFormerLightningModule from a configuration dictionary.
+        
+        Args:
+            config: A dictionary containing model and optimizer configuration parameters.
+            class_loss_map: Dictionary mapping class names to loss functions.
+            task_weights: Optional dictionary mapping task names to task weights.
+            regional_coeff: Optional regional loss coefficient.
+            
+        Returns:
+            An initialized RiskFormerLightningModule.
+        """
+        # Create model config from main config
+        model_config = {k: v for k, v in config.items() if k not in [
+            'optimizer', 'learning_rate', 'weight_decay', 'scheduler',
+            'batch_size', 'num_workers', 'max_epochs', 'min_epochs', 'patience'
+        ]}
+        
+        # Create optimizer config
+        optimizer_config = {
+            'optimizer': config.get('optimizer', 'adam'),
+            'learning_rate': config.get('learning_rate', 1e-4),
+            'weight_decay': config.get('weight_decay', 1e-6),
+            'scheduler': config.get('scheduler', 'plateau')
+        }
+        
+        # Use provided regional_coeff or get from config
+        if regional_coeff is None:
+            regional_coeff = config.get('regional_coeff', 0.0)
+        
+        return cls(
+            model_config=model_config,
+            optimizer_config=optimizer_config,
+            class_loss_map=class_loss_map,
+            task_weights=task_weights,
+            regional_coeff=regional_coeff
+        )
+    
+    @classmethod
+    def from_config_file(cls, config_path, class_loss_map, task_weights=None, regional_coeff=None):
+        """
+        Create a RiskFormerLightningModule from a configuration file.
+        
+        Args:
+            config_path: Path to the YAML configuration file.
+            class_loss_map: Dictionary mapping class names to loss functions.
+            task_weights: Optional dictionary mapping task names to task weights.
+            regional_coeff: Optional regional loss coefficient.
+            
+        Returns:
+            An initialized RiskFormerLightningModule.
+        """
+        config = RiskFormer_ViT.load_config(config_path)
+        return cls.from_config(config, class_loss_map, task_weights, regional_coeff)
     
     def __init__(
         self,
@@ -1093,7 +1044,7 @@ class RiskFormerLightningModule(pl.LightningModule):
         Calculate loss for a specific task.
         
         Args:
-            predictions: Model predictions
+            predictions: Model predictions, can be a tensor or a tuple containing (all_preds, attns, global_weights)
             labels: Dictionary of labels or a tensor for a specific task
             task: Task name
             stage: 'train', 'val', or 'test'
@@ -1101,6 +1052,11 @@ class RiskFormerLightningModule(pl.LightningModule):
         Returns:
             Loss value for the task
         """
+        # Handle predictions which may include attention weights
+        if isinstance(predictions, tuple):
+            # Extract just the predictions from the tuple (all_preds, attns, global_weights)
+            predictions = predictions[0]
+        
         # If labels is a dictionary, extract the task-specific labels
         if isinstance(labels, dict):
             if task not in labels:
@@ -1143,13 +1099,10 @@ class RiskFormerLightningModule(pl.LightningModule):
             preds = predictions[0].unsqueeze(0)  # Select global prediction and add batch dimension
         else:
             preds = predictions.unsqueeze(0)  # Add batch dimension
-            
+        
         # Threshold predictions for binary classification
         # For binary tasks, we need logits for metrics
         task_type = self.task_types[task]
-        
-        # Use the task_labels from earlier in the method, not the original labels
-        # task_labels = labels
         
         # Log metrics based on task type
         if task_type == "binary":
@@ -1198,7 +1151,7 @@ class RiskFormerLightningModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         """Training step for Lightning."""
         x, metadata = batch
-        predictions = self(x)
+        predictions = self(x)  # This now correctly handles any return format from RiskFormer_ViT.forward
         
         # Get labels for all tasks
         if 'labels' in metadata:
@@ -1227,7 +1180,7 @@ class RiskFormerLightningModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         """Validation step for Lightning."""
         x, metadata = batch
-        predictions = self(x)
+        predictions = self(x)  # This now correctly handles any return format from RiskFormer_ViT.forward
         
         # Get labels for all tasks
         if 'labels' in metadata:
@@ -1256,7 +1209,7 @@ class RiskFormerLightningModule(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         """Test step for Lightning."""
         x, metadata = batch
-        predictions = self(x)
+        predictions = self(x)  # This now correctly handles any return format from RiskFormer_ViT.forward
         
         # Get labels for all tasks
         if 'labels' in metadata:

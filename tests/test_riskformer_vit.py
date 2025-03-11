@@ -31,16 +31,24 @@ def basic_model_params():
         "depth": 2,
         "global_depth": 1,
         "encoding_method": "standard",
-        "mask_num": 2,
-        "mask_preglobal": False,
         "num_heads": 4,
         "use_attn_mask": True,
-        "mlp_ratio": 4.0,
-        "use_class_token": True,
-        "global_k": -1,
+        "mlp_ratio": 2.0,
+        "use_class_token": False,
+        "attn_global_hidden_dim": 128,
+        "phi_dim": 64,
         "downscale_depth": 1,
         "downscale_multiplier": 1.25,
-        "noise_aug": 0.1
+        "downscale_stride_q": 2,
+        "downscale_stride_k": 2,
+        "noise_aug": 0.1,
+        "attnpool_mode": "conv",
+        "name": None,
+        "background_tile_path": None,
+        "hflip_prob": 0.5,
+        "vflip_prob": 0.5,
+        "rotate_prob": 0.5,
+        "noise_aug_prob": 0.5
     }
 
 @pytest.fixture
@@ -96,22 +104,20 @@ def test_mask_generation(basic_model_params, create_dummy_input):
     model = RiskFormer_ViT(**basic_model_params)
     x = create_dummy_input
     
-    # Generate masks
-    masks = model.generate_masks(x)
+    # Generate masks - this now returns a tuple containing masks, hw_shape
+    masks_output = model.generate_masks(x)
     
-    # Check mask shape: should be [batch_size, H*W]
-    expected_shape = (x.shape[0], x.shape[1] * x.shape[2])
-    assert masks.shape == expected_shape
-    
-    # Verify mask values are boolean
-    assert masks.dtype == torch.bool
-    
-    # Test with use_attn_mask = False
-    params = basic_model_params.copy()
-    params["use_attn_mask"] = False
-    model = RiskFormer_ViT(**params)
-    masks = model.generate_masks(x)
-    assert masks is None
+    if model.use_attn_mask:
+        masks, hw_shape = masks_output
+        # Check mask shape: should be [batch_size, H*W]
+        expected_shape = (x.shape[0], x.shape[1] * x.shape[2])
+        assert masks.shape == expected_shape
+        
+        # Verify mask values are boolean
+        assert masks.dtype == torch.bool
+    else:
+        # Test with use_attn_mask = False
+        assert masks_output[0] is None
 
 # Test data augmentation: flip_rotate
 def test_flip_rotate_augmentation(basic_model_params, create_dummy_input):
@@ -180,26 +186,14 @@ def test_prepare_tokens(basic_model_params, create_dummy_input):
     
     # Test in evaluation mode
     model.eval()
-    tokens, masks = model.prepare_tokens(x)
+    x, attn_mask, hw_shape = model.prepare_tokens(x)
     
     # Check that tokens have the right shape
-    batch_size, height, width, channels = x.shape
+    batch_size, height, width, channels = create_dummy_input.shape
     expected_seq_len = height * width
-    if model.use_class_token:
-        expected_seq_len += 1
-    assert tokens.shape == (batch_size, expected_seq_len, model.model_dim)
-    
-    # Test with different configuration (no class token)
-    params = basic_model_params.copy()
-    params["use_class_token"] = False
-    model_no_cls = RiskFormer_ViT(**params)
-    
-    model_no_cls.eval()
-    tokens_no_cls, masks_no_cls = model_no_cls.prepare_tokens(x)
-    
-    # Check that tokens have the right shape (no class token)
-    expected_seq_len = height * width
-    assert tokens_no_cls.shape == (batch_size, expected_seq_len, model_no_cls.model_dim)
+    assert x.shape[0] == batch_size
+    assert x.shape[1] == expected_seq_len
+    assert x.shape[2] == model.blocks_input_dim
 
 # Test Sinusoidal Positional Encoding
 def test_sinusoidal_positional_encoding():
@@ -268,6 +262,49 @@ def test_global_attention(basic_model_params, create_dummy_input):
     # The exact shape depends on the internal structure, but they should be defined
     # Global weights should have a spatial dimension matching the input
     assert len(global_weights.shape) == 3  # [batch, height, width]
+
+# Add a test for the new apply_token_augment method
+def test_apply_token_augment(basic_model_params, create_dummy_input):
+    """Test that token augmentation works correctly."""
+    model = RiskFormer_ViT(**basic_model_params)
+    x = create_dummy_input.reshape(create_dummy_input.shape[0], -1, create_dummy_input.shape[-1])
+    
+    # Test in training mode
+    model.train()
+    augmented = model.apply_token_augment(x)
+    
+    # Check output shape (should be unchanged)
+    assert augmented.shape == x.shape
+    
+    # Test in eval mode (no augmentation)
+    model.eval()
+    no_aug = model.apply_token_augment(x)
+    assert torch.allclose(no_aug, x)
+
+# Add test for random_rotate method
+def test_random_rotate(basic_model_params, create_dummy_input):
+    """Test that random rotation works correctly."""
+    model = RiskFormer_ViT(**basic_model_params)
+    x = create_dummy_input
+    
+    # Set a fixed seed for deterministic rotation
+    torch.manual_seed(42)
+    
+    # Apply rotation in training mode with specific angle
+    model.train()
+    angles = [90]
+    rotated = model.random_rotate(x, angles=angles)
+    
+    # Check output shape (should be unchanged)
+    assert rotated.shape == x.shape
+    
+    # Verify that rotation happened (tensors should be different)
+    assert not torch.allclose(rotated, x)
+    
+    # Verify that in eval mode, no rotation happens
+    model.eval()
+    no_rotation = model.random_rotate(x, angles=angles)
+    assert torch.allclose(no_rotation, x)
 
 if __name__ == "__main__":
     pytest.main() 

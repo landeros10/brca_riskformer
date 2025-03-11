@@ -270,16 +270,21 @@ def test_multiscale_block(batch_size, embedding_dim, num_heads):
     try:
         # Replace with a simple implementation
         def simple_forward(self, x, hw_shape):
-            # Just return x with same shape
-            return x
+            # Just return x with same shape and mock attention weights
+            mock_attn = torch.ones(batch_size, num_heads, x.shape[1], x.shape[1])
+            return x, mock_attn, hw_shape
             
         MultiScaleBlock.forward = simple_forward
         
         # Forward pass
-        output = ms_block(x, hw_shape)
+        output, attn_weights, hw_out = ms_block(x, hw_shape)
         
         # Check shape
         assert output.shape == x.shape
+        assert attn_weights.shape[0] == batch_size
+        assert attn_weights.shape[1] == num_heads
+        assert attn_weights.shape[2] == x.shape[1]  # seq length
+        assert attn_weights.shape[3] == x.shape[1]  # seq length
         
     finally:
         # Restore original method
@@ -296,19 +301,22 @@ def test_multiscale_block(batch_size, embedding_dim, num_heads):
     )
     
     try:
-        # Replace with an implementation for different output dims
+        # Replace with a simple implementation that changes output dimension
         def dim_out_forward(self, x, hw_shape):
-            B, N, C = x.shape
-            # Create output with expected shape
-            return torch.randn(B, N, self.dim_out)
+            # Return tensor with changed dimension in last axis
+            output = torch.randn(x.shape[0], x.shape[1], dim_out)
+            mock_attn = torch.ones(batch_size, num_heads, x.shape[1], x.shape[1])
+            return output, mock_attn, hw_shape
             
         MultiScaleBlock.forward = dim_out_forward
         
         # Forward pass
-        output_dim_out = ms_block_dim_out(x, hw_shape)
+        output, attn_weights, hw_out = ms_block_dim_out(x, hw_shape)
         
-        # Check shape with different output dim
-        assert output_dim_out.shape == (batch_size, height * width, dim_out)
+        # Check shape
+        assert output.shape == (batch_size, height * width, dim_out)
+        assert attn_weights.shape[0] == batch_size
+        assert attn_weights.shape[1] == num_heads
         
     finally:
         # Restore original method
@@ -325,14 +333,19 @@ def test_multiscale_block(batch_size, embedding_dim, num_heads):
     )
     
     try:
-        # Use the same simple forward function
+        # Replace with a simple implementation
+        def simple_forward(self, x, hw_shape):
+            # Just return x with same shape
+            mock_attn = torch.ones(batch_size, num_heads, x.shape[1], x.shape[1])
+            return x, mock_attn, hw_shape
+            
         MultiScaleBlock.forward = simple_forward
         
-        # Forward with drop path
-        output_drop_path = ms_block_drop_path(x, hw_shape)
+        # Forward pass
+        output, attn_weights, hw_out = ms_block_drop_path(x, hw_shape)
         
-        # Check shape with drop path
-        assert output_drop_path.shape == x.shape
+        # Check shape
+        assert output.shape == x.shape
         
     finally:
         # Restore original method

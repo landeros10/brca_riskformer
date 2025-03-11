@@ -745,16 +745,7 @@ class RiskFormerDataset(Dataset):
         self.process_binary_fields(patient_data, metadata)
         self.process_regression_fields(patient_data, metadata)
         self.process_mitosis_field(patient_data, metadata)
-        
-        # TODO: should default to odx_train
-        # For backward compatibility, set a default 'label' to the first available label
-        if metadata['labels']:
-            first_label_key = next(iter(metadata['labels']))
-            metadata['label'] = metadata['labels'][first_label_key]
-        else:
-            # Default to zeros if no recognized label is found
-            metadata['label'] = torch.zeros(1, dtype=torch.float32)
-        
+                
         # Return patches and metadata
         patches_xl = patches_xl.permute(0, 3, 1, 2)
         return patches_xl, metadata

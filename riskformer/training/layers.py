@@ -445,8 +445,8 @@ class MultiScaleAttention(nn.Module):
                 attn, q, self.has_cls_embed, q_hw, k_hw, self.rel_pos_h, self.rel_pos_w
             )
             
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
+        attn_weights = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn_weights)
         
         # Compute output
         x = (attn @ v).transpose(1, 2).reshape(B, -1, self.dim_out)
@@ -459,7 +459,7 @@ class MultiScaleAttention(nn.Module):
         else:
             hw_shape = q_hw
             
-        return x, hw_shape
+        return x, attn_weights, hw_shape
 
 class Block(nn.Module):
     """
@@ -605,7 +605,7 @@ class MultiScaleBlock(nn.Module):
     def forward(self, x, hw_shape):
         # Apply attention
         x_norm = self.norm1(x)
-        x_attn, hw_shape_new = self.attn(x_norm, hw_shape)
+        x_attn, attn_weights, hw_shape_new = self.attn(x_norm, hw_shape)
         
         # Handle shortcut/residual connection
         if self.dim != self.dim_out and not self.dim_mul_in_att:
@@ -617,7 +617,7 @@ class MultiScaleBlock(nn.Module):
         if self.use_mlp:
             x = x + self.drop_path(self.mlp(self.norm2(x)))
             
-        return x, hw_shape_new
+        return x, attn_weights, hw_shape_new
 
 class GlobalMaxPoolLayer(nn.Module):
     """
@@ -628,33 +628,14 @@ class GlobalMaxPoolLayer(nn.Module):
         super().__init__()
         self.use_class_token = use_class_token
         
-    def forward(self, x, attention_mask=None, h=0, w=0):
-        if not self.training:
-            return x, None, (h, w), attention_mask
-        
-        # If we have class tokens, separate them
-        if self.use_class_token:
-            cls_token, x = torch.tensor_split(x, [1], dim=1)
+    def forward(self, x, mask=None):        
+        x_max_pooled = torch.max(x, dim=1)[0] # (bs, D)
+        if mask is not None:
+                x_avg_pooled = torch.mean(x[:, mask, :], dim=1) # (bs, D)
         else:
-            cls_token = None
-        
-        # Apply max pooling along the sequence dimension
-        if attention_mask is not None:
-            # If we have an attention mask, use it to create a very negative value
-            # for masked positions so they don't contribute to the max
-            mask_value = -10000.0  # Large negative value
-            mask_expanded = attention_mask.unsqueeze(-1)
-            x_masked = x * mask_expanded + (1.0 - mask_expanded) * mask_value
-            x = torch.max(x_masked, dim=1, keepdim=True)[0]
-        else:
-            x = torch.max(x, dim=1, keepdim=True)[0]
-        
-        # Add back class token if needed
-        if self.use_class_token:
-            x = torch.cat([cls_token, x], dim=1)
-            
-        # Return with placeholders for compatibility with Block output format
-        return x, None, (h, w), attention_mask
+            x_avg_pooled = torch.mean(x, dim=1) # (bs, D)
+        x_pooled = x_max_pooled + x_avg_pooled
+        return x_pooled
 
 class SinusoidalPositionalEncoding2D(nn.Module):
     """

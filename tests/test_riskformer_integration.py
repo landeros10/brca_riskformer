@@ -22,18 +22,23 @@ class TestRiskFormerIntegration:
             "depth": 4,               # 4 blocks
             "global_depth": 2,
             "encoding_method": "sinusoidal",
-            "mask_num": 3,
-            "mask_preglobal": True,
             "num_heads": 8,
             "use_attn_mask": True,
-            "mlp_ratio": 4.0,
-            "use_class_token": True,
-            "global_k": 16,
+            "mlp_ratio": 2.0,
+            "use_class_token": False,
+            "attn_global_hidden_dim": 128,
             "downscale_depth": 1,     # Reduced from 2 to 1 to avoid index errors
             "downscale_multiplier": 1.5,
             "downscale_stride_q": 2,
             "downscale_stride_k": 2,
             "noise_aug": 0.15,
+            "attnpool_mode": "conv",  # Added parameter
+            "hflip_prob": 0.5,        # Added parameter
+            "vflip_prob": 0.5,        # Added parameter
+            "rotate_prob": 0.5,       # Added parameter
+            "noise_aug_prob": 0.5,    # Added parameter
+            "name": None,             # Added parameter
+            "background_tile_path": None  # Added parameter
         }
     
     @pytest.fixture
@@ -76,7 +81,7 @@ class TestRiskFormerIntegration:
                 
                 # Create a simple embedding layer
                 self.embedding = nn.Linear(kwargs.get("input_embed_dim", 64), 
-                                          kwargs.get("output_embed_dim", 32))
+                                           kwargs.get("output_embed_dim", 32))
                 
                 # Create a simple classifier head
                 self.head = nn.Sequential(
@@ -93,6 +98,10 @@ class TestRiskFormerIntegration:
                 self.use_class_token = kwargs.get("use_class_token", True)
                 self.use_attn_mask = kwargs.get("use_attn_mask", False)
                 
+            def apply_token_augment(self, x):
+                # Dummy implementation
+                return x
+            
             def forward_features(self, x, return_weights=False):
                 # Simple feature extraction
                 batch_size = x.shape[0]
@@ -107,27 +116,20 @@ class TestRiskFormerIntegration:
                 weighted_features = features * attn_weights
                 pooled_features = weighted_features.sum(dim=1)
                 
-                # Create dummy class token
-                if self.use_class_token:
-                    class_token = torch.ones(batch_size, 1, self.model_dim, device=x.device)
-                    features_with_cls = torch.cat([class_token, features], dim=1)
-                else:
-                    features_with_cls = features
-                
                 # Return features and attention weights if requested
                 if return_weights:
-                    return pooled_features, attn_weights, features_with_cls
+                    return pooled_features, attn_weights
                 else:
-                    return pooled_features, features_with_cls
+                    return pooled_features
             
             def forward(self, x, return_weights=False):
                 # Forward pass
                 if return_weights:
-                    features, attn_weights, _ = self.forward_features(x, return_weights=True)
+                    features, attn_weights = self.forward_features(x, return_weights=True)
                     predictions = self.head(features)
                     return predictions, attn_weights
                 else:
-                    features, _ = self.forward_features(x)
+                    features = self.forward_features(x)
                     predictions = self.head(features)
                     return predictions
         

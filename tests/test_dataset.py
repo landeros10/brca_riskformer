@@ -42,12 +42,30 @@ def mock_patient_examples():
         "patient1": {
             "coords_paths": ["s3://test-bucket/slide1_coords.h5"],
             "features_paths": ["s3://test-bucket/slide1_features.h5"],
-            "metadata": {"odx85": "H", "age": 45}
+            "metadata": {
+                "odx85": "H", 
+                "age": 45,
+                "ER_Status_By_IHC": "positive",
+                "pr_status_by_ihc": "positive",
+                "HER2Calc": "negative",
+                "Necrosis": "Absent",
+                "Lymphovascular Invasion (LVI)": "Absent",
+                "Overall_Survival_Status": "alive"
+            }
         },
         "patient2": {
             "coords_paths": ["s3://test-bucket/slide2_coords.h5"],
             "features_paths": ["s3://test-bucket/slide2_features.h5"],
-            "metadata": {"odx85": "L", "age": 62}
+            "metadata": {
+                "odx85": "L", 
+                "age": 62,
+                "ER_Status_By_IHC": "negative",
+                "pr_status_by_ihc": "negative",
+                "HER2Calc": "positive",
+                "Necrosis": "Present",
+                "Lymphovascular Invasion (LVI)": "Present",
+                "Overall_Survival_Status": "dead"
+            }
         }
     }
 
@@ -129,8 +147,13 @@ def test_riskformer_dataset_getitem_shape(mocker):
         "patient1": {
             "coords_paths": ["s3://test-bucket/coords/slide1_coords.h5"],
             "features_paths": ["s3://test-bucket/features/slide1_features.h5"],
-            "metadata": {"odx85": "H", "age": 45},
-            "odx85": "H"  # Add this field for label processing
+            "metadata": {
+                "odx85": "H", 
+                "age": 45,
+                "ER_Status_By_IHC": "positive",
+                "pr_status_by_ihc": "positive",
+                "HER2Calc": "negative"
+            }
         }
     }
     
@@ -156,9 +179,20 @@ def test_riskformer_dataset_getitem_shape(mocker):
     expected_metadata = {
         'patch_info': torch.zeros((3, 6)),  # Mock patch info
         'patient_id': 'patient1',
-        'labels': {'odx85': torch.tensor([1.0], dtype=torch.float32)},
-        'task_types': {'odx85': 'binary'},
-        'label': torch.tensor([1.0], dtype=torch.float32)
+        'labels': {
+            'odx85': torch.tensor([1.0], dtype=torch.float32),
+            'age': torch.tensor([45.0], dtype=torch.float32),
+            'ER_Status_By_IHC': torch.tensor([1.0], dtype=torch.float32),
+            'pr_status_by_ihc': torch.tensor([1.0], dtype=torch.float32),
+            'HER2Calc': torch.tensor([0.0], dtype=torch.float32)
+        },
+        'task_types': {
+            'odx85': 'binary',
+            'age': 'regression',
+            'ER_Status_By_IHC': 'binary',
+            'pr_status_by_ihc': 'binary',
+            'HER2Calc': 'binary'
+        }
     }
     
     # Mock the internal methods to return our expected values
@@ -166,8 +200,20 @@ def test_riskformer_dataset_getitem_shape(mocker):
     mocker.patch.object(RiskFormerDataset, 'split_and_pad_features', 
                         return_value=(expected_patches, torch.zeros((3, 6))))
     
+    # Set up task types map
+    task_types_map = {
+        'odx85': 'binary',
+        'age': 'regression',
+        'ER_Status_By_IHC': 'binary',
+        'pr_status_by_ihc': 'binary',
+        'HER2Calc': 'binary'
+    }
+    
     # Initialize the dataset
-    dataset = RiskFormerDataset(mock_patient_examples)
+    dataset = RiskFormerDataset(
+        mock_patient_examples,
+        task_types_map=task_types_map
+    )
     
     # Get the item
     patches, metadata = dataset[0]
@@ -180,7 +226,8 @@ def test_riskformer_dataset_getitem_shape(mocker):
     assert 'patient_id' in metadata
     assert 'labels' in metadata
     assert 'task_types' in metadata
-    assert 'label' in metadata
+    assert 'odx85' in metadata['labels']
+    assert 'age' in metadata['labels']
 
 def test_riskformer_dataset_invalid_paths():
     """Test RiskFormerDataset with invalid paths"""

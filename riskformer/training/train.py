@@ -103,8 +103,8 @@ def parse_args():
                         help="MLP ratio")
     parser.add_argument("--use_class_token", type=bool, default=True,
                         help="Whether to use class token")
-    parser.add_argument("--global_k", type=int, default=64,
-                        help="Number of global tokens")
+    parser.add_argument("--attn_global_hidden_dim", type=int, default=128,
+                        help="Hidden dimension for global attention")
     
     # Optimizer parameters
     parser.add_argument("--optimizer", type=str, default="adam",
@@ -236,7 +236,7 @@ def main():
         "use_attn_mask": args.use_attn_mask,
         "mlp_ratio": args.mlp_ratio,
         "use_class_token": args.use_class_token,
-        "global_k": args.global_k,
+        "attn_global_hidden_dim": args.attn_global_hidden_dim,
     }
     
     # Create optimizer config

@@ -23,13 +23,24 @@ class TestRiskFormerMultiTask:
             "depth": 2,
             "global_depth": 1,
             "encoding_method": "standard",
-            "mask_num": 2,
-            "mask_preglobal": False,
             "num_heads": 2,
-            "use_attn_mask": False,
+            "use_attn_mask": True,
             "mlp_ratio": 2.0,
-            "use_class_token": True,
-            "global_k": 4,
+            "use_class_token": False,
+            "attn_global_hidden_dim": 128,
+            "phi_dim": None,             # Added parameter
+            "downscale_depth": 1,        # Added parameter 
+            "downscale_multiplier": 1.25, # Added parameter
+            "downscale_stride_q": 2,     # Added parameter
+            "downscale_stride_k": 2,     # Added parameter
+            "noise_aug": 0.1,            # Added parameter
+            "attnpool_mode": "conv",     # Added parameter
+            "hflip_prob": 0.5,           # Added parameter
+            "vflip_prob": 0.5,           # Added parameter
+            "rotate_prob": 0.5,          # Added parameter
+            "noise_aug_prob": 0.5,       # Added parameter
+            "name": None,                # Added parameter
+            "background_tile_path": None  # Added parameter
         }
     
     @pytest.fixture

@@ -46,7 +46,7 @@ num_heads: 8
 use_attn_mask: false
 mlp_ratio: 4.0
 use_class_token: true
-global_k: 64
+attn_global_hidden_dim: 128
 
 # Optimizer parameters
 optimizer: "adam"
