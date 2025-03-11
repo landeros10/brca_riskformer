@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from typing import Tuple
+import numpy as np
 
 def attention_pool(x, pool, hw_shape, has_cls_embed=True):
     """
@@ -49,52 +50,75 @@ def calc_rel_pos_spatial(
     rel_pos_w: torch.Tensor,
 ):
     """
-    Calculate relative positional embeddings.
+    Spatial Relative Positional Embeddings.
+    This version exactly mimics the TensorFlow implementation.
+    
     Args:
-        attn: Attention map.
-        q: Query q.
-        has_cls_embed: Whether the input has class token.
-        q_shape: Shape of q token map.
-        k_shape: Shape of k token map.
-        rel_pos_h: Relative position embeddings (height).
-        rel_pos_w: Relative position embeddings (width).
+        attn: Attention map of shape (B, num_heads, q_N, k_N)
+        q: Query tensor of shape (B, num_heads, q_N, head_dim)
+        has_cls_embed: Whether there is a class token
+        q_shape: Spatial shape of query (H, W)
+        k_shape: Spatial shape of key (H, W)
+        rel_pos_h: Relative position embedding for height dimension (rel_sp_dim, head_dim)
+        rel_pos_w: Relative position embedding for width dimension (rel_sp_dim, head_dim)
+    
     Returns:
-        attn: Attention map with relative positional embeddings.
+        attn: Attention tensor with spatial positional bias added
     """
+    sp_idx = 1 if has_cls_embed else 0
     q_h, q_w = q_shape
     k_h, k_w = k_shape
     
-    # Interpolate rel pos if shapes don't match.
-    if q_h != k_h or q_w != k_w:
-        rel_pos_h = F.interpolate(
-            rel_pos_h.reshape(1, rel_pos_h.shape[0], -1).permute(0, 2, 1),
-            size=q_h,
-            mode="linear",
-        ).permute(0, 2, 1).reshape(-1, q_h)
-        
-        rel_pos_w = F.interpolate(
-            rel_pos_w.reshape(1, rel_pos_w.shape[0], -1).permute(0, 2, 1),
-            size=q_w,
-            mode="linear",
-        ).permute(0, 2, 1).reshape(-1, q_w)
+    # Scale up rel pos if shapes for q and k are different.
+    q_h_ratio = float(max(k_h / q_h, 1.0))
+    k_h_ratio = float(max(q_h / k_h, 1.0))
+    dist_h = (
+        torch.arange(q_h, device=q.device).float()[:, None] * q_h_ratio -
+        torch.arange(k_h, device=q.device).float()[None, :] * k_h_ratio
+    )
+    dist_h += float(k_h - 1) * k_h_ratio
+
+    q_w_ratio = float(max(k_w / q_w, 1.0))
+    k_w_ratio = float(max(q_w / k_w, 1.0))
+    dist_w = (
+        torch.arange(q_w, device=q.device).float()[:, None] * q_w_ratio -
+        torch.arange(k_w, device=q.device).float()[None, :] * k_w_ratio
+    )
+    dist_w += float(k_w - 1) * k_w_ratio
+
+    # Gather the relative positions
+    Rh = torch.index_select(rel_pos_h, 0, dist_h.long().flatten()).reshape(q_h, k_h, -1)
+    Rw = torch.index_select(rel_pos_w, 0, dist_w.long().flatten()).reshape(q_w, k_w, -1)
+
+    B, n_head, q_N, dim = q.shape
+
+    # Extract the spatial (non-class token) part of q
+    r_q = q[:, :, sp_idx:].reshape(B, n_head, q_h, q_w, dim)
     
-    # Get relative positional embeddings for height and width.
-    B, nH, _, _ = attn.shape
+    # Apply einsum for efficient computation
+    rel_h = torch.einsum("byhwc,hkc->byhwk", r_q, Rh)
+    rel_w = torch.einsum("byhwc,wkc->byhwk", r_q, Rw)
+
+    # Extract the spatial part of attention (non-class tokens)
+    attn_slice = attn[:, :, sp_idx:, sp_idx:]
     
-    # Apply class token offset if exists.
-    q_t = q
-    if has_cls_embed:
-        q_t = q[:, 1:]
-        
-    q_t = q_t.reshape(B, nH, q_h * q_w, -1)
-    rel_h = torch.einsum("bhnm,hm->bhnm", q_t, rel_pos_h)
-    rel_w = torch.einsum("bhnm,hm->bhnm", q_t, rel_pos_w)
+    # Reshape to 6D for adding positional embeddings
+    attn_slice = attn_slice.reshape(B, n_head, q_h, q_w, k_h, k_w)
     
-    # Shift and scale if needed.
-    attn_map = attn.reshape(B, nH, q_h * q_w, k_h * k_w)
-    attn_map = attn_map + rel_h[:, :, :, :, None] + rel_w[:, :, :, None, :]
+    # Add relative positional embeddings
+    attn_slice = attn_slice + rel_h[:, :, :, :, :, None] + rel_w[:, :, :, :, None, :]
     
-    return attn_map.reshape(B, nH, q_h * q_w, k_h * k_w)
+    # Reshape back to 4D
+    attn_slice = attn_slice.reshape(B, n_head, q_h * q_w, k_h * k_w)
+    
+    # Combine with the class token part of attention if present
+    if sp_idx > 0:
+        # Concatenate back the class token attention
+        attn_with_cls_q = torch.cat([attn[:, :, :sp_idx, sp_idx:], attn_slice], dim=2)
+        attn = torch.cat([attn[:, :, :, :sp_idx], attn_with_cls_q], dim=3)
+        return attn
+    else:
+        return attn_slice
 
 def drop_path(x, drop_prob: float = 0.0, training: bool = False):
     """
@@ -285,10 +309,15 @@ class MultiScaleAttention(nn.Module):
         padding_q = [int(q // 2) for q in kernel_q]
         padding_kv = [int(kv // 2) for kv in kernel_kv]
         
-        # Q, K, V projections
-        self.q = nn.Linear(dim, dim_out, bias=qkv_bias)
-        self.k = nn.Linear(dim, dim_out, bias=qkv_bias)
-        self.v = nn.Linear(dim, dim_out, bias=qkv_bias)
+        # Q, K, V projections - use QKV combined projection if not pool_first
+        if self.pool_first:
+            self.q = nn.Linear(dim, dim_out, bias=qkv_bias)
+            self.k = nn.Linear(dim, dim_out, bias=qkv_bias)
+            self.v = nn.Linear(dim, dim_out, bias=qkv_bias)
+            self.qkv = None
+        else:
+            self.qkv = nn.Linear(dim, dim_out * 3, bias=qkv_bias)
+            self.q = self.k = self.v = None
         
         # Output projection
         self.proj = nn.Linear(dim_out, dim_out)
@@ -308,6 +337,8 @@ class MultiScaleAttention(nn.Module):
                 groups=dim,
             ) if kernel_q[0] > 1 else nn.Identity()
             
+            self.norm_q = norm_layer(dim) if kernel_q[0] > 1 else None
+            
             self.pool_k = nn.Conv2d(
                 dim,
                 dim,
@@ -317,6 +348,8 @@ class MultiScaleAttention(nn.Module):
                 groups=dim,
             ) if kernel_kv[0] > 1 else nn.Identity()
             
+            self.norm_k = norm_layer(dim) if kernel_kv[0] > 1 else None
+            
             self.pool_v = nn.Conv2d(
                 dim,
                 dim,
@@ -325,6 +358,9 @@ class MultiScaleAttention(nn.Module):
                 padding=padding_kv,
                 groups=dim,
             ) if kernel_kv[0] > 1 else nn.Identity()
+            
+            self.norm_v = norm_layer(dim) if kernel_kv[0] > 1 else None
+            
         elif mode == "avg":
             self.pool_q = nn.AvgPool2d(
                 kernel_q,
@@ -343,6 +379,30 @@ class MultiScaleAttention(nn.Module):
                 stride=stride_kv,
                 padding=padding_kv,
             ) if kernel_kv[0] > 1 else nn.Identity()
+            
+            self.norm_q = self.norm_k = self.norm_v = None
+            
+        elif mode == "max":
+            self.pool_q = nn.MaxPool2d(
+                kernel_q,
+                stride=stride_q,
+                padding=padding_q,
+            ) if kernel_q[0] > 1 else nn.Identity()
+            
+            self.pool_k = nn.MaxPool2d(
+                kernel_kv,
+                stride=stride_kv,
+                padding=padding_kv,
+            ) if kernel_kv[0] > 1 else nn.Identity()
+            
+            self.pool_v = nn.MaxPool2d(
+                kernel_kv,
+                stride=stride_kv,
+                padding=padding_kv,
+            ) if kernel_kv[0] > 1 else nn.Identity()
+            
+            self.norm_q = self.norm_k = self.norm_v = None
+            
         else:
             raise NotImplementedError(f"Pooling mode {mode} not supported")
             
@@ -351,115 +411,201 @@ class MultiScaleAttention(nn.Module):
         self.rel_pos_zero_init = rel_pos_zero_init
         
         if self.rel_pos_spatial:
-            # Initialize relative positional embeddings
-            self.rel_pos_h = nn.Parameter(torch.zeros(self.num_heads, input_size[0], input_size[0]))
-            self.rel_pos_w = nn.Parameter(torch.zeros(self.num_heads, input_size[1], input_size[1]))
+            # Adjust shape to match TensorFlow implementation
+            size = input_size[0]  # Assuming square input
+            q_size = size // stride_q[1] if stride_q[1] > 1 else size
+            kv_size = size // stride_kv[1] if stride_kv[1] > 1 else size
+            rel_sp_dim = 2 * max(q_size, kv_size) - 1
             
-            if not self.rel_pos_zero_init:
-                self._init_rel_pos()
+            # Initialize with the same shape as TensorFlow version
+            self.rel_pos_h = nn.Parameter(torch.zeros(rel_sp_dim, self.head_dim))
+            self.rel_pos_w = nn.Parameter(torch.zeros(rel_sp_dim, self.head_dim))
+            
+            # Initialize weights properly
+            if not rel_pos_zero_init:
+                nn.init.trunc_normal_(self.rel_pos_h, std=0.02)
+                nn.init.trunc_normal_(self.rel_pos_w, std=0.02)
     
-    def _init_rel_pos(self):
-        # Initialize relative positional embeddings to follow log-linear space
-        pos_seq_h = torch.arange(self.input_size[0], device=self.rel_pos_h.device)
-        pos_seq_w = torch.arange(self.input_size[1], device=self.rel_pos_w.device)
-        
-        # Get grid of coordinates
-        grid_h = pos_seq_h.unsqueeze(0) - pos_seq_h.unsqueeze(1)
-        grid_w = pos_seq_w.unsqueeze(0) - pos_seq_w.unsqueeze(1)
-        
-        # Convert to normalized distances
-        grid_h = grid_h.float() / self.input_size[0]
-        grid_w = grid_w.float() / self.input_size[1]
-        
-        # Initialize with small random values
-        self.rel_pos_h.data = grid_h.unsqueeze(0).repeat(self.num_heads, 1, 1) * 0.01
-        self.rel_pos_w.data = grid_w.unsqueeze(0).repeat(self.num_heads, 1, 1) * 0.01
-            
     def forward(self, x, hw_shape):
         B, N, C = x.shape
         H, W = hw_shape
         
-        # Separate class tokens if present
-        if self.has_cls_embed:
-            cls_token, x = torch.tensor_split(x, [1], dim=1)
-            
         if self.pool_first:
-            # B, N, C -> B, C, H, W
+            if self.has_cls_embed:
+                cls_token, x = torch.tensor_split(x, [1], dim=1)
+
+            # B, N, C -> B, C, H, W (reshape to image-like format for pooling)
             x = x.reshape(B, H, W, C).permute(0, 3, 1, 2)
             
             # Apply pooling
-            x_q = self.pool_q(x).flatten(2).transpose(1, 2)
-            x_k = self.pool_k(x).flatten(2).transpose(1, 2)
-            x_v = self.pool_v(x).flatten(2).transpose(1, 2)
+            x_q = self.pool_q(x)
+            x_k = self.pool_k(x)
+            x_v = self.pool_v(x)
             
-            # Add back class token
+            # Get new shapes after pooling
+            q_h, q_w = x_q.shape[2], x_q.shape[3]
+            k_h, k_w = x_k.shape[2], x_k.shape[3]
+            v_h, v_w = x_v.shape[2], x_v.shape[3]
+            
+            # Flatten spatial dimensions to tokens (B, C, H, W -> B, N, C)
+            x_q = x_q.flatten(2).transpose(1, 2)
+            x_k = x_k.flatten(2).transpose(1, 2)
+            x_v = x_v.flatten(2).transpose(1, 2)
+            
+            # Apply normalization if present
+            if self.norm_q is not None:
+                x_q = self.norm_q(x_q)
+            if self.norm_k is not None:
+                x_k = self.norm_k(x_k)
+            if self.norm_v is not None:
+                x_v = self.norm_v(x_v)
+            
+            # Add back class token if present
             if self.has_cls_embed:
                 x_q = torch.cat([cls_token, x_q], dim=1)
                 x_k = torch.cat([cls_token, x_k], dim=1)
                 x_v = torch.cat([cls_token, x_v], dim=1)
                 
-            # Project q, k, v
+            # Project q, k, v through linear layers
             q = self.q(x_q).reshape(B, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
             k = self.k(x_k).reshape(B, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
             v = self.v(x_v).reshape(B, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+            
+            # Output shape for hw tracking
+            q_shape = (q_h, q_w)
+            k_shape = (k_h, k_w)
+            
         else:
-            # Project q, k, v first
-            q = self.q(x).reshape(B, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-            k = self.k(x).reshape(B, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-            v = self.v(x).reshape(B, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+            # Use combined QKV projection (more efficient)
+            qkv = self.qkv(x)
+            qkv = qkv.reshape(B, N, 3, self.num_heads, self.head_dim)
+            qkv = qkv.permute(2, 0, 3, 1, 4)  # 3, B, num_heads, N, head_dim
+            q, k, v = qkv  # split into q, k, v
             
-            # For q, k, v add back class token, reshape to images, apply pooling
+            # Extract class token for special handling during pooling
             if self.has_cls_embed:
-                q_cls, q = torch.tensor_split(q, [1], dim=2)
-                k_cls, k = torch.tensor_split(k, [1], dim=2)
-                v_cls, v = torch.tensor_split(v, [1], dim=2)
+                q_cls, q_spatial = torch.tensor_split(q, [1], dim=2)
+                k_cls, k_spatial = torch.tensor_split(k, [1], dim=2)
+                v_cls, v_spatial = torch.tensor_split(v, [1], dim=2)
                 
-            # Reshape to image-like format for pooling: B, num_heads, HW, head_dim -> B*num_heads, head_dim, H, W
-            q = q.transpose(1, 2).reshape(B * self.num_heads, self.head_dim, H, W)
-            k = k.transpose(1, 2).reshape(B * self.num_heads, self.head_dim, H, W)
-            v = v.transpose(1, 2).reshape(B * self.num_heads, self.head_dim, H, W)
-            
-            # Apply pooling
-            q = self.pool_q(q).reshape(B, self.num_heads, -1, self.head_dim)
-            k = self.pool_k(k).reshape(B, self.num_heads, -1, self.head_dim)
-            v = self.pool_v(v).reshape(B, self.num_heads, -1, self.head_dim)
-            
-            # Add class tokens back
-            if self.has_cls_embed:
-                q = torch.cat([q_cls, q], dim=2)
-                k = torch.cat([k_cls, k], dim=2)
-                v = torch.cat([v_cls, v], dim=2)
+                # Reshape spatial tokens to image format for pooling
+                q_spatial = q_spatial.transpose(1, 2).reshape(B * self.num_heads, self.head_dim, H, W)
+                k_spatial = k_spatial.transpose(1, 2).reshape(B * self.num_heads, self.head_dim, H, W)
+                v_spatial = v_spatial.transpose(1, 2).reshape(B * self.num_heads, self.head_dim, H, W)
                 
-        # Calculate new hw shapes after pooling
-        q_hw = (H + 2 * (self.kernel_q[0] // 2) - self.kernel_q[0]) // self.stride_q[0] + 1, \
-               (W + 2 * (self.kernel_q[1] // 2) - self.kernel_q[1]) // self.stride_q[1] + 1
-        k_hw = (H + 2 * (self.kernel_kv[0] // 2) - self.kernel_kv[0]) // self.stride_kv[0] + 1, \
-               (W + 2 * (self.kernel_kv[1] // 2) - self.kernel_kv[1]) // self.stride_kv[1] + 1
-               
+                # Apply pooling to spatial tokens
+                q_spatial = self.pool_q(q_spatial)
+                k_spatial = self.pool_k(k_spatial)
+                v_spatial = self.pool_v(v_spatial)
+                
+                # Get pooled dimensions
+                q_h, q_w = q_spatial.shape[2], q_spatial.shape[3]
+                k_h, k_w = k_spatial.shape[2], k_spatial.shape[3]
+                
+                # Reshape back to sequence format
+                q_spatial = q_spatial.reshape(B, self.num_heads, -1, self.head_dim)
+                k_spatial = k_spatial.reshape(B, self.num_heads, -1, self.head_dim)
+                v_spatial = v_spatial.reshape(B, self.num_heads, -1, self.head_dim)
+                
+                # Apply normalization if needed
+                if self.norm_q is not None:
+                    q_spatial = q_spatial.transpose(1, 2)
+                    q_spatial = self.norm_q(q_spatial)
+                    q_spatial = q_spatial.transpose(1, 2)
+                
+                if self.norm_k is not None:
+                    k_spatial = k_spatial.transpose(1, 2)
+                    k_spatial = self.norm_k(k_spatial)
+                    k_spatial = k_spatial.transpose(1, 2)
+                
+                if self.norm_v is not None:
+                    v_spatial = v_spatial.transpose(1, 2)
+                    v_spatial = self.norm_v(v_spatial)
+                    v_spatial = v_spatial.transpose(1, 2)
+                
+                # Recombine with class tokens
+                q = torch.cat([q_cls, q_spatial], dim=2)
+                k = torch.cat([k_cls, k_spatial], dim=2)
+                v = torch.cat([v_cls, v_spatial], dim=2)
+                
+                # Record shape for positional encoding
+                q_shape = (q_h, q_w)
+                k_shape = (k_h, k_w)
+                
+            else:
+                # No class token case - reshape to image format
+                q = q.transpose(1, 2).reshape(B * self.num_heads, self.head_dim, H, W)
+                k = k.transpose(1, 2).reshape(B * self.num_heads, self.head_dim, H, W)
+                v = v.transpose(1, 2).reshape(B * self.num_heads, self.head_dim, H, W)
+                
+                # Apply pooling
+                q = self.pool_q(q)
+                k = self.pool_k(k)
+                v = self.pool_v(v)
+                
+                # Get pooled dimensions
+                q_h, q_w = q.shape[2], q.shape[3]
+                k_h, k_w = k.shape[2], k.shape[3]
+                
+                # Reshape back to attention format
+                q = q.reshape(B, self.num_heads, -1, self.head_dim)
+                k = k.reshape(B, self.num_heads, -1, self.head_dim)
+                v = v.reshape(B, self.num_heads, -1, self.head_dim)
+                
+                # Apply normalization if needed
+                if self.norm_q is not None:
+                    q = q.transpose(1, 2)
+                    q = self.norm_q(q)
+                    q = q.transpose(1, 2)
+                
+                if self.norm_k is not None:
+                    k = k.transpose(1, 2)
+                    k = self.norm_k(k)
+                    k = k.transpose(1, 2)
+                
+                if self.norm_v is not None:
+                    v = v.transpose(1, 2)
+                    v = self.norm_v(v)
+                    v = v.transpose(1, 2)
+                
+                # Record shape for positional encoding
+                q_shape = (q_h, q_w)
+                k_shape = (k_h, k_w)
+                
         # Attention calculation
         attn = (q @ k.transpose(-2, -1)) * self.scale
         
         # Add relative positional embeddings if needed
         if self.rel_pos_spatial:
             attn = calc_rel_pos_spatial(
-                attn, q, self.has_cls_embed, q_hw, k_hw, self.rel_pos_h, self.rel_pos_w
+                attn, q, self.has_cls_embed, q_shape, k_shape, self.rel_pos_h, self.rel_pos_w
             )
             
-        attn_weights = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn_weights)
+        # Apply softmax and dropout
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
         
         # Compute output
         x = (attn @ v).transpose(1, 2).reshape(B, -1, self.dim_out)
+        
+        # Apply residual pooling if enabled
+        if self.residual_pooling:
+            if self.has_cls_embed:
+                # Only apply residual to non-class tokens
+                q_reshape = q.transpose(1, 2).reshape(B, -1, self.dim_out)
+                cls_token, q_spatial = torch.tensor_split(q_reshape, [1], dim=1)
+                x_cls, x_spatial = torch.tensor_split(x, [1], dim=1)
+                x_spatial = x_spatial + q_spatial
+                x = torch.cat([x_cls, x_spatial], dim=1)
+            else:
+                # Apply residual to all tokens
+                x = x + q.transpose(1, 2).reshape(B, -1, self.dim_out)
+        
+        # Apply output projection and dropout
         x = self.proj(x)
         x = self.proj_drop(x)
         
-        # Update hw shape for return
-        if self.has_cls_embed:
-            hw_shape = q_hw
-        else:
-            hw_shape = q_hw
-            
-        return x, attn_weights, hw_shape
+        return x, attn, q_shape
 
 class Block(nn.Module):
     """
@@ -581,19 +727,48 @@ class MultiScaleBlock(nn.Module):
         
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         
+        # Create pool_skip layer for residual path, matching attention's pooling
+        self.pool_skip = None
+        if np.prod(stride_q) > 1:
+            kernel_skip = [s + 1 if s > 1 else s for s in stride_q]
+            stride_skip = stride_q
+            padding_skip = [int(k // 2) for k in kernel_skip]
+            
+            if mode == "conv":
+                self.pool_skip = nn.Conv2d(
+                    dim,
+                    dim,
+                    kernel_skip,
+                    stride=stride_skip,
+                    padding=padding_skip,
+                    groups=dim,
+                )
+            elif mode == "avg":
+                self.pool_skip = nn.AvgPool2d(
+                    kernel_skip,
+                    stride=stride_skip,
+                    padding=padding_skip,
+                )
+            elif mode == "max":
+                self.pool_skip = nn.MaxPool2d(
+                    kernel_skip,
+                    stride=stride_skip,
+                    padding=padding_skip,
+                )
+            
         # Handle dimension change - projection after attention if needed
-        if dim != dim_out and not dim_mul_in_att:
+        if dim != dim_out:
             self.proj = nn.Linear(dim, dim_out)
         else:
             self.proj = nn.Identity()
             
         # Second normalization and MLP
-        self.norm2 = norm_layer(dim_out)
+        self.norm2 = norm_layer(dim_out if self.dim_mul_in_att else dim)
         mlp_hidden_dim = int(dim_out * mlp_ratio)
         
         if use_mlp:
             self.mlp = Mlp(
-                in_features=dim_out,
+                in_features=dim_out if self.dim_mul_in_att else dim,
                 hidden_features=mlp_hidden_dim,
                 out_features=dim_out,
                 act_layer=act_layer,
@@ -605,17 +780,31 @@ class MultiScaleBlock(nn.Module):
     def forward(self, x, hw_shape):
         # Apply attention
         x_norm = self.norm1(x)
+        
+        # Apply attention with new hw_shape
         x_attn, attn_weights, hw_shape_new = self.attn(x_norm, hw_shape)
         
-        # Handle shortcut/residual connection
-        if self.dim != self.dim_out and not self.dim_mul_in_att:
-            x = self.proj(x)
+        # Handle dimension change for dim_mul_in_att case
+        if self.dim_mul_in_att and self.dim != self.dim_out:
+            x = self.proj(x_norm)
             
-        x = x + self.drop_path(x_attn)
+        # Apply pooling to x for residual path
+        if self.pool_skip is not None:
+            x_res, _ = attention_pool(x, self.pool_skip, hw_shape, has_cls_embed=self.has_cls_embed)
+        else:
+            x_res = x
+            
+        # Add residual connection
+        x = x_res + self.drop_path(x_attn)
         
         # Apply MLP if needed
+        x_norm = self.norm2(x)
+        
         if self.use_mlp:
-            x = x + self.drop_path(self.mlp(self.norm2(x)))
+            mlp_out = self.mlp(x_norm)
+            if not self.dim_mul_in_att and self.dim != self.dim_out:
+                x = self.proj(x_norm)
+            x = x + self.drop_path(mlp_out)
             
         return x, attn_weights, hw_shape_new
 
@@ -648,6 +837,29 @@ class SinusoidalPositionalEncoding2D(nn.Module):
         self.height = height
         self.width = width
         
+        # Pre-compute the inverse frequencies (similar to TF implementation)
+        emb_channels = int(2 * math.ceil(channels / 4))  # Ensure even division for sin/cos pairs
+        self.inv_freq = 1.0 / (10000 ** (torch.arange(0, emb_channels, 2).float() / emb_channels))
+        
+    def get_emb(self, sin_inp):
+        """
+        PyTorch equivalent of the TensorFlow get_emb function.
+        Gets a base embedding for one dimension with sin and cos intertwined.
+        
+        Args:
+            sin_inp: Tensor of shape [pos_len, freq_len]
+            
+        Returns:
+            Tensor of shape [pos_len, freq_len*2] with sin and cos values interleaved
+        """
+        # Stack sin and cos values along a new dimension
+        emb = torch.stack([torch.sin(sin_inp), torch.cos(sin_inp)], dim=-1)  # [pos_len, freq_len, 2]
+        
+        # Reshape to flatten the last two dimensions to interleave sin and cos values
+        emb = emb.reshape(*emb.shape[:-2], -1)  # [pos_len, freq_len*2]
+        
+        return emb
+    
     def forward(self, inputs):
         """
         Args:
@@ -669,26 +881,37 @@ class SinusoidalPositionalEncoding2D(nn.Module):
         # Reshape to [B, H, W, C]
         x = x.view(batch_size, self.height, self.width, channels)
         
-        # Create position indices
-        y_pos = torch.arange(self.height, device=x.device).float()
-        x_pos = torch.arange(self.width, device=x.device).float()
+        # Get position indices
+        pos_x = torch.arange(self.width, device=x.device).float()
+        pos_y = torch.arange(self.height, device=x.device).float()
         
-        # Calculate frequency bands
-        div_term = torch.exp(torch.arange(0, channels // 4, 2, device=x.device).float() * (-math.log(10000.0) / (channels // 4)))
+        # Move inv_freq to the same device as input
+        inv_freq = self.inv_freq.to(x.device)
         
-        # Calculate sin and cos for both dimensions
-        pos_y_sin = torch.sin(y_pos.unsqueeze(-1) * div_term).unsqueeze(-1).expand(-1, -1, channels // 4)
-        pos_y_cos = torch.cos(y_pos.unsqueeze(-1) * div_term).unsqueeze(-1).expand(-1, -1, channels // 4)
-        pos_x_sin = torch.sin(x_pos.unsqueeze(-1) * div_term).unsqueeze(-1).expand(-1, -1, channels // 4)
-        pos_x_cos = torch.cos(x_pos.unsqueeze(-1) * div_term).unsqueeze(-1).expand(-1, -1, channels // 4)
+        # Create sine inputs by multiplying positions with frequencies
+        # Equivalent to einsum in TF implementation
+        sin_inp_x = pos_x.unsqueeze(1) * inv_freq.unsqueeze(0)  # [W, channels//4]
+        sin_inp_y = pos_y.unsqueeze(1) * inv_freq.unsqueeze(0)  # [H, channels//4]
         
-        # Combine the encodings
-        pos_enc = torch.cat([pos_y_sin, pos_y_cos, pos_x_sin, pos_x_cos], dim=-1)
+        # Get embeddings with interleaved sin and cos values (matching TF implementation)
+        emb_x = self.get_emb(sin_inp_x)  # [W, channels//2]
+        emb_y = self.get_emb(sin_inp_y)  # [H, channels//2]
         
-        # Add the positional encoding to the input
-        x = x + pos_enc.unsqueeze(0)
+        # Expand dimensions to create 2D grid
+        emb_x = emb_x.unsqueeze(0).expand(self.height, -1, -1)  # [H, W, channels//2]
+        emb_y = emb_y.unsqueeze(1).expand(-1, self.width, -1)  # [H, W, channels//2]
         
-        # Reshape back to sequence
+        # Concatenate the x and y embeddings
+        emb = torch.cat([emb_x, emb_y], dim=2)  # [H, W, channels]
+        
+        # Ensure the output has the same channel dimension as the input
+        emb = emb[:, :, :channels]
+        
+        # Add batch dimension and add to input
+        # Add positional encoding to input
+        x = x + emb.unsqueeze(0)
+        
+        # Reshape back to sequence form
         x = x.view(batch_size, -1, channels)
         
         # Add class token back if it was present
@@ -696,3 +919,6 @@ class SinusoidalPositionalEncoding2D(nn.Module):
             x = torch.cat([cls_token, x], dim=1)
             
         return x
+
+        
+        

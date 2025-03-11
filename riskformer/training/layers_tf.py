@@ -115,19 +115,6 @@ def cal_rel_pos_spatial(attn, q, has_cls_embed, q_shape, k_shape, rel_pos_h, rel
     return attn_slice
 
 
-def get_emb(sin_inp):
-    """
-    Gets a base embedding for one dimension with sin and cos intertwined
-    """
-    emb = tf.stack((tf.sin(sin_inp), tf.cos(sin_inp)), -1)
-    dynamic_shape = tf.shape(emb)
-    new_shape = tf.concat([dynamic_shape[:-2], [-1]], axis=0)
-    emb = tf.reshape(emb, new_shape)
-
-    # emb = tf.reshape(emb, (*emb.shape[:-2], -1))
-    return emb
-
-
 def masked_gap(x, mask):
     """
     Compute the average of tensor values in x, using mask to
@@ -1109,6 +1096,18 @@ class TFPositionalEncoding2D(tf.keras.layers.Layer):
             )
         )
 
+    def get_emb(self, sin_inp):
+        """
+        Gets a base embedding for one dimension with sin and cos intertwined
+        """
+        emb = tf.stack((tf.sin(sin_inp), tf.cos(sin_inp)), -1)
+        dynamic_shape = tf.shape(emb)
+        new_shape = tf.concat([dynamic_shape[:-2], [-1]], axis=0)
+        emb = tf.reshape(emb, new_shape)
+
+        # emb = tf.reshape(emb, (*emb.shape[:-2], -1))
+        return emb
+
     # @tf.function
     def call(self, inputs):
         """
@@ -1131,8 +1130,8 @@ class TFPositionalEncoding2D(tf.keras.layers.Layer):
         sin_inp_x = tf.einsum("i,j->ij", pos_x, self.inv_freq)
         sin_inp_y = tf.einsum("i,j->ij", pos_y, self.inv_freq)
 
-        emb_x = tf.expand_dims(get_emb(sin_inp_x), 1)
-        emb_y = tf.expand_dims(get_emb(sin_inp_y), 0)
+        emb_x = tf.expand_dims(self.get_emb(sin_inp_x), 1)
+        emb_y = tf.expand_dims(self.get_emb(sin_inp_y), 0)
 
         emb_x = tf.tile(emb_x, (1, y, 1))
         emb_y = tf.tile(emb_y, (x, 1, 1))

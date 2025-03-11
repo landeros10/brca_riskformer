@@ -19,9 +19,117 @@ import torch.nn.functional as F
 import yaml
 
 from riskformer.training.layers import SinusoidalPositionalEncoding2D, MultiScaleBlock, GlobalMaxPoolLayer
-from riskformer.utils.training_utils import slide_level_loss
+from riskformer.utils.training_utils import create_slide_level_loss
 
 logger = logging.getLogger(__name__)
+
+class RiskFormer_Head(nn.Module):
+    """ Multi-task head for RiskFormer with task-specific architectures. """
+    def __init__(self, tasks_config, input_dim, drop_rate, hidden_dim=None):
+        """
+        Initialize task-specific heads based on task configurations.
+        
+        Args:
+            tasks_config: Dictionary of task configurations with keys as task names and values as dicts:
+                - type: Task type ("binary", "regression", "multiclass")
+                - num_classes: Number of output classes/values
+            input_dim: Dimension of input features
+            drop_rate: Dropout rate
+            hidden_dim: Optional hidden dimension for more complex heads
+        """
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim or input_dim // 2
+        self.drop_rate = drop_rate
+        self.tasks_config = tasks_config
+        
+        # Create mapping from task name to index for output slicing
+        self.task_indices = {}
+        start_idx = 0
+        for task_name, task_config in tasks_config.items():
+            num_classes = task_config['num_classes']
+            end_idx = start_idx + num_classes
+            self.task_indices[task_name] = (start_idx, end_idx)
+            start_idx = end_idx
+        
+        # Create task-specific heads
+        self.heads = nn.ModuleList([
+            self._initialize_head(task_config) 
+            for _, task_config in tasks_config.items()
+        ])
+        
+    def _head_activation(self, activation):
+        if activation is None or activation == "None":
+            return nn.Identity()
+        elif activation == "tanh":
+            return nn.Tanh()
+        elif activation == "sigmoid":
+            return nn.Sigmoid()
+        elif activation == "softmax":
+            return nn.Softmax(dim=-1)
+        else:
+            raise ValueError(f"Unsupported activation: {activation}")
+
+    def _initialize_head(self, task_config):
+        """
+        Initialize task-specific head architecture.
+        
+        Args:
+            task_config: Configuration for this task
+            
+        Returns:
+            Task-specific neural network head
+        """
+        task_type = task_config['type']
+        num_classes = task_config['num_classes']
+        activation = task_config['activation']
+
+        layers = [
+            nn.Linear(self.input_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(self.drop_rate),
+        ]
+        
+        if task_type == "binary" or task_type == "regression":
+            layers.append(nn.Linear(self.hidden_dim, 1))
+        
+        elif task_type == "multiclass":
+            layers.append(nn.Linear(self.hidden_dim, num_classes))
+        
+        else:
+            layers.append(nn.Linear(self.hidden_dim, num_classes))
+
+        layers.append(self._head_activation(activation))
+        return nn.Sequential(*layers)
+        
+    def forward(self, x):
+        """
+        Forward pass through all task heads.
+        
+        Args:
+            x: Input tensor (batch_size, input_dim)
+            
+        Returns:
+            Concatenated outputs from all heads
+        """
+        outputs = [head(x) for head in self.heads]
+        return torch.cat(outputs, dim=-1)
+    
+    def get_task_output(self, x, task_name):
+        """
+        Get output for a specific task.
+        
+        Args:
+            x: Input tensor (batch_size, input_dim)
+            task_name: Name of the task to get output for
+            
+        Returns:
+            Output for the specified task
+        """
+        all_outputs = self.forward(x)
+        start_idx, end_idx = self.task_indices[task_name]
+        return all_outputs[:, start_idx:end_idx]
+
 
 class RiskFormer_ViT(nn.Module):
     """
@@ -33,23 +141,27 @@ class RiskFormer_ViT(nn.Module):
         use_phi: Whether to use phi network
         drop_path_rate: Drop path rate
         drop_rate: Dropout rate
-        num_classes: Number of classes
+        tasks: Dictionary mapping task names to task configurations. Each task config should include:
+            - type: Task type ("binary", "regression", "multiclass")
+            - num_classes: Number of output classes/values
+            - metrics: Optional list of metrics to track
+            - weight: Optional task weight for loss calculation
         max_dim: Maximum dimension
-        depth: Depth of local blocks
-        global_depth: Depth of global blocks
+        depth: Number of transformer layers
+        global_depth: Number of global transformer layers
         encoding_method: Position encoding method
         num_heads: Number of attention heads
         use_attn_mask: Whether to use attention mask
         mlp_ratio: MLP ratio
         use_class_token: Whether to use class token
-        attn_global_hidden_dim: Hidden dimension of global attention mlp
+        attn_global_hidden_dim: Global attention hidden dimension
         phi_dim: Phi dimension
-        downscale_depth: Depth of downscale blocks
-        downscale_multiplier: Multiplier for downscale blocks
-        downscale_stride_q: Stride for query in downscale blocks
-        downscale_stride_k: Stride for key/value in downscale blocks
-        noise_aug: Noise augmentation level
-        attnpool_mode: Attention pool mode
+        downscale_depth: Downscale depth
+        downscale_multiplier: Downscale multiplier
+        downscale_stride_q: Downscale stride for query
+        downscale_stride_k: Downscale stride for key
+        noise_aug: Noise augmentation parameter
+        attnpool_mode: Attention pooling mode
         name: Model name
         hflip_prob: Probability of horizontal flip
         vflip_prob: Probability of vertical flip
@@ -93,9 +205,8 @@ class RiskFormer_ViT(nn.Module):
         Create a RiskFormer_ViT model from a configuration dictionary.
         
         Args:
-            config: A dictionary containing model configuration parameters.
-                   This could be loaded from a YAML file.
-                   
+            config: A dictionary containing configuration parameters.
+            
         Returns:
             An initialized RiskFormer_ViT model.
         """
@@ -106,7 +217,7 @@ class RiskFormer_ViT(nn.Module):
             'use_phi': 'use_phi',
             'drop_path_rate': 'drop_path_rate',
             'drop_rate': 'drop_rate',
-            'num_classes': 'num_classes',
+            'tasks': 'tasks',
             'max_dim': 'max_dim',
             'depth': 'depth',
             'global_depth': 'global_depth',
@@ -128,7 +239,6 @@ class RiskFormer_ViT(nn.Module):
             'noise_aug': 0.1,
             'attnpool_mode': 'conv',
             'name': None,
-            'background_tile_path': None,
             'hflip_prob': 0.5,
             'vflip_prob': 0.5,
             'rotate_prob': 0.5,
@@ -145,13 +255,7 @@ class RiskFormer_ViT(nn.Module):
         # Extract optional parameters from config
         for param, default_value in optional_params.items():
             model_args[param] = config.get(param, default_value)
-        
-        # Handle special cases
-        # If num_classes is specified as a dictionary in the config 
-        # (e.g., for multiple prediction heads)
-        if isinstance(config.get('num_classes'), dict):
-            model_args['num_classes'] = config['num_classes']
-        
+                
         # Pass any other parameters from config
         for key, value in config.items():
             if key not in required_params.values() and key not in optional_params:
@@ -168,7 +272,7 @@ class RiskFormer_ViT(nn.Module):
         use_phi: bool,
         drop_path_rate: float,
         drop_rate: float,
-        num_classes: Union[int, Dict[str, int], List[int]],
+        tasks: Dict[str, Dict[str, Any]],  # Dictionary mapping task names to task configurations
         max_dim: int,
         depth: int,
         global_depth: int,
@@ -186,14 +290,49 @@ class RiskFormer_ViT(nn.Module):
         noise_aug: float = 0.1,
         attnpool_mode: str = "conv",
         name: Optional[str] = None,
-        background_tile_path: Optional[str] = None,
         hflip_prob: float = 0.5,
         vflip_prob: float = 0.5,
         rotate_prob: float = 0.5,
         noise_aug_prob: float = 0.5,
         **kwargs
     ):
-        """Initialize the model."""
+        """
+        Initialize the RiskFormer Vision Transformer model.
+        
+        Args:
+            input_embed_dim: Dimension of input embeddings
+            output_embed_dim: Dimension of output embeddings
+            use_phi: Whether to use the phi network
+            drop_path_rate: Drop path rate
+            drop_rate: Dropout rate
+            tasks: Dictionary mapping task names to task configurations. Each task config should include:
+                - type: Task type ("binary", "regression", "multiclass")
+                - num_classes: Number of output classes/values
+                - metrics: Optional list of metrics to track
+                - weight: Optional task weight for loss calculation
+            max_dim: Maximum dimension
+            depth: Number of transformer layers
+            global_depth: Number of global transformer layers
+            encoding_method: Position encoding method
+            num_heads: Number of attention heads
+            use_attn_mask: Whether to use attention mask
+            mlp_ratio: MLP ratio
+            use_class_token: Whether to use class token
+            attn_global_hidden_dim: Global attention hidden dimension
+            phi_dim: Phi dimension
+            downscale_depth: Downscale depth
+            downscale_multiplier: Downscale multiplier
+            downscale_stride_q: Downscale stride for query
+            downscale_stride_k: Downscale stride for key
+            noise_aug: Noise augmentation
+            attnpool_mode: Attention pooling mode
+            name: Model name
+            hflip_prob: Probability of horizontal flip
+            vflip_prob: Probability of vertical flip
+            rotate_prob: Probability of rotation
+            noise_aug_prob: Probability of noise augmentation
+            **kwargs: Additional arguments        
+        """
         super().__init__()
         
         # Save configuration
@@ -202,8 +341,7 @@ class RiskFormer_ViT(nn.Module):
         self.use_phi = use_phi
         self.drop_path_rate = drop_path_rate
         self.drop_rate = drop_rate
-        self.num_classes = num_classes
-        self.input_array_dim = max_dim
+        self.token_array_dim = max_dim
         self.depth = depth
         self.global_depth = global_depth
         self.encoding_method = encoding_method
@@ -224,6 +362,7 @@ class RiskFormer_ViT(nn.Module):
         self.vflip_prob = vflip_prob
         self.rotate_prob = rotate_prob
         self.noise_aug_prob = noise_aug_prob
+        self.tasks = tasks
         
         # Define Model Dimensions
         self.blocks_input_dim = self.phi_dim if use_phi else self.output_embed_dim
@@ -243,7 +382,7 @@ class RiskFormer_ViT(nn.Module):
         # Define input sizes for each block
         s_q = self.downscale_stride_q
         s_k = self.downscale_stride_k
-        self.input_sizes = [int(self.input_array_dim / (s_q**i)) for i in range(self.downscale_depth + 1)]
+        self.input_sizes = [int(self.token_array_dim / (s_q**i)) for i in range(self.downscale_depth + 1)]
         self.input_sizes = [(s, s) for s in self.input_sizes]
 
         # Initialize drop path rates
@@ -299,8 +438,8 @@ class RiskFormer_ViT(nn.Module):
 
     def initialize_position_encodings(self):
         """Initialize position encodings based on the specified method."""
-        num_patches = int(self.input_array_dim ** 2)
-        height = width = self.input_array_dim
+        num_patches = int(self.token_array_dim ** 2)
+        height = width = self.token_array_dim
         
         if self.encoding_method == "standard" or self.encoding_method == "":
             pos_embed = nn.Parameter(torch.zeros(1, num_patches + (1 if self.use_class_token else 0), self.blocks_input_dim))
@@ -446,26 +585,10 @@ class RiskFormer_ViT(nn.Module):
         self.norm_local = nn.LayerNorm(self.blocks_output_dim)
         self.norm_global = nn.LayerNorm(self.blocks_output_dim)
 
-    def initialize_head(self, num_classes):
-        """Initialize head for predictions. Return logits."""
-        return nn.Sequential(
-            nn.Linear(self.blocks_output_dim, num_classes),
-        )
-
     def initialize_heads(self):
-        """Initialize heads for predictions."""
-        num_classes = self.num_classes
-
-        if isinstance(num_classes, int):
-            num_classes = [num_classes]
-        elif isinstance(num_classes, dict):
-            num_classes = list(num_classes.values())
+        """Initialize heads for predictions."""        
+        self.head = RiskFormer_Head(self.tasks, self.blocks_output_dim, self.drop_rate)
         
-        self.head = [self.initialize_head(num_class) for num_class in num_classes]
-        
-        # Combine for eficiency. Shape (bs, sum(num_classes))
-        self.head = lambda x: torch.cat([head(x) for head in self.head], dim=-1)
-            
     def generate_masks(self, x):
         """Generate attention masks for a batch of tensors.
         
@@ -706,7 +829,6 @@ class RiskFormer_ViT(nn.Module):
         # Process through downscale blocks
         for i, block in enumerate(self.downscale_blocks):
             x, _, hw_shape = block(x, hw_shape)
-            
         return x, hw_shape
     
     def process_local_blocks(self, x, hw_shape):
@@ -769,6 +891,7 @@ class RiskFormer_ViT(nn.Module):
         
         # Get predictions
         global_pred = self.head(x_avg) # (sum(num_classes),)
+        global_pred = global_pred.unsqueeze(0) # (1, sum(num_classes))
         
         if return_weights:
             return global_pred, weights
@@ -802,7 +925,6 @@ class RiskFormer_ViT(nn.Module):
         # Handle class token for bag predictions
         norm_x = self.norm_local(x) # (bs, D')
         bag_preds = self.head(norm_x) # (bs, sum(num_classes))
-
         
         # Process through global blocks
         if return_weights:
@@ -820,20 +942,32 @@ class RiskFormer_ViT(nn.Module):
             return_weights: Whether to return attention weights
             
         Returns:
-            Model output (and optionally attention weights)
-            When return_weights=True: (all_preds, attns, global_weights)
-            When return_weights=False: all_preds
+            Dictionary mapping task names to outputs (and optionally attention weights)
+            When return_weights=True: (task_outputs, attns, global_weights)
+            When return_weights=False: task_outputs
         """
         if return_weights:
             bag_preds, global_pred, attns, global_weights = self.forward_features(
                 x, return_weights=True
             )
             all_preds = torch.cat([global_pred, bag_preds], dim=0)
-            return all_preds, attns, global_weights
+            
+            # Convert to task dictionary
+            task_outputs = {}
+            for task_name, (start_idx, end_idx) in self.head.task_indices.items():
+                task_outputs[task_name] = all_preds[:, start_idx:end_idx]
+                
+            return task_outputs, attns, global_weights
         else:
             bag_preds, global_pred = self.forward_features(x)
             all_preds = torch.cat([global_pred, bag_preds], dim=0)
-            return all_preds
+            
+            # Convert to task dictionary
+            task_outputs = {}
+            for task_name, (start_idx, end_idx) in self.head.task_indices.items():
+                task_outputs[task_name] = all_preds[:, start_idx:end_idx]
+                
+            return task_outputs
     
     def get_config(self):
         """Get model configuration as a dictionary."""
@@ -843,8 +977,8 @@ class RiskFormer_ViT(nn.Module):
             "use_phi": self.use_phi,
             "drop_path_rate": self.drop_path_rate,
             "drop_rate": self.drop_rate,
-            "num_classes": self.num_classes,
-            "max_dim": self.input_array_dim,
+            "tasks": self.tasks,
+            "token_array_dim": self.token_array_dim,
             "depth": self.depth,
             "global_depth": self.global_depth,
             "encoding_method": self.encoding_method,
@@ -864,7 +998,7 @@ class RiskFormer_ViT(nn.Module):
             "hflip_prob": self.hflip_prob,
             "vflip_prob": self.vflip_prob,
             "rotate_prob": self.rotate_prob,
-            "noise_aug_prob": self.noise_aug_prob
+            "noise_aug_prob": self.noise_aug_prob,
         }
         return config
         
@@ -878,14 +1012,14 @@ class RiskFormerLightningModule(pl.LightningModule):
     """
     
     @classmethod
-    def from_config(cls, config, class_loss_map, task_weights=None, regional_coeff=None):
+    def from_config(cls, config, task_configs=None, regional_coeff=None):
         """
         Create a RiskFormerLightningModule from a configuration dictionary.
         
         Args:
             config: A dictionary containing model and optimizer configuration parameters.
-            class_loss_map: Dictionary mapping class names to loss functions.
-            task_weights: Optional dictionary mapping task names to task weights.
+            task_configs: Optional dictionary of task configurations with unified information.
+                If not provided, will be extracted from config['tasks'].
             regional_coeff: Optional regional loss coefficient.
             
         Returns:
@@ -896,6 +1030,15 @@ class RiskFormerLightningModule(pl.LightningModule):
             'optimizer', 'learning_rate', 'weight_decay', 'scheduler',
             'batch_size', 'num_workers', 'max_epochs', 'min_epochs', 'patience'
         ]}
+        
+        # Add tasks configuration directly to model_config
+        if task_configs is None:
+            # Get tasks from config if not provided as an argument
+            if 'tasks' not in config:
+                raise ValueError("tasks configuration must be provided either in config['tasks'] or as task_configs argument")
+            task_configs = config['tasks']
+        
+        model_config['tasks'] = task_configs
         
         # Create optimizer config
         optimizer_config = {
@@ -912,34 +1055,30 @@ class RiskFormerLightningModule(pl.LightningModule):
         return cls(
             model_config=model_config,
             optimizer_config=optimizer_config,
-            class_loss_map=class_loss_map,
-            task_weights=task_weights,
             regional_coeff=regional_coeff
         )
     
     @classmethod
-    def from_config_file(cls, config_path, class_loss_map, task_weights=None, regional_coeff=None):
+    def from_config_file(cls, config_path, task_configs=None, regional_coeff=None):
         """
         Create a RiskFormerLightningModule from a configuration file.
         
         Args:
             config_path: Path to the YAML configuration file.
-            class_loss_map: Dictionary mapping class names to loss functions.
-            task_weights: Optional dictionary mapping task names to task weights.
+            task_configs: Optional dictionary of task configurations with unified information.
+                If not provided, will be extracted from the config file.
             regional_coeff: Optional regional loss coefficient.
             
         Returns:
             An initialized RiskFormerLightningModule.
         """
         config = RiskFormer_ViT.load_config(config_path)
-        return cls.from_config(config, class_loss_map, task_weights, regional_coeff)
+        return cls.from_config(config, task_configs, regional_coeff)
     
     def __init__(
         self,
         model_config: Dict[str, Any],
         optimizer_config: Dict[str, Any],
-        class_loss_map: Dict[str, Dict[int, torch.nn.Module]],
-        task_weights: Optional[Dict[str, float]] = None,
         regional_coeff: float = 0.0,
     ):
         """
@@ -948,8 +1087,6 @@ class RiskFormerLightningModule(pl.LightningModule):
         Args:
             model_config: Configuration for the RiskFormer_ViT model
             optimizer_config: Configuration for the optimizer
-            class_loss_map: Dictionary mapping task names to loss functions for each class
-            task_weights: Optional dictionary mapping task names to weights for loss calculation
             regional_coeff: Coefficient for weighting local vs global loss
         """
         super().__init__()
@@ -958,29 +1095,22 @@ class RiskFormerLightningModule(pl.LightningModule):
         # Store all configurations as instance attributes
         self.model_config = model_config
         self.optimizer_config = optimizer_config
-        self.class_loss_map = class_loss_map
         self.regional_coeff = regional_coeff
+        self.task_configs = model_config['tasks']
         
         # Create the model
         self.model = RiskFormer_ViT(**model_config)
         
-        # Set task weights (default to 1.0 if not provided)
-        self.task_weights = task_weights or {task: 1.0 for task in class_loss_map.keys()}
+        # Extract essential information from task_configs
+        self.tasks = list(model_config['tasks'].keys())
+        self.task_types = {task: cfg['type'] for task, cfg in model_config['tasks'].items()}
+        self.task_weights = {task: cfg.get('weight', 1.0) for task, cfg in model_config['tasks'].items()}
         
-        # Define tasks and their types
-        self.tasks = list(class_loss_map.keys())
-        self.task_types = {}
-        for task, loss_map in class_loss_map.items():
-            # Determine if binary, multiclass, or regression
-            first_loss = next(iter(loss_map.values()))
-            if isinstance(first_loss, (nn.BCEWithLogitsLoss, nn.BCELoss)):
-                self.task_types[task] = "binary"
-            elif isinstance(first_loss, nn.CrossEntropyLoss):
-                self.task_types[task] = "multiclass" 
-            elif len(loss_map) > 1:
-                self.task_types[task] = "multiclass"
-            else:
-                self.task_types[task] = "regression"
+        # Create loss function
+        self.loss = create_slide_level_loss(
+            self.task_configs, 
+            self.regional_coeff
+        )
         
         # Initialize metrics
         self._init_metrics()
@@ -1037,116 +1167,7 @@ class RiskFormerLightningModule(pl.LightningModule):
     
     def forward(self, x, return_weights=False):
         """Forward pass through the model."""
-        return self.model(x, return_weights)
-    
-    def _calculate_task_loss(self, predictions, labels, task, stage):
-        """
-        Calculate loss for a specific task.
-        
-        Args:
-            predictions: Model predictions, can be a tensor or a tuple containing (all_preds, attns, global_weights)
-            labels: Dictionary of labels or a tensor for a specific task
-            task: Task name
-            stage: 'train', 'val', or 'test'
-            
-        Returns:
-            Loss value for the task
-        """
-        # Handle predictions which may include attention weights
-        if isinstance(predictions, tuple):
-            # Extract just the predictions from the tuple (all_preds, attns, global_weights)
-            predictions = predictions[0]
-        
-        # If labels is a dictionary, extract the task-specific labels
-        if isinstance(labels, dict):
-            if task not in labels:
-                # Skip tasks without labels
-                return None
-            task_labels = labels[task]
-        else:
-            # If labels is already a tensor, use it directly
-            task_labels = labels
-        
-        # Check if task exists in class_loss_map
-        if task not in self.class_loss_map or task not in self.task_types:
-            # Skip non-existent tasks
-            return None
-            
-        task_loss_map = self.class_loss_map[task]
-        task_type = self.task_types[task]
-        
-        # Ensure labels have the right shape
-        if isinstance(task_labels, torch.Tensor):
-            if len(task_labels.shape) == 0:
-                task_labels = task_labels.unsqueeze(0)
-            elif len(task_labels.shape) == 2 and task_labels.shape[0] == 1:
-                task_labels = task_labels.squeeze(0)
-        
-        # Calculate loss using slide_level_loss
-        loss = slide_level_loss(
-            predictions, 
-            task_labels, 
-            task_loss_map, 
-            regional_coeff=self.regional_coeff
-        )
-        
-        # Log task-specific loss
-        self.log(f'{stage}_{task}_loss', loss, on_step=(stage == 'train'), on_epoch=True, prog_bar=(task == self.tasks[0]))
-        
-        # Get predictions and targets
-        if len(predictions.shape) > 1:
-            # If we have instance-level predictions, use the global prediction
-            preds = predictions[0].unsqueeze(0)  # Select global prediction and add batch dimension
-        else:
-            preds = predictions.unsqueeze(0)  # Add batch dimension
-        
-        # Threshold predictions for binary classification
-        # For binary tasks, we need logits for metrics
-        task_type = self.task_types[task]
-        
-        # Log metrics based on task type
-        if task_type == "binary":
-            # Binary classification metrics
-            acc = self.metrics[task][f"{stage}_acc"](preds, task_labels)
-            self.log(f'{stage}_{task}_acc', acc, on_step=False, on_epoch=True, prog_bar=False)
-            
-            # AUROC for binary classification
-            auroc_preds = torch.sigmoid(preds) if preds.shape[-1] == 1 else preds
-            try:
-                auroc = self.metrics[task][f"{stage}_auc"](auroc_preds, task_labels)
-                self.log(f'{stage}_{task}_auc', auroc, on_step=False, on_epoch=True, prog_bar=False)
-            except Exception as e:
-                # AUROC can fail if all labels are the same
-                logger.warning(f"Failed to compute {stage}_{task}_auc: {e}")
-                
-        elif task_type == "multiclass":
-            # Multiclass classification metrics
-            acc = self.metrics[task][f"{stage}_acc"](preds, task_labels)
-            self.log(f'{stage}_{task}_acc', acc, on_step=False, on_epoch=True, prog_bar=False)
-            
-            # F1 Score
-            try:
-                f1 = self.metrics[task][f"{stage}_f1"](preds, task_labels)
-                self.log(f'{stage}_{task}_f1', f1, on_step=False, on_epoch=True, prog_bar=False)
-            except Exception as e:
-                logger.warning(f"Failed to compute {stage}_{task}_f1: {e}")
-            
-            # AUROC
-            try:
-                auc = self.metrics[task][f"{stage}_auc"](preds, task_labels)
-                self.log(f'{stage}_{task}_auc', auc, on_step=False, on_epoch=True, prog_bar=False)
-            except Exception as e:
-                logger.warning(f"Failed to compute {stage}_{task}_auc: {e}")
-                
-        elif task_type == "regression":
-            # Regression metrics
-            mse = self.metrics[task][f"{stage}_mse"](preds, task_labels)
-            mae = self.metrics[task][f"{stage}_mae"](preds, task_labels)
-            
-            self.log(f'{stage}_{task}_mse', mse, on_step=False, on_epoch=True, prog_bar=False)
-            self.log(f'{stage}_{task}_mae', mae, on_step=False, on_epoch=True, prog_bar=False)
-        
-        return loss
+        return self.model(x, return_weights)    
     
     def training_step(self, batch, batch_idx):
         """Training step for Lightning."""
@@ -1160,17 +1181,18 @@ class RiskFormerLightningModule(pl.LightningModule):
             # For backward compatibility
             labels = {task: metadata.get(task, metadata.get('label', None)) for task in self.tasks}
         
-        # Calculate loss for each task
-        total_loss = 0.0
-        task_losses = {}
+        # Calculate loss using the new loss function
+        losses = self.loss(predictions, labels)
+        total_loss = losses['total']
         
-        for task in self.tasks:
-            task_loss = self._calculate_task_loss(predictions, labels, task, 'train')
-            if task_loss is not None:
+        # Log individual task losses
+        for task, loss in losses.items():
+            if task != 'total':
                 task_weight = self.task_weights.get(task, 1.0)
-                weighted_loss = task_loss * task_weight
-                task_losses[task] = weighted_loss
-                total_loss += weighted_loss
+                self.log(f'train_{task}_loss', loss, on_step=True, on_epoch=True, prog_bar=(task == self.tasks[0]))
+                
+                # Update metrics
+                self._update_metrics(predictions, labels, task, 'train')
         
         # Log total loss
         self.log('train_loss', total_loss, on_step=True, on_epoch=True, prog_bar=True)
@@ -1189,17 +1211,17 @@ class RiskFormerLightningModule(pl.LightningModule):
             # For backward compatibility
             labels = {task: metadata.get(task, metadata.get('label', None)) for task in self.tasks}
         
-        # Calculate loss for each task
-        total_loss = 0.0
-        task_losses = {}
+        # Calculate loss using the new loss function
+        losses = self.loss(predictions, labels)
+        total_loss = losses['total']
         
-        for task in self.tasks:
-            task_loss = self._calculate_task_loss(predictions, labels, task, 'val')
-            if task_loss is not None:
-                task_weight = self.task_weights.get(task, 1.0)
-                weighted_loss = task_loss * task_weight
-                task_losses[task] = weighted_loss
-                total_loss += weighted_loss
+        # Log individual task losses
+        for task, loss in losses.items():
+            if task != 'total':
+                self.log(f'val_{task}_loss', loss, on_step=False, on_epoch=True, prog_bar=(task == self.tasks[0]))
+                
+                # Update metrics
+                self._update_metrics(predictions, labels, task, 'val')
         
         # Log total loss
         self.log('val_loss', total_loss, on_step=False, on_epoch=True, prog_bar=True)
@@ -1218,17 +1240,17 @@ class RiskFormerLightningModule(pl.LightningModule):
             # For backward compatibility
             labels = {task: metadata.get(task, metadata.get('label', None)) for task in self.tasks}
         
-        # Calculate loss for each task
-        total_loss = 0.0
-        task_losses = {}
+        # Calculate loss using the new loss function
+        losses = self.loss(predictions, labels)
+        total_loss = losses['total']
         
-        for task in self.tasks:
-            task_loss = self._calculate_task_loss(predictions, labels, task, 'test')
-            if task_loss is not None:
-                task_weight = self.task_weights.get(task, 1.0)
-                weighted_loss = task_loss * task_weight
-                task_losses[task] = weighted_loss
-                total_loss += weighted_loss
+        # Log individual task losses
+        for task, loss in losses.items():
+            if task != 'total':
+                self.log(f'test_{task}_loss', loss, on_step=False, on_epoch=True)
+                
+                # Update metrics
+                self._update_metrics(predictions, labels, task, 'test')
         
         # Log total loss
         self.log('test_loss', total_loss, on_step=False, on_epoch=True)
@@ -1307,4 +1329,92 @@ class RiskFormerLightningModule(pl.LightningModule):
             }
         else:
             return optimizer
+
+    def _update_metrics(self, predictions, labels, task, stage):
+        """
+        Update metrics for a specific task.
+        
+        Args:
+            predictions: Model predictions
+            labels: Dictionary of labels
+            task: Task name
+            stage: 'train', 'val', or 'test'
+        """
+        # Skip if task not in predictions, labels, or metrics
+        if task not in predictions or task not in labels or task not in self.metrics:
+            return
+            
+        # Get predictions for this task
+        if isinstance(predictions, dict):
+            task_predictions = predictions[task]
+        else:
+            task_predictions = predictions
+            
+        # Get labels for this task
+        if isinstance(labels, dict):
+            task_labels = labels[task]
+        else:
+            task_labels = labels
+            
+        # Ensure predictions have the right shape
+        if len(task_predictions.shape) > 1:
+            # If we have instance-level predictions, use the global prediction
+            preds = task_predictions[0].unsqueeze(0)  # Select global prediction and add batch dimension
+        else:
+            preds = task_predictions.unsqueeze(0)  # Add batch dimension
+            
+        # Get task type
+        task_type = self.task_types[task]
+        
+        # Update metrics based on task type
+        if task_type == "binary":
+            # Binary classification metrics
+            if f"{stage}_acc" in self.metrics[task]:
+                # Apply sigmoid for binary classification accuracy
+                binary_preds = torch.sigmoid(preds)
+                self.metrics[task][f"{stage}_acc"](binary_preds, task_labels)
+                acc = self.metrics[task][f"{stage}_acc"].compute()
+                self.log(f'{stage}_{task}_acc', acc, on_step=False, on_epoch=True, prog_bar=False)
+                
+            if f"{stage}_auc" in self.metrics[task]:
+                try:
+                    self.metrics[task][f"{stage}_auc"](preds, task_labels)
+                    auc = self.metrics[task][f"{stage}_auc"].compute()
+                    self.log(f'{stage}_{task}_auc', auc, on_step=False, on_epoch=True, prog_bar=False)
+                except Exception as e:
+                    # AUC calculation may fail with insufficient data
+                    logger.warning(f"AUC calculation failed: {e}")
+                
+        elif task_type == "multiclass":
+            # Multiclass classification metrics
+            if f"{stage}_acc" in self.metrics[task]:
+                self.metrics[task][f"{stage}_acc"](preds, task_labels)
+                acc = self.metrics[task][f"{stage}_acc"].compute()
+                self.log(f'{stage}_{task}_acc', acc, on_step=False, on_epoch=True, prog_bar=False)
+                
+            if f"{stage}_f1" in self.metrics[task]:
+                self.metrics[task][f"{stage}_f1"](preds, task_labels)
+                f1 = self.metrics[task][f"{stage}_f1"].compute()
+                self.log(f'{stage}_{task}_f1', f1, on_step=False, on_epoch=True, prog_bar=False)
+                
+            if f"{stage}_auc" in self.metrics[task]:
+                try:
+                    self.metrics[task][f"{stage}_auc"](preds, task_labels)
+                    auc = self.metrics[task][f"{stage}_auc"].compute()
+                    self.log(f'{stage}_{task}_auc', auc, on_step=False, on_epoch=True, prog_bar=False)
+                except Exception as e:
+                    # AUC calculation may fail with insufficient data
+                    logger.warning(f"AUC calculation failed: {e}")
+                
+        elif task_type == "regression":
+            # Regression metrics
+            if f"{stage}_mse" in self.metrics[task]:
+                self.metrics[task][f"{stage}_mse"](preds, task_labels)
+                mse = self.metrics[task][f"{stage}_mse"].compute()
+                self.log(f'{stage}_{task}_mse', mse, on_step=False, on_epoch=True, prog_bar=False)
+                
+            if f"{stage}_mae" in self.metrics[task]:
+                self.metrics[task][f"{stage}_mae"](preds, task_labels)
+                mae = self.metrics[task][f"{stage}_mae"].compute()
+                self.log(f'{stage}_{task}_mae', mae, on_step=False, on_epoch=True, prog_bar=False)
 

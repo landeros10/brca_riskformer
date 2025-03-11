@@ -18,7 +18,6 @@ class TestRiskFormerMultiTask:
             "use_phi": False,
             "drop_path_rate": 0.1,
             "drop_rate": 0.1,
-            "num_classes": 3,  # 3 outputs for 3 tasks
             "max_dim": 16,
             "depth": 2,
             "global_depth": 1,
@@ -28,19 +27,42 @@ class TestRiskFormerMultiTask:
             "mlp_ratio": 2.0,
             "use_class_token": False,
             "attn_global_hidden_dim": 128,
-            "phi_dim": None,             # Added parameter
-            "downscale_depth": 1,        # Added parameter 
-            "downscale_multiplier": 1.25, # Added parameter
-            "downscale_stride_q": 2,     # Added parameter
-            "downscale_stride_k": 2,     # Added parameter
-            "noise_aug": 0.1,            # Added parameter
-            "attnpool_mode": "conv",     # Added parameter
-            "hflip_prob": 0.5,           # Added parameter
-            "vflip_prob": 0.5,           # Added parameter
-            "rotate_prob": 0.5,          # Added parameter
-            "noise_aug_prob": 0.5,       # Added parameter
-            "name": None,                # Added parameter
-            "background_tile_path": None  # Added parameter
+            "phi_dim": None,
+            "downscale_depth": 1,
+            "downscale_multiplier": 1.25,
+            "downscale_stride_q": 2,
+            "downscale_stride_k": 2,
+            "noise_aug": 0.1,
+            "attnpool_mode": "conv",
+            "hflip_prob": 0.5,
+            "vflip_prob": 0.5,
+            "rotate_prob": 0.5,
+            "noise_aug_prob": 0.5,
+            "name": None,
+            # Add tasks configuration directly
+            "tasks": {
+                "binary_task": {
+                    "type": "binary",
+                    "num_classes": 1,
+                    "weight": 1.0,
+                    "loss_fn": nn.BCEWithLogitsLoss(),
+                    "activation": "sigmoid"
+                },
+                "regression_task": {
+                    "type": "regression",
+                    "num_classes": 1,
+                    "weight": 0.5,
+                    "loss_fn": nn.MSELoss(),
+                    "activation": "linear"
+                },
+                "multiclass_task": {
+                    "type": "multiclass",
+                    "num_classes": 3,
+                    "weight": 0.75,
+                    "loss_fn": nn.CrossEntropyLoss(),
+                    "activation": "softmax"
+                }
+            }
         }
     
     @pytest.fixture
@@ -53,27 +75,9 @@ class TestRiskFormerMultiTask:
         }
     
     @pytest.fixture
-    def multitask_class_loss_map(self):
-        """Create a multi-task loss function map for binary, regression, and multiclass tasks."""
-        return {
-            'binary_task': {0: nn.BCEWithLogitsLoss()},
-            'regression_task': {0: nn.MSELoss()},
-            'multiclass_task': {0: nn.CrossEntropyLoss()}
-        }
-    
-    @pytest.fixture
-    def task_weights(self):
-        """Create weights for different tasks."""
-        return {
-            'binary_task': 1.0,
-            'regression_task': 0.5,
-            'multiclass_task': 0.75
-        }
-    
-    @pytest.fixture
     def mock_batch(self):
         """Create a mock batch with features and labels for different tasks."""
-        # Features (B, H, W, C) where B=2, H=W=16, C=16
+        # Features (B, C, H, W) where B=2, C=16, H=W=16
         features = torch.rand(2, 16, 16, 16)
         
         # Labels for different tasks
@@ -88,15 +92,12 @@ class TestRiskFormerMultiTask:
         return features, metadata
     
     @patch('riskformer.training.model.RiskFormer_ViT')
-    def test_multitask_initialization(self, mock_model, model_config, optimizer_config, 
-                                      multitask_class_loss_map, task_weights):
+    def test_multitask_initialization(self, mock_model, model_config, optimizer_config):
         """Test that the RiskFormerLightningModule correctly initializes with multi-task config."""
         # Create the model
         lightning_model = RiskFormerLightningModule(
             model_config=model_config,
             optimizer_config=optimizer_config,
-            class_loss_map=multitask_class_loss_map,
-            task_weights=task_weights,
             regional_coeff=0.3
         )
         
@@ -117,11 +118,16 @@ class TestRiskFormerMultiTask:
         
         # Check regional coefficient
         assert lightning_model.regional_coeff == 0.3
+        
+        # Check that loss functions were set correctly
+        assert isinstance(lightning_model.class_loss_map['binary_task'][0], nn.BCEWithLogitsLoss)
+        assert isinstance(lightning_model.class_loss_map['regression_task'][0], nn.MSELoss)
+        assert isinstance(lightning_model.class_loss_map['multiclass_task'][0], nn.CrossEntropyLoss)
     
     @patch('riskformer.training.model.RiskFormer_ViT')
     @patch('riskformer.training.model.slide_level_loss')
     def test_calculate_task_loss(self, mock_slide_level_loss, mock_model, model_config,
-                                optimizer_config, multitask_class_loss_map, mock_batch):
+                                optimizer_config, mock_batch):
         """Test that _calculate_task_loss handles different tasks correctly."""
         # Configure mocks
         mock_slide_level_loss.return_value = torch.tensor(0.5)
@@ -130,113 +136,78 @@ class TestRiskFormerMultiTask:
         lightning_model = RiskFormerLightningModule(
             model_config=model_config,
             optimizer_config=optimizer_config,
-            class_loss_map=multitask_class_loss_map,
             regional_coeff=0.3
         )
         
         # Mock the log method
         lightning_model.log = MagicMock()
         
-        # Skip metrics calculation by patching the log_metrics method
-        lightning_model.log_metrics = MagicMock()
+        # Mock the metrics methods rather than replacing the objects
+        for task in lightning_model.metrics:
+            for metric_name in lightning_model.metrics[task]:
+                # For each metric, patch its update and compute methods
+                metric = lightning_model.metrics[task][metric_name]
+                metric.update = MagicMock()
+                metric.compute = MagicMock(return_value=torch.tensor(0.8))
         
-        # Mock the metrics to avoid shape mismatch errors
-        mock_metric = MagicMock()
-        mock_metric.return_value = torch.tensor(0.8)
-        
-        # Replace the metrics dictionary with mocks
-        lightning_model.metrics = {
-            'binary_task': {
-                'train_acc': mock_metric,
-                'train_auc': mock_metric,
-                'val_acc': mock_metric,
-                'val_auc': mock_metric,
-                'test_acc': mock_metric,
-                'test_auc': mock_metric
-            },
-            'multiclass_task': {
-                'train_acc': mock_metric,
-                'train_f1': mock_metric,
-                'train_auc': mock_metric,
-                'val_acc': mock_metric,
-                'val_f1': mock_metric,
-                'val_auc': mock_metric,
-                'test_acc': mock_metric,
-                'test_f1': mock_metric,
-                'test_auc': mock_metric
-            },
-            'regression_task': {
-                'train_mse': mock_metric,
-                'train_mae': mock_metric,
-                'val_mse': mock_metric,
-                'val_mae': mock_metric,
-                'test_mse': mock_metric,
-                'test_mae': mock_metric
-            }
-        }
-        
-        # Add task types
-        lightning_model.task_types = {
-            'binary_task': 'binary',
-            'multiclass_task': 'multiclass',
-            'regression_task': 'regression'
-        }
-        
-        # Get predictions and labels
-        features, metadata = mock_batch
-        predictions = torch.rand(5, 3)  # 5 instances, 3 outputs (one per task)
+        # Get labels from mock batch
+        _, metadata = mock_batch
         labels = metadata['labels']
         
-        # Test for binary task - extract just the binary_task label
-        binary_task_label = labels['binary_task']
-        binary_loss = lightning_model._calculate_task_loss(predictions, binary_task_label, 'binary_task', 'train')
+        # Create dictionary of task predictions
+        predictions = {
+            'binary_task': torch.rand(3, 1),      # 3 predictions (global + instances)
+            'regression_task': torch.rand(3, 1),  # 3 predictions (global + instances)
+            'multiclass_task': torch.rand(3, 3)   # 3 predictions for 3 classes
+        }
+        
+        # Test for binary task
+        binary_task_labels = {'binary_task': labels['binary_task']}
+        binary_loss = lightning_model._calculate_task_loss(predictions, binary_task_labels, 'binary_task', 'train')
         assert binary_loss is not None
         assert binary_loss.item() == 0.5
         mock_slide_level_loss.assert_called_with(
-            predictions, 
-            binary_task_label, 
+            predictions['binary_task'], 
+            labels['binary_task'], 
             lightning_model.class_loss_map['binary_task'], 
             regional_coeff=lightning_model.regional_coeff
         )
         
         # Test for regression task
-        regression_label = labels['regression_task']
-        regression_loss = lightning_model._calculate_task_loss(predictions, regression_label, 'regression_task', 'train')
+        regression_task_labels = {'regression_task': labels['regression_task']}
+        regression_loss = lightning_model._calculate_task_loss(predictions, regression_task_labels, 'regression_task', 'train')
         assert regression_loss is not None
         assert regression_loss.item() == 0.5
         
         # Test for multiclass task
-        multiclass_label = labels['multiclass_task']
-        multiclass_loss = lightning_model._calculate_task_loss(predictions, multiclass_label, 'multiclass_task', 'train')
+        multiclass_task_labels = {'multiclass_task': labels['multiclass_task']}
+        multiclass_loss = lightning_model._calculate_task_loss(predictions, multiclass_task_labels, 'multiclass_task', 'train')
         assert multiclass_loss is not None
         assert multiclass_loss.item() == 0.5
         
         # Test for non-existent task
-        nonexistent_loss = lightning_model._calculate_task_loss(predictions, labels['binary_task'], 'nonexistent_task', 'train')
+        nonexistent_loss = lightning_model._calculate_task_loss(predictions, binary_task_labels, 'nonexistent_task', 'train')
         assert nonexistent_loss is None
+        
+        # Test with tuple return format (task_outputs, attns, global_weights)
+        predictions_tuple = (predictions, torch.rand(2, 2, 4), torch.rand(2, 1))
+        tuple_loss = lightning_model._calculate_task_loss(predictions_tuple, binary_task_labels, 'binary_task', 'train')
+        assert tuple_loss is not None
+        assert tuple_loss.item() == 0.5
     
     @patch('riskformer.training.model.RiskFormer_ViT')
-    def test_training_step(self, mock_model, model_config, optimizer_config, 
-                          multitask_class_loss_map, task_weights, mock_batch):
+    def test_training_step(self, mock_model, model_config, optimizer_config, mock_batch):
         """Test the training_step method with multi-task setup."""
         # Configure mocks
         mock_model_instance = MagicMock()
         mock_model.return_value = mock_model_instance
         
-        # Mock the forward method to return a tensor of the right shape
-        mock_model_instance.return_value = torch.rand(5, 3)  # 5 instances, 3 outputs
-        
         # Create model
         lightning_model = RiskFormerLightningModule(
             model_config=model_config,
             optimizer_config=optimizer_config,
-            class_loss_map=multitask_class_loss_map,
-            task_weights=task_weights,
             regional_coeff=0.3
         )
-        
-        # Skip metrics calculation by patching the log_metrics method
-        lightning_model.log_metrics = MagicMock()
         
         # Replace the _calculate_task_loss method with a mock
         lightning_model._calculate_task_loss = MagicMock(return_value=torch.tensor(0.5))
@@ -247,42 +218,85 @@ class TestRiskFormerMultiTask:
         # Setup forward method on the model
         lightning_model.model = mock_model_instance
         
+        # Create dictionary of task predictions for model output
+        predictions = {
+            'binary_task': torch.rand(3, 1),
+            'regression_task': torch.rand(3, 1),
+            'multiclass_task': torch.rand(3, 3)
+        }
+        mock_model_instance.forward.return_value = predictions
+        
         # Test training step
         features, metadata = mock_batch
-        total_loss = lightning_model.training_step((features, metadata), 0)
+        loss = lightning_model.training_step((features, metadata), 0)
         
-        # Check that _calculate_task_loss was called for each task
-        assert lightning_model._calculate_task_loss.call_count == 3
+        # Verify loss calculation
+        assert loss is not None
+        # With 3 tasks, each with weight and loss of 0.5: (1.0*0.5 + 0.5*0.5 + 0.75*0.5)
+        # But in the mock we always return 0.5, so it's 0.5 * (1.0 + 0.5 + 0.75) = 1.125
+        expected_loss = 0.5 * (1.0 + 0.5 + 0.75)
+        assert loss.item() == expected_loss
         
-        # Expected weighted losses: binary (1.0 * 0.5) + regression (0.5 * 0.5) + multiclass (0.75 * 0.5) = 1.125
-        expected_loss = 1.125
-        assert total_loss.item() == expected_loss
-        
-        # Check that the log method was called with the total loss
-        lightning_model.log.assert_called_with('train_loss', torch.tensor(expected_loss), 
-                                              on_step=True, on_epoch=True, prog_bar=True)
+        # Check that we logged the total loss
+        lightning_model.log.assert_any_call('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
     
     @patch('riskformer.training.model.RiskFormer_ViT')
-    def test_regional_coefficient(self, mock_model, model_config, optimizer_config, 
-                                 multitask_class_loss_map, task_weights):
-        """Test that the regional coefficient affects the loss calculation."""
-        # Create models with different regional coefficients
-        model_coeff_0 = RiskFormerLightningModule(
+    def test_validation_step(self, mock_model, model_config, optimizer_config, mock_batch):
+        """Test the validation_step method with multi-task setup."""
+        # Configure mocks
+        mock_model_instance = MagicMock()
+        mock_model.return_value = mock_model_instance
+        
+        # Create model
+        lightning_model = RiskFormerLightningModule(
             model_config=model_config,
             optimizer_config=optimizer_config,
-            class_loss_map=multitask_class_loss_map,
-            task_weights=task_weights,
-            regional_coeff=0.0
+            regional_coeff=0.3
         )
         
-        model_coeff_05 = RiskFormerLightningModule(
-            model_config=model_config,
-            optimizer_config=optimizer_config,
-            class_loss_map=multitask_class_loss_map,
-            task_weights=task_weights,
-            regional_coeff=0.5
-        )
+        # Replace the _calculate_task_loss method with a mock
+        lightning_model._calculate_task_loss = MagicMock(return_value=torch.tensor(0.5))
         
-        # Check that the regional coefficients were set correctly
-        assert model_coeff_0.regional_coeff == 0.0
-        assert model_coeff_05.regional_coeff == 0.5 
+        # Mock the log method
+        lightning_model.log = MagicMock()
+        
+        # Setup forward method on the model
+        lightning_model.model = mock_model_instance
+        
+        # Create dictionary of task predictions for model output
+        predictions = {
+            'binary_task': torch.rand(3, 1),
+            'regression_task': torch.rand(3, 1),
+            'multiclass_task': torch.rand(3, 3)
+        }
+        mock_model_instance.forward.return_value = predictions
+        
+        # Test validation step
+        features, metadata = mock_batch
+        loss = lightning_model.validation_step((features, metadata), 0)
+        
+        # Verify loss calculation
+        assert loss is not None
+        # With 3 tasks, each with weight and loss of 0.5: (1.0*0.5 + 0.5*0.5 + 0.75*0.5)
+        expected_loss = 0.5 * (1.0 + 0.5 + 0.75)
+        assert loss.item() == expected_loss
+        
+        # Check that we logged the total loss
+        lightning_model.log.assert_any_call('val_loss', loss, on_step=False, on_epoch=True, prog_bar=True)
+    
+    @patch('riskformer.training.model.RiskFormer_ViT')
+    def test_regional_coefficient(self, mock_model, model_config, optimizer_config):
+        """Test that the regional coefficient is applied correctly."""
+        # Different regional coefficient values to test
+        regional_coeffs = [0.0, 0.5, 1.0]
+        
+        for coeff in regional_coeffs:
+            # Create model with this coefficient
+            lightning_model = RiskFormerLightningModule(
+                model_config=model_config,
+                optimizer_config=optimizer_config,
+                regional_coeff=coeff
+            )
+            
+            # Check that the coefficient was set correctly
+            assert lightning_model.regional_coeff == coeff 

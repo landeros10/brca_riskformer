@@ -59,8 +59,10 @@ def setup_loss_functions(config: Dict[str, Any]) -> Dict[str, Dict[int, nn.Modul
     
     return class_loss_map
 
-def create_lightning_module_from_config(config_path: str, 
-                                       task_weights: Optional[Dict[str, float]] = None) -> RiskFormerLightningModule:
+def create_lightning_module_from_config(
+        config_path: str,
+        task_weights: Optional[Dict[str, float]] = None
+) -> RiskFormerLightningModule:
     """
     Create a RiskFormerLightningModule from a configuration file.
     
@@ -76,8 +78,15 @@ def create_lightning_module_from_config(config_path: str,
     # Load config
     config = RiskFormer_ViT.load_config(config_path)
     
-    # Setup loss functions
-    class_loss_map = setup_loss_functions(config)
+    # Prepare task configurations if not already in config
+    if 'tasks' not in config:
+        raise ValueError("Config must contain 'tasks' section with task types")
+    
+    # If task weights are provided, update the weights in the tasks config
+    if task_weights:
+        for task, weight in task_weights.items():
+            if task in config['tasks']:
+                config['tasks'][task]['weight'] = weight
     
     # Get regional coefficient
     regional_coeff = config.get('regional_coeff', 0.0)
@@ -85,8 +94,6 @@ def create_lightning_module_from_config(config_path: str,
     # Create Lightning module
     return RiskFormerLightningModule.from_config(
         config=config,
-        class_loss_map=class_loss_map,
-        task_weights=task_weights,
         regional_coeff=regional_coeff
     )
 

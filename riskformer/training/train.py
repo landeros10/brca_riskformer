@@ -83,8 +83,6 @@ def parse_args():
                         help="Drop path rate")
     parser.add_argument("--drop_rate", type=float, default=0.1,
                         help="Dropout rate")
-    parser.add_argument("--num_classes", type=int, default=1,
-                        help="Number of output classes")
     parser.add_argument("--depth", type=int, default=4,
                         help="Depth of the local transformer blocks")
     parser.add_argument("--global_depth", type=int, default=2,
@@ -218,18 +216,85 @@ def main():
         seed=args.seed,
     )
     
-    # Create model config
+    # Create task configurations
+    task_configs = {}
+    
+    # Binary classification tasks
+    if args.num_classes == 1:
+        # ODX85 - Binary classification (High/Low risk)
+        task_configs['odx85'] = {
+            'type': 'binary',
+            'num_classes': 1,
+            'loss_fn': nn.BCEWithLogitsLoss(),
+            'weight': 1.0,  # Primary task
+            'metrics': ['auroc', 'accuracy']
+        }
+        
+        # MPHR - Binary classification (High/Low risk)
+        task_configs['mphr'] = {
+            'type': 'binary',
+            'num_classes': 1,
+            'loss_fn': nn.BCEWithLogitsLoss(),
+            'weight': 0.5,  # Secondary task
+            'metrics': ['auroc', 'accuracy']
+        }
+        
+        # Necrosis - Binary classification (Present/Absent)
+        task_configs['necrosis'] = {
+            'type': 'binary',
+            'num_classes': 1,
+            'loss_fn': nn.BCEWithLogitsLoss(),
+            'weight': 0.3,  # Tertiary task
+            'metrics': ['auroc', 'accuracy']
+        }
+        
+        # Pleomorphism - Binary classification
+        task_configs['pleo'] = {
+            'type': 'binary',
+            'num_classes': 1,
+            'loss_fn': nn.BCEWithLogitsLoss(),
+            'weight': 0.3,  # Tertiary task
+            'metrics': ['auroc', 'accuracy']
+        }
+    else:
+        # Multi-class classification
+        task_configs['odx85'] = {
+            'type': 'multiclass',
+            'num_classes': args.num_classes,
+            'loss_fns': {i: nn.CrossEntropyLoss() for i in range(args.num_classes)},
+            'weight': 1.0,  # Primary task
+            'metrics': ['accuracy']
+        }
+    
+    # Regression tasks
+    task_configs['odx_train'] = {
+        'type': 'regression',
+        'num_classes': 1,
+        'loss_fn': nn.MSELoss(),
+        'weight': 0.5,  # Secondary task
+        'metrics': ['mse', 'mae']
+    }
+    
+    task_configs['dfm'] = {
+        'type': 'regression',
+        'num_classes': 1,
+        'loss_fn': nn.MSELoss(),
+        'weight': 0.3,  # Tertiary task
+        'metrics': ['mse', 'mae']
+    }
+    
+    # Model configuration
     model_config = {
         "input_embed_dim": args.input_embed_dim,
         "output_embed_dim": args.output_embed_dim,
         "use_phi": args.use_phi,
         "drop_path_rate": args.drop_path_rate,
         "drop_rate": args.drop_rate,
-        "num_classes": args.num_classes,
         "max_dim": args.max_dim,
         "depth": args.depth,
         "global_depth": args.global_depth,
         "encoding_method": args.encoding_method,
+        "phi_dim": args.phi_dim,
         "mask_num": args.mask_num,
         "mask_preglobal": args.mask_preglobal,
         "num_heads": args.num_heads,
@@ -237,6 +302,7 @@ def main():
         "mlp_ratio": args.mlp_ratio,
         "use_class_token": args.use_class_token,
         "attn_global_hidden_dim": args.attn_global_hidden_dim,
+        "tasks": task_configs,  # Add task configurations directly to the model config
     }
     
     # Create optimizer config
@@ -250,46 +316,10 @@ def main():
         "learning_rate_warmup_epochs": args.learning_rate_warmup_epochs,
     }
     
-    # Create loss functions
-    class_loss_map = {}
-    
-    # Binary classification tasks
-    if args.num_classes == 1:
-        # ODX85 - Binary classification (High/Low risk)
-        class_loss_map['odx85'] = {0: nn.BCEWithLogitsLoss()}
-        
-        # MPHR - Binary classification (High/Low risk)
-        class_loss_map['mphr'] = {0: nn.BCEWithLogitsLoss()}
-        
-        # Necrosis - Binary classification (Present/Absent)
-        class_loss_map['necrosis'] = {0: nn.BCEWithLogitsLoss()}
-        
-        # Pleomorphism - Binary classification
-        class_loss_map['pleo'] = {0: nn.BCEWithLogitsLoss()}
-    else:
-        # Multi-class classification
-        class_loss_map['odx85'] = {i: nn.CrossEntropyLoss() for i in range(args.num_classes)}
-    
-    # Regression tasks
-    class_loss_map['odx_train'] = {0: nn.MSELoss()}
-    class_loss_map['dfm'] = {0: nn.MSELoss()}
-    
-    # Task weights (optional)
-    task_weights = {
-        'odx85': 1.0,      # Primary task
-        'mphr': 0.5,       # Secondary task
-        'necrosis': 0.3,   # Tertiary task
-        'pleo': 0.3,       # Tertiary task
-        'odx_train': 0.5,  # Secondary task
-        'dfm': 0.3,        # Tertiary task
-    }
-    
     # Create model
     model = RiskFormerLightningModule(
         model_config=model_config,
         optimizer_config=optimizer_config,
-        class_loss_map=class_loss_map,
-        task_weights=task_weights,
         regional_coeff=args.regional_coeff,
     )
     

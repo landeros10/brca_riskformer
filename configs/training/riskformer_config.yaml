@@ -10,18 +10,31 @@ cache_dir: "/tmp/riskformer_cache"
 max_dim: 32
 overlap: 0.1
 
-# Labels to include in the model
-labels:
-  include:
-    - odx_train  # Regression task
-    - odx85      # Binary classification task
-    - mphr       # Binary classification task
+# Tasks configuration
+tasks:
+  odx_train:
+    type: regression
+    num_classes: 1
+    loss_fn: MSELoss
+    weight: 1.0
+    metrics: [mse, mae]
+    activation: tanh
   
-  # Task type mapping (binary, regression, multiclass)
-  task_types:
-    odx_train: regression
-    odx85: binary
-    mphr: binary
+  odx85:
+    type: binary
+    num_classes: 1
+    loss_fn: BCEWithLogitsLoss
+    weight: 1.0
+    metrics: [auroc, accuracy]
+    activation: null
+    
+  mphr:
+    type: binary
+    num_classes: 1
+    loss_fn: BCEWithLogitsLoss
+    weight: 1.0
+    metrics: [auroc, accuracy]
+    activation: null
 
 # DataLoader parameters
 batch_size: 32
@@ -36,7 +49,6 @@ output_embed_dim: 512
 use_phi: true
 drop_path_rate: 0.1
 drop_rate: 0.1
-num_classes: 1
 depth: 4
 global_depth: 2
 encoding_method: "sinusoidal"
