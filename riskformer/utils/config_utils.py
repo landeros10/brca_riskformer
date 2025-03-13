@@ -77,6 +77,7 @@ class PreprocessingConfig:
     model: ModelConfig
     processing: ProcessingConfig
 
+
 def _dataclass_to_dict(obj: Any) -> Dict:
     """Convert a dataclass instance to a nested dictionary."""
     if hasattr(obj, '__dataclass_fields__'):
@@ -86,6 +87,7 @@ def _dataclass_to_dict(obj: Any) -> Dict:
             result[field] = _dataclass_to_dict(value) if hasattr(value, '__dataclass_fields__') else value
         return result
     return obj
+
 
 def load_preprocessing_config(config_path: str) -> Dict:
     """Load preprocessing configuration from a YAML file.
@@ -129,6 +131,7 @@ def load_preprocessing_config(config_path: str) -> Dict:
         logger.error(f"Failed to load config from {config_path}: {str(e)}")
         raise
 
+
 def load_yaml_config(config_path, schema):
     """Load a YAML config file and validate it against a schema."""
     
@@ -156,4 +159,112 @@ def load_yaml_config(config_path, schema):
     except Exception as e:
         logger.warning(f"Invalid values in {config_path}. Using defaults. Error: {e}")
         return schema()
+    
+
+def load_train_config(config_path: str) -> Dict:
+    """Load training configuration from a YAML file.
+    
+    Args:
+        config_path: Path to the YAML configuration file
+
+    Returns:
+        Dictionary containing the configuration
+        
+    Raises:
+        ValueError: If the configuration file is invalid
+        FileNotFoundError: If the configuration file does not exist
+    """
+    # Validate the config file exists
+    if not os.path.isfile(config_path):
+        logger.error(f"Config file {config_path} not found")
+        raise FileNotFoundError(f"Config file {config_path} not found")
+
+    try:
+        # Load the config
+        with open(config_path, "r") as f:
+            config_dict = yaml.safe_load(f)
+        
+        # Validate the config
+        _validate_training_config(config_dict)
+            
+        logger.info(f"Successfully loaded and validated config from {config_path}")
+        return config_dict
+    except ValueError as e:
+        # Re-raise validation errors
+        logger.error(f"Invalid config file: {str(e)}")
+        raise
+    except Exception as e:
+        # Handle other errors like YAML parsing issues
+        logger.error(f"Error loading config from {config_path}: {str(e)}")
+        raise ValueError(f"Failed to load config: {str(e)}")
+    
+
+def _validate_training_config(config: Dict[str, Any]) -> None:
+    """
+    Validate a training configuration dictionary.
+    
+    Args:
+        config: Training configuration dictionary to validate
+        
+    Raises:
+        ValueError: If the configuration is invalid
+    """
+    # Verify it's a dictionary
+    if not isinstance(config, dict):
+        raise ValueError(f"Config must be a dictionary, got {type(config).__name__}")
+    
+    # Required fields for training
+    required_fields = [
+        "s3_bucket",
+        "metadata_file",
+        "tasks"
+    ]
+    
+    # Check required fields
+    for field in required_fields:
+        if field not in config:
+            raise ValueError(f"Required field '{field}' missing from config")
+    
+    # Validate tasks field
+    if not isinstance(config["tasks"], dict):
+        raise ValueError("'tasks' must be a dictionary")
+    
+    if not config["tasks"]:
+        raise ValueError("'tasks' cannot be empty")
+    
+    # Validate each task
+    for task_name, task_config in config["tasks"].items():
+        if not isinstance(task_config, dict):
+            raise ValueError(f"Task '{task_name}' must be a dictionary")
+        
+        # Required task fields
+        if "type" not in task_config:
+            raise ValueError(f"Task '{task_name}' missing required field 'type'")
+        
+        task_type = task_config["type"]
+        if task_type not in ["binary", "multiclass", "regression"]:
+            raise ValueError(f"Task '{task_name}' has invalid type '{task_type}', must be one of: binary, multiclass, regression")
+    
+    # Optional numeric fields
+    numeric_fields = [
+        "batch_size", "num_workers", "max_epochs", "min_epochs",
+        "val_split", "test_split", "seed", "max_dim", "overlap"
+    ]
+    
+    for field in numeric_fields:
+        if field in config and not isinstance(config[field], (int, float)):
+            raise ValueError(f"Field '{field}' must be a number")
+    
+    # Validate specific numeric constraints
+    if "batch_size" in config and config["batch_size"] <= 0:
+        raise ValueError("'batch_size' must be positive")
+    
+    if "num_workers" in config and config["num_workers"] < 0:
+        raise ValueError("'num_workers' cannot be negative")
+    
+    if "val_split" in config and (config["val_split"] < 0 or config["val_split"] >= 1):
+        raise ValueError("'val_split' must be between 0 and 1 (exclusive)")
+    
+    if "test_split" in config and (config["test_split"] < 0 or config["test_split"] >= 1):
+        raise ValueError("'test_split' must be between 0 and 1 (exclusive)")
     

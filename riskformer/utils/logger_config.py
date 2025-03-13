@@ -4,6 +4,7 @@ from datetime import datetime
 import logging
 import watchtower
 from riskformer.utils.aws_utils import initialize_boto3_session
+from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
 def setup_cloudwatch_handler(
         log_group: str,
@@ -71,8 +72,6 @@ def logger_setup(
         region_name (str, optional): AWS region for CloudWatch logging.
         log_dir (str, optional): Directory to save logs.
     """    
-    print(1)
-    print(log_dir)
     os.makedirs(log_dir, exist_ok=True)
     log_filename = f"{log_group}.log"
 
@@ -85,7 +84,7 @@ def logger_setup(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
-            logging.FileHandler(os.path.join(LOG_PATH, log_filename)),
+            logging.FileHandler(os.path.join(log_dir, log_filename)),
             logging.StreamHandler()
         ]
     )
@@ -181,3 +180,51 @@ def log_event(level, event, status, **kwargs):
     # Log human-readable text for debugging (only for debug level)
     if level == "debug":
         log_func(log_text)
+
+
+# Add the create_tensorboard_logger function from riskformer/training/train.py
+def create_tensorboard_logger(log_dir='lightning_logs', experiment_name='riskformer'):
+    """Create TensorBoard logger
+    
+    Args:
+        log_dir (str, optional): Directory for logs. Defaults to 'lightning_logs'.
+        experiment_name (str, optional): Name of the experiment. Defaults to 'riskformer'.
+        
+    Returns:
+        TensorBoardLogger: TensorBoard logger
+    """
+    tb_logger = TensorBoardLogger(
+        save_dir=log_dir,
+        name=experiment_name,
+    )
+    log_event("info", "logger_created", "TensorBoard logger created", 
+             log_dir=log_dir, 
+             experiment=experiment_name)
+    return tb_logger
+
+
+# Add the create_wandb_logger function from entrypoints/train.py
+def create_wandb_logger(config):
+    """Create WandB logger
+    
+    Args:
+        config (dict): Training configuration containing wandb settings
+        
+    Returns:
+        WandbLogger: WandB logger or None if creation fails
+    """
+    try:
+        wandb_logger = WandbLogger(
+            project=config.get('wandb_project', 'riskformer'),
+            name=config.get('experiment_name', 'riskformer'),
+            entity=config.get('wandb_entity'),
+            log_model=True,
+        )
+        log_event("info", "logger_created", "WandB logger created", 
+                  project=config.get('wandb_project', 'riskformer'), 
+                  experiment=config.get('experiment_name', 'riskformer'))
+        return wandb_logger
+    except Exception as e:
+        log_event("error", "wandb_logger_failed", "Failed to create WandB logger", 
+                 error_message=str(e))
+        return None
