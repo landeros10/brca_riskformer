@@ -10,6 +10,14 @@ cache_dir: "/tmp/riskformer_cache"
 max_dim: 32
 overlap: 0.1
 
+# DataLoader parameters
+batch_size: 32
+num_workers: 4
+val_split: 0.2
+test_split: 0.1
+seed: 42
+pin_memory: true
+
 # Tasks configuration
 tasks:
   odx_train:
@@ -35,13 +43,6 @@ tasks:
     weight: 1.0
     metrics: [auroc, accuracy]
     activation: null
-
-# DataLoader parameters
-batch_size: 32
-num_workers: 4
-val_split: 0.2
-test_split: 0.1
-seed: 42
 
 # Model parameters
 input_embed_dim: 1024

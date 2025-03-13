@@ -19,7 +19,7 @@ import torch.nn.functional as F
 import yaml
 
 from riskformer.training.layers import SinusoidalPositionalEncoding2D, MultiScaleBlock, GlobalMaxPoolLayer
-from riskformer.utils.training_utils import create_slide_level_loss
+from riskformer.utils.training_utils import create_slide_level_loss, load_training_config
 
 logger = logging.getLogger(__name__)
 
@@ -170,21 +170,6 @@ class RiskFormer_ViT(nn.Module):
         **kwargs: Additional arguments        
     """
     
-    @staticmethod
-    def load_config(config_path):
-        """
-        Load configuration from a YAML file.
-        
-        Args:
-            config_path: Path to the YAML configuration file.
-            
-        Returns:
-            A dictionary containing the configuration.
-        """
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-        return config
-    
     @classmethod
     def from_config_file(cls, config_path):
         """
@@ -196,7 +181,7 @@ class RiskFormer_ViT(nn.Module):
         Returns:
             An initialized RiskFormer_ViT model.
         """
-        config = cls.load_config(config_path)
+        config = load_training_config(config_path)
         return cls.from_config(config)
 
     @classmethod
@@ -1072,7 +1057,7 @@ class RiskFormerLightningModule(pl.LightningModule):
         Returns:
             An initialized RiskFormerLightningModule.
         """
-        config = RiskFormer_ViT.load_config(config_path)
+        config = load_training_config(config_path)
         return cls.from_config(config, task_configs, regional_coeff)
     
     def __init__(
@@ -1174,10 +1159,9 @@ class RiskFormerLightningModule(pl.LightningModule):
     
     def training_step(self, batch, batch_idx):
         """Training step for Lightning."""
-        x = batch['features']
-        metadata = batch['metadata']
-        labels = batch['labels']
-        predictions = self(x)  # This now correctly handles any return format from RiskFormer_ViT.forward
+        x, metadata = batch
+        labels = metadata['labels']
+        predictions = self(x)
         
         # Calculate loss using the new loss function
         losses = self.loss(predictions, labels)
@@ -1199,11 +1183,10 @@ class RiskFormerLightningModule(pl.LightningModule):
     
     def validation_step(self, batch, batch_idx):
         """Validation step for Lightning."""
-        x = batch['features']
-        metadata = batch['metadata']
-        labels = batch['labels']
+        x, metadata = batch
+        labels = metadata['labels']
 
-        predictions = self(x)  # This now correctly handles any return format from RiskFormer_ViT.forward
+        predictions = self(x)
         
         # Calculate loss using the new loss function
         losses = self.loss(predictions, labels)
@@ -1224,12 +1207,10 @@ class RiskFormerLightningModule(pl.LightningModule):
     
     def test_step(self, batch, batch_idx):
         """Test step for Lightning."""
-        x = batch['features']
-        metadata = batch['metadata']
-        labels = batch['labels']
+        x, metadata = batch
+        labels = metadata['labels']
 
-        predictions = self(x)  # This now correctly handles any return format from RiskFormer_ViT.forward
-        
+        predictions = self(x)
 
         # Calculate loss using the new loss function
         losses = self.loss(predictions, labels)

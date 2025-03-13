@@ -13,8 +13,9 @@ import numpy as np
 import random
 import logging
 from dataclasses import dataclass
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 import torch.nn as nn
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -434,13 +435,19 @@ def convert_to_soft_label(score, beta=1.50):
     return soft_label
 
 
-def split_riskformer_data(svs_paths_data_dict, label_var="odx85", positive_label="H", test_split_ratio=0.2):
+def split_riskformer_data(
+    examples: Dict[str, Dict],
+    label_var: str = "odx85",
+    positive_label: str = "H",
+    test_split_ratio: float = 0.2,
+    seed: int = 42
+):
     """
     Split data into train and test sets. Balances test set to have
     equal number of positive and negative samples based on the data variable provided.
     
     Args:
-        svs_paths_data_dict (dict): Dictionary of SVS file paths and corresponding dictionary of data.
+        examples (dict): Dictionary of SVS file paths and corresponding dictionary of data.
         label_var (str): The key in the data dictionary that contains the label.
         positive_label (str): The value that indicates a positive sample.
         test_split_ratio (float): Ratio of data to use for testing.
@@ -448,33 +455,53 @@ def split_riskformer_data(svs_paths_data_dict, label_var="odx85", positive_label
     Returns:
         tuple: Two dictionaries, one for training data and one for testing data.
     """
-    svs_paths = np.array(list(svs_paths_data_dict.keys()))
-    labels = np.array([svs_paths_data_dict[svs_path][label_var] for svs_path in svs_paths])
-    num_pos = int(len(svs_paths) * (test_split_ratio) / 2)
+    patient_ids = np.array(list(examples.keys()))
+    labels = np.array([
+        examples[patient_id][label_var]
+        for patient_id in patient_ids
+    ])
+
+
+    num_pos = int(len(patient_ids) * (test_split_ratio) / 2)
     if num_pos == 0:
         logger.error("Test split ratio too low, not enough samples.")
         raise ValueError("Test split ratio too low, not enough samples.")
 
-    pos_samples = svs_paths[labels == positive_label]
-    neg_samples = svs_paths[labels != positive_label]
+    pos_samples = patient_ids[labels == positive_label]
+    neg_samples = patient_ids[labels != positive_label]
     if len(pos_samples) == 0 or len(neg_samples) == 0:
         logger.error("No positive or negative samples found.")
         raise ValueError("No positive or negative samples found.")
 
-    logger.debug(f"Dataset contains {len(svs_paths)} samples, {len(pos_samples)} positive and {len(neg_samples)} negative samples.")
+    logger.debug(f"Dataset contains {len(patient_ids)} samples, {len(pos_samples)} positive and {len(neg_samples)} negative samples.")
     np.random.shuffle(pos_samples)
     np.random.shuffle(neg_samples)
 
     test_data = {
-        **{svs_path: svs_paths_data_dict[svs_path] for svs_path in pos_samples[:num_pos]},
-        **{svs_path: svs_paths_data_dict[svs_path] for svs_path in neg_samples[:num_pos]}
+        **{patient_id: examples[patient_id] for patient_id in pos_samples[:num_pos]},
+        **{patient_id: examples[patient_id] for patient_id in neg_samples[:num_pos]}
     }
     logger.debug(f"Created Test Dataset with {len(test_data)} samples, {num_pos} positive and {num_pos} negative samples.")
     train_data = {
-        **{svs_path: svs_paths_data_dict[svs_path] for svs_path in pos_samples[num_pos:]},
-        **{svs_path: svs_paths_data_dict[svs_path] for svs_path in neg_samples[num_pos:]}
+        **{patient_id: examples[patient_id] for patient_id in pos_samples[num_pos:]},
+        **{patient_id: examples[patient_id] for patient_id in neg_samples[num_pos:]}
     }
     logger.debug(f"Created Train Dataset with {len(train_data)} samples, {len(pos_samples) - num_pos} positive and {len(neg_samples) - num_pos} negative samples.")
     return train_data, test_data
+
+
+def load_training_config(config_path: str) -> Dict[str, Any]:
+    """
+    Load configuration from a YAML file.
+    
+    Args:
+        config_path: Path to the YAML configuration file.
+        
+    Returns:
+        A dictionary containing the configuration.
+    """
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    return config
 
 

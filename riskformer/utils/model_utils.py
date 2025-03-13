@@ -10,6 +10,7 @@ import logging
 from typing import Dict, Any, Optional, Union, List, Tuple
 
 from riskformer.training.model import RiskFormer_ViT, RiskFormerLightningModule
+from riskformer.utils.training_utils import load_training_config
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ def create_lightning_module_from_config(
     logger.info(f"Creating RiskFormerLightningModule from config file: {config_path}")
     
     # Load config
-    config = RiskFormer_ViT.load_config(config_path)
+    config = load_training_config(config_path)
     
     # Prepare task configurations if not already in config
     if 'tasks' not in config:

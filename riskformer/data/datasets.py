@@ -1,4 +1,5 @@
 import numpy as np
+import random
 from PIL import Image
 from skimage.measure import label, regionprops
 import zarr
@@ -23,15 +24,11 @@ from torch.utils.data import Dataset, DataLoader, random_split
 import pytorch_lightning as pl
 
 from riskformer.utils.data_utils import sample_slide_image
-from riskformer.utils.training_utils import PatchInfo, split_riskformer_data
-from riskformer.utils.randstainna import RandStainNA
+from riskformer.utils.training_utils import PatchInfo, split_riskformer_data, load_training_config
 from riskformer.utils.aws_utils import initialize_s3_client, list_bucket_files, is_s3_path
 from riskformer.utils.logger_config import log_event
 
 logger = logging.getLogger(__name__)
-
-# yaml_file = '/home/ubuntu/notebooks/cpc_hist/src/CRC_LAB_randomTrue_n0.yaml'
-# stain_normalizer = RandStainNA(yaml_file, std_hyper=-1.0)
 
 
 class SingleSlideDataset(Dataset):
@@ -152,6 +149,64 @@ class S3Cache:
                     raise RuntimeError(f"Failed to download {s3_path}: {e}")
                 
         return str(local_path)
+    
+    def prefetch_patient_files(
+            self,
+            patient_examples: Dict[str, Dict[str, Any]],
+            collect_stats: bool = True,
+            max_workers: int = 4,
+    ) -> None:
+        """
+        Prefetch all files for a collection of patients in parallel.
+        
+        Args:
+            patient_examples: Dictionary of patient examples containing file paths
+            collect_stats: Whether to collect statistics about the downloaded files
+            max_workers: Maximum number of parallel download workers
+        """
+        if collect_stats:
+            feature_dim = None
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for patient_id in patient_examples:
+                coords_paths = patient_examples[patient_id]["coords_paths"]
+                features_paths = patient_examples[patient_id]["features_paths"]
+                for coords_path, features_path in zip(coords_paths, features_paths):
+                    futures.append(executor.submit(self.download_if_needed, coords_path))
+                    futures.append(executor.submit(self.download_if_needed, features_path))
+
+                    if collect_stats:
+                        local_features_path = self.get_local_path(features_path)
+                        with h5py.File(local_features_path, 'r') as f:
+                            features = f['features']
+                            if feature_dim is None:
+                                feature_dim = features.shape[1]
+                                rolling_sum = torch.zeros(feature_dim)
+                                rolling_sum_of_squares = torch.zeros(feature_dim)
+                                rolling_count = 0
+
+                            example_sum = features.sum(axis=0) # (D,)
+                            example_sum_of_squares = (features ** 2).sum(axis=0) # (D,)
+
+                            rolling_sum += example_sum
+                            rolling_sum_of_squares += example_sum_of_squares
+                            rolling_count += features.shape[0]
+
+            # Wait for all downloads to complete
+            for future in futures:
+                future.result()
+
+            if collect_stats:
+                feature_stats = {
+                    'mean': rolling_sum / rolling_count,
+                    'std': np.sqrt(rolling_sum_of_squares / rolling_count - (rolling_sum / rolling_count) ** 2),
+                }
+                return feature_stats
+        
+        log_event("info", "prefetch_patient_files", "complete", 
+                 patient_count=len(patient_examples),
+                 file_count=sum(len(patient_examples[p]["coords_paths"]) * 2 for p in patient_examples))
 
 
 class RiskFormerDataset(Dataset):
@@ -197,10 +252,9 @@ class RiskFormerDataset(Dataset):
         patient_examples: Dict[str, Dict[str, Any]],
         max_dim: int = 32,
         overlap: float = 0.1,
-        cache_dir: Optional[str] = None,
-        config_path: Optional[str] = None,
+        feature_stats: Optional[Dict[str, float]] = None,
+        s3_cache: Optional[S3Cache] = None,
         include_labels: Optional[List[str]] = None,
-        task_types_map: Optional[Dict[str, str]] = None,
     ):
         """
         Initialize the RiskFormer dataset.
@@ -209,60 +263,41 @@ class RiskFormerDataset(Dataset):
             patient_examples: Dictionary of patient examples
             max_dim: Maximum dimension of patches
             overlap: Overlap between patches
-            cache_dir: Directory to cache downloaded files
-            config_path: Path to config file (overrides include_labels and task_types_map)
+            feature_stats: Dictionary of mean and std of the features, channel-wise.
+            s3_cache: S3Cache object
             include_labels: List of label names to include
-            task_types_map: Dictionary mapping label names to task types
         """
         self.patient_examples = patient_examples
         self.patient_ids = list(patient_examples.keys())
-        self.s3_cache = S3Cache(cache_dir)
+        self.s3_cache = s3_cache
 
         self.max_dim = max_dim
         self.overlap = overlap
-        
-        # Load config if provided
-        self.config = None
-        if config_path:
-            import yaml
-            try:
-                with open(config_path, 'r') as f:
-                    self.config = yaml.safe_load(f)
-            except Exception as e:
-                print(f"Warning: Failed to load config file: {e}")
+
+        self.normalize_features = False
+        if feature_stats is not None:
+            self.normalize_features = True
+            self.feature_stats = feature_stats
         
         # Set up labels to include
         self.include_labels = include_labels
-        self.task_types_map = task_types_map or {}
-        
-        # Override with config if available
-        if self.config and 'labels' in self.config:
-            if 'include' in self.config['labels']:
-                self.include_labels = self.config['labels']['include']
-            if 'task_types' in self.config['labels']:
-                self.task_types_map = self.config['labels']['task_types']
-                
+
         # Determine feature dimension
-        test_features_s3_path = patient_examples[self.patient_ids[0]]["features_paths"][0]
-        test_features_local_path = self.s3_cache.download_if_needed(test_features_s3_path)
-        with h5py.File(test_features_local_path, 'r') as f:
-            self.feature_dim = f['features'].shape[1]
-            
-        self._prefetch_executor = ThreadPoolExecutor(max_workers=4)
-        self._prefetch_all_files()
+        if len(self.patient_ids) > 0:
+            test_features_s3_path = patient_examples[self.patient_ids[0]]["features_paths"][0]
+            test_features_local_path = self.s3_cache.get_local_path(test_features_s3_path)
+            with h5py.File(str(test_features_local_path), 'r') as f:
+                self.feature_dim = f['features'].shape[1]
+        else:
+            # Default feature dimension if no data available
+            self.feature_dim = 1024
+            logger.warning("No patient examples provided. Creating empty Dataset.")
         
         # Precompute lowercase include labels for faster comparison
         self._lowercase_include_labels = None
         if self.include_labels is not None:
             self._lowercase_include_labels = [l.lower() for l in self.include_labels]
     
-    def _prefetch_all_files(self):
-        """Start background download of all S3 files."""
-        for patient_id in self.patient_ids:
-            for coords_path, features_path in zip(self.patient_examples[patient_id]["coords_paths"], self.patient_examples[patient_id]["features_paths"]):
-                self.s3_cache.download_if_needed(coords_path)
-                self.s3_cache.download_if_needed(features_path)
-
     def __len__(self):
         return len(self.patient_ids)
     
@@ -309,9 +344,9 @@ class RiskFormerDataset(Dataset):
         assert len(coords_paths) == len(features_paths), "Number of coordinates and features paths must match"
         all_sparse_tensors = []
         for coords_path, features_path in zip(coords_paths, features_paths):
-            # Download files from S3 if needed
-            local_coords_path = self.s3_cache.download_if_needed(coords_path)
-            local_features_path = self.s3_cache.download_if_needed(features_path)
+            # Get local paths (files should already be downloaded by prepare_data)
+            local_coords_path = str(self.s3_cache.get_local_path(coords_path))
+            local_features_path = str(self.s3_cache.get_local_path(features_path))
             
             with h5py.File(local_coords_path, 'r') as f:
                 coords = torch.tensor(f['coords'][:].T, dtype=torch.long)  # Shape: (2, N)
@@ -597,36 +632,24 @@ class RiskFormerDataset(Dataset):
             return True
         # Otherwise, only include labels in the list
         return label_name.lower() in self._lowercase_include_labels
-    
-    def get_task_type(self, label_name: str) -> Optional[str]:
-        """
-        Get the task type for a label from the task_types_map.
         
-        Args:
-            label_name: Name of the label to get task type for
-            
-        Returns:
-            Task type string or None if not found
-        """
-        label_lower = label_name.lower()
-        if label_lower in self.task_types_map:
-            return self.task_types_map[label_lower]
-        return None
-    
-    def process_special_binary_fields(self, patient_data: Dict[str, Any], metadata: Dict[str, Any]) -> None:
+    def process_special_binary_fields(
+            self,
+            patient_data: Dict[str, Any],
+            example_data: Dict[str, Any]
+    ) -> None:
         """
         Process special binary classification fields.
         
         Args:
             patient_data: Dictionary of patient data
-            metadata: Dictionary to store processed metadata
+            example_data: Dictionary to store processed example data
         """
         for field, mapping in self.SPECIAL_BINARY_FIELDS.items():
-            if field in patient_data and patient_data[field] is not None and self.should_include_label(field):
-                if patient_data[field] in mapping:
-                    metadata['labels'][field.lower()] = torch.tensor([mapping[patient_data[field]]], dtype=torch.float32)
-                    # Use task type from map or default to 'binary'
-                    metadata['task_types'][field.lower()] = self.get_task_type(field) or 'binary'
+            if self.should_include_label(field):
+                if field in patient_data and patient_data[field] is not None:
+                    if patient_data[field] in mapping:
+                        example_data['labels'][field.lower()] = torch.tensor([mapping[patient_data[field]]], dtype=torch.float32)
     
     def process_binary_fields(self, patient_data: Dict[str, Any], metadata: Dict[str, Any]) -> None:
         """
@@ -641,8 +664,6 @@ class RiskFormerDataset(Dataset):
                 if patient_data[field] in mapping:
                     field_lower = field.lower()
                     metadata['labels'][field_lower] = torch.tensor([mapping[patient_data[field]]], dtype=torch.float32)
-                    # Use task type from map or default to 'binary'
-                    metadata['task_types'][field_lower] = self.get_task_type(field) or 'binary'
     
     def process_regression_fields(self, patient_data: Dict[str, Any], metadata: Dict[str, Any]) -> None:
         """
@@ -658,8 +679,6 @@ class RiskFormerDataset(Dataset):
                     value = float(patient_data[field])
                     field_lower = field.lower()
                     metadata['labels'][field_lower] = torch.tensor([value], dtype=torch.float32)
-                    # Use task type from map or default to 'regression'
-                    metadata['task_types'][field_lower] = self.get_task_type(field) or 'regression'
                 except (ValueError, TypeError):
                     # Skip if the value cannot be converted to float
                     pass
@@ -690,8 +709,12 @@ class RiskFormerDataset(Dataset):
                 
             if score is not None:
                 metadata['labels']['mitosis'] = torch.tensor([score], dtype=torch.float32)
-                # Use task type from map or default to 'regression'
-                metadata['task_types']['mitosis'] = self.get_task_type('Mitosis') or 'regression'
+    
+    def normalize_features(self, features: torch.Tensor) -> torch.Tensor:
+        """
+        Normalize features to have zero mean and unit variance.
+        """
+        return (features - self.feature_stats['mean']) / self.feature_stats['std']
     
     def __getitem__(
             self,
@@ -709,7 +732,6 @@ class RiskFormerDataset(Dataset):
                 The 'labels' field contains a nested dictionary with:
                 - Task name as key
                 - Tensor value representing label for that task
-                - 'task_type' field indicating if task is 'binary', 'regression', or 'multiclass'
         """
         patient_id = self.patient_ids[idx]
         patient_data = self.patient_examples[patient_id]
@@ -724,7 +746,7 @@ class RiskFormerDataset(Dataset):
         )
         
         # Process features into patches
-        patches_xl, patch_info = self.split_and_pad_features(
+        example_features, patch_info = self.split_and_pad_features(
             features_list=dense_features,
             max_dim=self.max_dim,
             overlap=self.overlap,
@@ -733,30 +755,25 @@ class RiskFormerDataset(Dataset):
         # TODO: dataset-wide normalization
         
         # Create metadata dictionary with patch info and patient ID
-        metadata = {
+        example_data = {
             'patch_info': patch_info,
             'patient_id': patient_id,
             'labels': {},  # Dictionary to store multiple labels for different tasks
-            'task_types': {}  # Dictionary to store the type of each task
         }
         
         # Process all field types using the helper methods
-        self.process_special_binary_fields(patient_data, metadata)
-        self.process_binary_fields(patient_data, metadata)
-        self.process_regression_fields(patient_data, metadata)
-        self.process_mitosis_field(patient_data, metadata)
+        self.process_special_binary_fields(patient_data, example_data)
+        self.process_binary_fields(patient_data, example_data)
+        self.process_regression_fields(patient_data, example_data)
+        self.process_mitosis_field(patient_data, example_data)
                 
-        # Return patches and metadata
-        patches_xl = patches_xl.permute(0, 3, 1, 2)
-        return patches_xl, metadata
+        # Return patches in channels-first format
+        example_features = example_features.permute(0, 3, 1, 2)
+        if self.normalize_features:
+            example_features = self.normalize_features(example_features)
+        return example_features, example_data
     
-    def __del__(self):
-        """Cleanup background threads."""
-        if hasattr(self, '_prefetch_executor'):
-            self._prefetch_executor.shutdown(wait=False)
 
-
-# TODO: Double check this class correctly splits datasets by odx85
 class RiskFormerDataModule(pl.LightningDataModule):
     """
     PyTorch Lightning DataModule for RiskFormer datasets.
@@ -764,7 +781,60 @@ class RiskFormerDataModule(pl.LightningDataModule):
     This module handles the loading, splitting, and preparation of data for training,
     validation, and testing with PyTorch Lightning.
     """
+    # TODO: add feature selector learnable parameters
+    # state_dict() and load_state_dict() should save and load these parameters
     
+    @classmethod
+    def from_config(
+            cls,
+            config: Union[Dict[str, Any], str]
+    ) -> 'RiskFormerDataModule':
+        """
+        Create a RiskFormerDataModule from a config.
+        
+        Args:
+            config: Either a dictionary containing configuration parameters or a path to a JSON file containing the configuration.
+        
+        Returns:
+            A new RiskFormerDataModule instance configured with the parameters from the config.
+        """
+        if isinstance(config, str):
+            config = load_training_config(config)
+
+        include_labels = list(config['tasks'].keys())
+
+        # Create the data module with parameters from config
+        return cls(
+            s3_bucket=config['s3_bucket'],
+            s3_prefix=config.get('s3_prefix', ''),
+            max_dim=config.get('max_dim', 32),
+            overlap=config.get('overlap', 0.0),
+            metadata_file=config.get('metadata_file'),
+            cache_dir=config.get('cache_dir'),
+            profile_name=config.get('profile_name'),
+            region_name=config.get('region_name'),
+            batch_size=config.get('batch_size', 32),
+            num_workers=config.get('num_workers', 4),
+            val_split=config.get('val_split', 0.2),
+            test_split=config.get('test_split', 0.1),
+            seed=config.get('seed', 42),
+            pin_memory=config.get('pin_memory', True),
+            include_labels=include_labels,
+        )
+
+    @classmethod
+    def from_config_file(cls, config_path: str) -> 'RiskFormerDataModule':
+        """
+        Create a RiskFormerDataModule from a configuration file.
+        
+        Args:
+            config_path: Path to the configuration file.
+            
+        Returns:
+            A new RiskFormerDataModule instance configured with the parameters from the config file.
+        """
+        return cls.from_config(config_path)
+
     def __init__(
         self,
         s3_bucket: str,
@@ -781,9 +851,7 @@ class RiskFormerDataModule(pl.LightningDataModule):
         test_split: float = 0.1,
         seed: int = 42,
         pin_memory: bool = True,
-        config_path: Optional[str] = None,
         include_labels: Optional[List[str]] = None,
-        task_types_map: Optional[Dict[str, str]] = None,
     ):
         """
         Initialize the RiskFormer DataModule.
@@ -803,51 +871,120 @@ class RiskFormerDataModule(pl.LightningDataModule):
             test_split: Fraction of data to use for testing
             seed: Random seed for reproducibility
             pin_memory: Whether to pin memory for dataloaders
-            config_path: Path to config file (optional, overrides include_labels and task_types)
             include_labels: List of label names to include in the dataset (optional)
-            task_types_map: Dictionary mapping label names to task types (optional)
         """
         super().__init__()
         self.save_hyperparameters()
         
-        # Dataset parameters
+        # Dataset configuration parameters
         self.s3_bucket = s3_bucket
         self.s3_prefix = s3_prefix
-        self.max_dim = max_dim
-        self.overlap = overlap
         self.metadata_file = metadata_file
         self.cache_dir = cache_dir
         self.profile_name = profile_name
         self.region_name = region_name
-        
-        # DataLoader parameters
-        self.batch_size = batch_size
-        self.num_workers = num_workers
         self.val_split = val_split
         self.test_split = test_split
+        self.include_labels = include_labels
+        
+        # Dataset tunable parameters
+        self.max_dim = max_dim
+        self.overlap = overlap
+        self.batch_size = batch_size
+
+        # DataLoader configuration parameters
+        self.num_workers = num_workers
         self.seed = seed
         self.pin_memory = pin_memory
-        
-        # Config and label selection parameters
-        self.config_path = config_path
-        self.include_labels = include_labels
-        self.task_types_map = task_types_map
-        
-        # Datasets
+                
+        # Dataset objects
         self.dataset = None
         self.train_dataset = None
         self.val_dataset = None
         self.test_dataset = None
-    
+
+        # Set random seeds for reproducibility
+        self.set_seed()
+
+        # Set dataset splitting variable
+        self.set_split_var()
+
+        # Create S3 cache handler
+        self.s3_cache = S3Cache(self.cache_dir)
+
+        # Setup patient examples
+        self.setup_patient_examples()
+
+        # Will feature stats to disk upon downloading files from s3
+        self.feature_stats_path = os.path.join(self.cache_dir, "feature_stats.json")
+        self.feature_stats = None
+
+    def setup_patient_examples(self):
+        """
+        Gather available examples and update paths to local paths
+        """
+        slide_ids, slide_data = load_dataset_metadata(self.metadata_file)
+        s3_client = initialize_s3_client(self.profile_name, self.region_name)
+        if s3_client is None:
+            raise RuntimeError("Failed to initialize S3 client")
+        
+        # Gather available examples and update paths to local paths
+        self.patient_examples = create_patient_examples(
+            s3_client,
+            self.s3_bucket,
+            self.s3_prefix,
+            slide_ids,
+            slide_data
+        )
+        for patient_id, patient_data in self.patient_examples.items():
+            updated_paths = [
+                self.s3_cache.get_local_path(path)
+                for path in patient_data['features_paths']
+            ]
+            self.patient_examples[patient_id]['features_paths'] = updated_paths
+
+    def set_seed(self):
+        random.seed(self.seed)
+        np.random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(self.seed)
+            torch.cuda.manual_seed_all(self.seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+
+    def set_split_var(self):
+        """
+        Set the split variable based on the config and include_labels.
+        """
+        # Determine which label to use for stratification
+        label_var = "odx85"
+        if self.include_labels:
+            label_var = self.include_labels[0]
+        self.split_var = label_var
+
     def prepare_data(self):
         """
         Download and prepare data. This method is called only once and on 1 GPU.
         
         This is where we can download data, preprocess it, etc.
         """
-        # Nothing to do here as the dataset will handle downloading when created
-        pass
-    
+        # Prefetch all files
+        feature_stats = self.s3_cache.prefetch_patient_files(
+            patient_examples=self.patient_examples, 
+            collect_stats=True,
+        )
+
+        # Save feature stats (mean and std) to disk using cache_dir
+        with open(self.feature_stats_path, "w") as f:
+            json.dump(feature_stats, f)
+
+        # Log event
+        log_event("info", "prepare_data", "complete", 
+                 patient_count=len(self.patient_examples),
+                 s3_bucket=self.s3_bucket,
+                 s3_prefix=self.s3_prefix)
+        
     def setup(self, stage: Optional[str] = None):
         """
         Set up datasets for training, validation, and testing.
@@ -857,101 +994,59 @@ class RiskFormerDataModule(pl.LightningDataModule):
         Args:
             stage: Either 'fit', 'validate', 'test', or 'predict'
         """
-        # Create the dataset if it doesn't exist
-        if self.dataset is None:
-            self.dataset = create_riskformer_dataset(
-                s3_bucket=self.s3_bucket,
-                s3_prefix=self.s3_prefix,
-                max_dim=self.max_dim,
-                overlap=self.overlap,
-                metadata_file=self.metadata_file,
-                cache_dir=self.cache_dir,
-                profile_name=self.profile_name,
-                region_name=self.region_name,
-                config_path=self.config_path,
-                include_labels=self.include_labels,
-                task_types_map=self.task_types_map,
-            )
+        # Load feature stats from disk
+        if self.feature_stats is None:
+            with open(self.feature_stats_path, "r") as f:
+                self.feature_stats = json.load(f)
+                            
+        # Split dataset for training and validation
+        train_data, test_data = split_riskformer_data(
+            examples=self.patient_examples,
+            label_var=self.split_var,
+            positive_label="H",
+            test_split_ratio=self.test_split
+        )
         
-        # Split the dataset
-        if stage == 'fit' or stage is None:
-            # Determine which label to use for stratification
-            label_var = "odx85"  # Default label for stratification
-            
-            # If include_labels is provided, use the first binary label for stratification
-            if self.include_labels and len(self.include_labels) > 0:
-                label_var = self.include_labels[0]
-                
-            # If config is available, use the first label from config
-            if self.config and 'labels' in self.config and 'include' in self.config['labels']:
-                if len(self.config['labels']['include']) > 0:
-                    label_var = self.config['labels']['include'][0]
-            
-            log_event("debug", "RiskFormerDataModule.setup", "splitting_dataset", 
-                     label_var=label_var,
-                     test_split=self.test_split)
-                
-            # Convert patient_examples to format expected by split_riskformer_data
-            svs_paths_data_dict = {patient_id: data for patient_id, data in self.dataset.patient_examples.items()}
-            
-            # Split dataset for training and validation
-            train_data, test_data = split_riskformer_data(
-                svs_paths_data_dict=svs_paths_data_dict,
-                label_var=label_var,
-                positive_label="H",
-                test_split_ratio=self.test_split
-            )
-            
+        if stage == "fit":
             # Create training and validation datasets
             self.train_dataset = RiskFormerDataset(
                 patient_examples=train_data,
                 max_dim=self.max_dim,
                 overlap=self.overlap,
-                cache_dir=self.cache_dir,
-                config_path=self.config_path,
+                s3_cache=self.s3_cache,
                 include_labels=self.include_labels,
-                task_types_map=self.task_types_map,
             )
             
-            # Further split train data into train and validation
             if self.val_split > 0:
-                train_data, val_data = split_riskformer_data(
-                    svs_paths_data_dict=train_data,
-                    label_var=label_var,
-                    positive_label="H",
-                    test_split_ratio=self.val_split / (1 - self.test_split)
+                # random split train data into train and validation
+                num_val = int(len(train_data) * self.val_split)
+                num_train = len(train_data) - num_val
+                self.train_dataset, self.val_dataset = random_split(
+                    self.train_dataset, 
+                    [num_train, num_val]
                 )
-                
-                self.train_dataset = RiskFormerDataset(
-                    patient_examples=train_data,
-                    max_dim=self.max_dim,
-                    overlap=self.overlap,
-                    cache_dir=self.cache_dir,
-                    config_path=self.config_path,
-                    include_labels=self.include_labels,
-                    task_types_map=self.task_types_map,
-                )
-                
-                self.val_dataset = RiskFormerDataset(
-                    patient_examples=val_data,
-                    max_dim=self.max_dim,
-                    overlap=self.overlap,
-                    cache_dir=self.cache_dir,
-                    config_path=self.config_path,
-                    include_labels=self.include_labels,
-                    task_types_map=self.task_types_map,
-                )
-            
+        elif stage == "test":
             self.test_dataset = RiskFormerDataset(
                 patient_examples=test_data,
                 max_dim=self.max_dim,
                 overlap=self.overlap,
-                cache_dir=self.cache_dir,
-                config_path=self.config_path,
+                s3_cache=self.s3_cache,
                 include_labels=self.include_labels,
-                task_types_map=self.task_types_map,
             )
     
+    def teardown(self, stage: Optional[str] = None):
+        """
+        Tear down datasets for training, validation, and testing.
+        
+        This method is called on every GPU.
+        """
+        if stage == "fit":
+            self.train_dataset = None
+            self.val_dataset = None
+        elif stage == "test":
+            self.test_dataset = None
+        self.feature_stats = None
+
     def train_dataloader(self):
         """Return the training dataloader."""
         return DataLoader(
@@ -1150,7 +1245,6 @@ def create_riskformer_dataset(
     region_name: Optional[str] = None,
     config_path: Optional[str] = None,
     include_labels: Optional[List[str]] = None,
-    task_types_map: Optional[Dict[str, str]] = None,
 ) -> RiskFormerDataset:
     """
     Create a RiskFormerDataset by discovering preprocessed H5 files in S3.
@@ -1162,9 +1256,8 @@ def create_riskformer_dataset(
         cache_dir: Directory to cache downloaded files
         profile_name: AWS profile name (optional)
         region_name: AWS region name (optional)
-        config_path: Path to config file (optional, will override include_labels and task_types_map)
+        config_path: Path to config file (optional, will override include_labels)
         include_labels: List of label names to include (optional)
-        task_types_map: Dictionary mapping label names to task types (optional)
         
     Returns:
         RiskFormerDataset: Dataset containing sparse tensors for each slide
@@ -1201,7 +1294,6 @@ def create_riskformer_dataset(
             cache_dir=cache_dir,
             config_path=config_path,
             include_labels=include_labels,
-            task_types_map=task_types_map,
         )
         log_event("info", "create_riskformer_dataset", "success",
                   slide_count=len(dataset),
