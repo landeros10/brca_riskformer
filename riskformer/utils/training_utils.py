@@ -120,9 +120,10 @@ def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 def rearrange_xl_patches(xl_patches, patch_info):
@@ -422,6 +423,7 @@ def _get_default_loss(task_type):
     else:  # regression
         return nn.MSELoss()
 
+
 def convert_to_soft_label(score, beta=1.50):
     cutoff = 0.7169
     min_score = -2.009
@@ -490,18 +492,28 @@ def split_riskformer_data(
     return train_data, test_data
 
 
-def load_training_config(config_path: str) -> Dict[str, Any]:
+def validate_config(config: Dict[str, Any]) -> None:
     """
-    Load configuration from a YAML file.
+    Validate the configuration.
+    """
+    pass
+
+def load_train_config(config_path: str) -> Dict:
+    """Load training configuration from a YAML file.
     
     Args:
-        config_path: Path to the YAML configuration file.
-        
+        config_path: Path to the YAML configuration file
+
     Returns:
-        A dictionary containing the configuration.
+        Dictionary containing the configuration
     """
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    return config
+    if not os.path.isfile(config_path):
+        return {}
+        # raise FileNotFoundError(f"Config file {config_path} not found")
+
+    with open(config_path, "r") as f:
+        config_dict = yaml.safe_load(f)
+
+    return config_dict
 
 

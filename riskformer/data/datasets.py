@@ -24,7 +24,7 @@ from torch.utils.data import Dataset, DataLoader, random_split
 import pytorch_lightning as pl
 
 from riskformer.utils.data_utils import sample_slide_image
-from riskformer.utils.training_utils import PatchInfo, split_riskformer_data, load_training_config
+from riskformer.utils.training_utils import PatchInfo, split_riskformer_data, load_train_config, set_seed
 from riskformer.utils.aws_utils import initialize_s3_client, list_bucket_files, is_s3_path
 from riskformer.utils.logger_config import log_event
 
@@ -799,7 +799,7 @@ class RiskFormerDataModule(pl.LightningDataModule):
             A new RiskFormerDataModule instance configured with the parameters from the config.
         """
         if isinstance(config, str):
-            config = load_training_config(config)
+            config = load_train_config(config)
 
         include_labels = list(config['tasks'].keys())
 
@@ -904,7 +904,7 @@ class RiskFormerDataModule(pl.LightningDataModule):
         self.test_dataset = None
 
         # Set random seeds for reproducibility
-        self.set_seed()
+        set_seed(self.seed)
 
         # Set dataset splitting variable
         self.set_split_var()
@@ -942,16 +942,6 @@ class RiskFormerDataModule(pl.LightningDataModule):
                 for path in patient_data['features_paths']
             ]
             self.patient_examples[patient_id]['features_paths'] = updated_paths
-
-    def set_seed(self):
-        random.seed(self.seed)
-        np.random.seed(self.seed)
-        torch.manual_seed(self.seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed(self.seed)
-            torch.cuda.manual_seed_all(self.seed)
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
 
     def set_split_var(self):
         """

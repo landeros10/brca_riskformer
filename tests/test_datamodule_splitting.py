@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock
 import h5py
 import numpy as np
 
-from riskformer.data.datasets import RiskFormerDataModule
+from riskformer.data.datasets import RiskFormerDataModule, split_riskformer_data
 
 class TestRiskFormerDataModuleSplitting:
     """
@@ -38,10 +38,20 @@ class TestRiskFormerDataModuleSplitting:
             with h5py.File(features_file, 'w') as f:
                 f.create_dataset('features', data=np.random.rand(10, 256))
         
+        # Create feature stats JSON
+        feature_stats = {
+            "mean": [0.1, 0.2, 0.3],
+            "std": [0.4, 0.5, 0.6]
+        }
+        with open(mock_cache_dir / "feature_stats.json", 'w') as f:
+            json.dump(feature_stats, f)
+        
         with patch('riskformer.data.datasets.S3Cache') as mock_cache:
-            # Configure the mock to return a local path when download_if_needed is called
+            # Configure the mock to return a local path when get_local_path is called
             mock_cache_instance = MagicMock()
-            mock_cache_instance.download_if_needed.side_effect = lambda s3_path: str(mock_cache_dir / s3_path.split('/')[-1])
+            mock_cache_instance.get_local_path.side_effect = lambda s3_path: str(mock_cache_dir / s3_path.split('/')[-1])
+            mock_cache_instance.prefetch_patient_files.return_value = feature_stats
+            mock_cache_instance.cache_dir = str(mock_cache_dir)
             mock_cache.return_value = mock_cache_instance
             yield mock_cache
     
@@ -79,15 +89,12 @@ class TestRiskFormerDataModuleSplitting:
         os.unlink(f.name)
     
     @pytest.fixture
-    def mock_dataset(self, mock_metadata_file):
-        """Mock the create_riskformer_dataset function to return a controlled dataset."""
-        # Instead of creating a real dataset, we'll patch it to return a dictionary
-        # of patient examples based on our metadata
+    def mock_patient_examples(self, mock_metadata_file):
+        """Mock the patient examples based on our metadata."""
         with open(mock_metadata_file, 'r') as f:
             metadata = json.load(f)
             
         # Create a mock dataset with the patients from metadata
-        # In a real scenario, each patient would have coords_paths and features_paths
         patient_examples = {}
         for patient_id, patient_data in metadata.items():
             patient_examples[patient_id] = {
@@ -103,13 +110,42 @@ class TestRiskFormerDataModuleSplitting:
         return patient_examples
     
     @pytest.fixture
-    def mock_config(self):
+    def mock_config_dict(self):
         """Create a mock configuration for the data module."""
         return {
-            "labels": {
-                "include": ["odx85", "mphr"]
+            "s3_bucket": "test-bucket",
+            "s3_prefix": "test-prefix",
+            "max_dim": 32,
+            "overlap": 0.0,
+            "metadata_file": "mock_metadata.json",
+            "cache_dir": "/tmp/cache",
+            "profile_name": "default",
+            "region_name": "us-east-1",
+            "batch_size": 16,
+            "num_workers": 2,
+            "val_split": 0.2,
+            "test_split": 0.1,
+            "seed": 42,
+            "pin_memory": True,
+            "tasks": {
+                "odx85": {
+                    "type": "binary"
+                },
+                "mphr": {
+                    "type": "binary"
+                }
             }
         }
+    
+    @pytest.fixture
+    def mock_config_file(self, mock_config_dict):
+        """Create a mock configuration file."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(mock_config_dict, f)
+        
+        yield f.name
+        # Clean up the temporary file
+        os.unlink(f.name)
     
     def create_mock_split_datasets(self, dataset, test_split=0.2, val_split=0.25):
         """Helper function to mock the dataset splitting."""
@@ -146,134 +182,273 @@ class TestRiskFormerDataModuleSplitting:
         
         return train_data, val_data, test_data
     
-    @patch('riskformer.data.datasets.create_riskformer_dataset')
-    @patch('riskformer.data.datasets.split_riskformer_data')
-    def test_data_splitting_ratios(self, mock_split_fn, mock_create_dataset, mock_dataset, mock_metadata_file, mock_config, mock_s3_cache):
-        """Test that the data is split according to the specified ratios."""
-        # Configure the mock to return our controlled dataset
-        mock_dataset_obj = MagicMock()
-        mock_dataset_obj.patient_examples = mock_dataset
-        mock_create_dataset.return_value = mock_dataset_obj
+    @patch('riskformer.data.datasets.load_training_config')
+    def test_from_config_file(self, mock_load_config, mock_config_dict, mock_config_file):
+        """Test creating a RiskFormerDataModule from a config file."""
+        # Mock the load_training_config function to return our mock config
+        mock_load_config.return_value = mock_config_dict
         
-        # Create train and test data splits
-        total_patients = len(mock_dataset)
-        test_split = 0.2
-        val_split = 0.25
+        # Create the data module using from_config_file
+        data_module = RiskFormerDataModule.from_config_file(mock_config_file)
         
-        # Calculate expected number of patients in each split
-        expected_test_patients = int(total_patients * test_split)  # 8
-        expected_val_patients = int((total_patients - expected_test_patients) * val_split)  # 8
-        expected_train_patients = total_patients - expected_test_patients - expected_val_patients  # 24
+        # Check that the data module was initialized with the correct parameters
+        assert data_module.s3_bucket == mock_config_dict["s3_bucket"]
+        assert data_module.s3_prefix == mock_config_dict["s3_prefix"]
+        assert data_module.max_dim == mock_config_dict["max_dim"]
+        assert data_module.overlap == mock_config_dict["overlap"]
+        assert data_module.metadata_file == mock_config_dict["metadata_file"]
+        assert data_module.cache_dir == mock_config_dict["cache_dir"]
+        assert data_module.profile_name == mock_config_dict["profile_name"]
+        assert data_module.region_name == mock_config_dict["region_name"]
+        assert data_module.batch_size == mock_config_dict["batch_size"]
+        assert data_module.num_workers == mock_config_dict["num_workers"]
+        assert data_module.val_split == mock_config_dict["val_split"]
+        assert data_module.test_split == mock_config_dict["test_split"]
+        assert data_module.seed == mock_config_dict["seed"]
+        assert data_module.pin_memory == mock_config_dict["pin_memory"]
+        assert data_module.include_labels == list(mock_config_dict["tasks"].keys())
+    
+    def test_from_config_dict(self, mock_config_dict):
+        """Test creating a RiskFormerDataModule from a config dictionary."""
+        # Create the data module using from_config with a dictionary
+        data_module = RiskFormerDataModule.from_config(mock_config_dict)
         
-        # Create mock train, val, and test data
-        train_data, val_data, test_data = self.create_mock_split_datasets(
-            mock_dataset, test_split=test_split, val_split=val_split
-        )
-        
-        # Configure the mock split function to return our splits
-        # First call (train+val, test)
-        mock_split_fn.side_effect = [
-            (train_data | val_data, test_data),  # First call: split test from the rest
-            (train_data, val_data),  # Second call: split train and validation
-        ]
+        # Check that the data module was initialized with the correct parameters
+        assert data_module.s3_bucket == mock_config_dict["s3_bucket"]
+        assert data_module.s3_prefix == mock_config_dict["s3_prefix"]
+        assert data_module.max_dim == mock_config_dict["max_dim"]
+        assert data_module.overlap == mock_config_dict["overlap"]
+        assert data_module.metadata_file == mock_config_dict["metadata_file"]
+        assert data_module.cache_dir == mock_config_dict["cache_dir"]
+        assert data_module.profile_name == mock_config_dict["profile_name"]
+        assert data_module.region_name == mock_config_dict["region_name"]
+        assert data_module.batch_size == mock_config_dict["batch_size"]
+        assert data_module.num_workers == mock_config_dict["num_workers"]
+        assert data_module.val_split == mock_config_dict["val_split"]
+        assert data_module.test_split == mock_config_dict["test_split"]
+        assert data_module.seed == mock_config_dict["seed"]
+        assert data_module.pin_memory == mock_config_dict["pin_memory"]
+        assert data_module.include_labels == list(mock_config_dict["tasks"].keys())
+    
+    @patch('riskformer.data.datasets.initialize_s3_client')
+    @patch('riskformer.data.datasets.create_patient_examples')
+    def test_setup_patient_examples(self, mock_create_examples, mock_init_s3, mock_patient_examples, mock_s3_cache):
+        """Test that patient examples are correctly set up."""
+        # Mock the functions to return controlled values
+        mock_create_examples.return_value = mock_patient_examples
+        mock_init_s3.return_value = MagicMock()
         
         # Create the data module
         data_module = RiskFormerDataModule(
             s3_bucket="test-bucket",
-            metadata_file=mock_metadata_file,
-            test_split=test_split,
-            val_split=val_split,
-            seed=42,
-            config_path=None,  # Required but we'll patch the config
+            s3_prefix="test-prefix",
+            metadata_file="mock_metadata.json",
+            cache_dir="/tmp/cache",
             include_labels=["odx85", "mphr"]
         )
         
-        # Manually add the config attribute
-        data_module.config = mock_config
+        # Check that setup_patient_examples was called and set up the patient_examples
+        assert data_module.patient_examples is not None
+        assert mock_create_examples.call_count == 1
         
-        # Setup the data module
-        data_module.setup()
-        
-        # Check that split_riskformer_data was called with the right parameters
-        assert mock_split_fn.call_count == 2, "split_riskformer_data should be called twice"
-        
-        # Verify the test dataset
-        assert data_module.test_dataset is not None, "Test dataset should be created"
-        assert hasattr(data_module.test_dataset, 'patient_examples'), "Test dataset should have patient_examples"
-        assert mock_split_fn.call_args_list[0][1]['test_split_ratio'] == test_split, "Test split ratio should be passed correctly"
-        
-        # Verify the validation dataset
-        assert data_module.val_dataset is not None, "Validation dataset should be created"
-        assert hasattr(data_module.val_dataset, 'patient_examples'), "Validation dataset should have patient_examples"
-        
-        # Verify the train dataset
-        assert data_module.train_dataset is not None, "Train dataset should be created"
-        assert hasattr(data_module.train_dataset, 'patient_examples'), "Train dataset should have patient_examples"
+        # Check that the feature paths were updated to local paths
+        for patient_id, patient_data in data_module.patient_examples.items():
+            assert all(not path.startswith("s3://") for path in patient_data['features_paths'])
     
-    @patch('riskformer.data.datasets.create_riskformer_dataset')
-    @patch('riskformer.data.datasets.split_riskformer_data')
     @patch('riskformer.data.datasets.RiskFormerDataset')
-    def test_dataloader_creation(self, mock_dataset_class, mock_split_fn, mock_create_dataset, mock_dataset, mock_config, mock_s3_cache):
-        """Test that the correct dataloaders are created."""
-        # Configure the dataset mocks
-        mock_dataset_obj = MagicMock()
-        mock_dataset_obj.patient_examples = mock_dataset
-        mock_create_dataset.return_value = mock_dataset_obj
+    @patch('riskformer.data.datasets.split_riskformer_data')
+    def test_data_splitting_ratios(self, mock_split_fn, mock_dataset_class, mock_patient_examples, mock_s3_cache):
+        """Test that the data is split according to the specified ratios."""
+        # Create train, val, and test data splits
+        test_split = 0.2
+        val_split = 0.25
         
-        # Create mock train, val, and test data
-        train_data, val_data, test_data = self.create_mock_split_datasets(mock_dataset)
+        train_data, val_data, test_data = self.create_mock_split_datasets(
+            mock_patient_examples, test_split=test_split, val_split=val_split
+        )
+        
+        # Configure the mock split function to return our splits
+        mock_split_fn.return_value = (train_data, test_data)
+        
+        # Configure the mock datasets returned by RiskFormerDataset
+        mock_train_dataset = MagicMock()
+        mock_val_dataset = MagicMock()
+        mock_test_dataset = MagicMock()
+        mock_dataset_class.side_effect = [mock_train_dataset, mock_test_dataset]
+        
+        # Mock the random_split function
+        with patch('riskformer.data.datasets.random_split') as mock_random_split:
+            mock_random_split.return_value = (mock_train_dataset, mock_val_dataset)
+            
+            # Create the data module
+            data_module = RiskFormerDataModule(
+                s3_bucket="test-bucket",
+                s3_prefix="test-prefix",
+                metadata_file="mock_metadata.json",
+                cache_dir="/tmp/cache",
+                test_split=test_split,
+                val_split=val_split,
+                include_labels=["odx85", "mphr"]
+            )
+            
+            # Setup the data module
+            with patch.object(data_module, 'patient_examples', mock_patient_examples):
+                with patch.object(data_module, 'feature_stats_path', '/tmp/cache/feature_stats.json'):
+                    with patch('builtins.open', MagicMock()):
+                        with patch('json.load', return_value={"mean": [0.1], "std": [0.2]}):
+                            data_module.setup(stage="fit")
+                            data_module.setup(stage="test")
+            
+            # Check that split_riskformer_data was called with the right parameters
+            mock_split_fn.assert_called_once_with(
+                examples=mock_patient_examples,
+                label_var="odx85",
+                positive_label="H",
+                test_split_ratio=test_split
+            )
+            
+            # Check that the datasets were created
+            assert mock_dataset_class.call_count == 2
+            assert mock_random_split.call_count == 1
+    
+    @patch('riskformer.data.datasets.RiskFormerDataset')
+    @patch('riskformer.data.datasets.split_riskformer_data')
+    def test_dataloader_creation(self, mock_split_fn, mock_dataset_class, mock_patient_examples, mock_s3_cache):
+        """Test that the correct dataloaders are created."""
+        # Create train, val, and test data splits
+        train_data, val_data, test_data = self.create_mock_split_datasets(mock_patient_examples)
         
         # Configure the mock split function
-        mock_split_fn.side_effect = [
-            (train_data | val_data, test_data),  # First call: split test from the rest
-            (train_data, val_data),  # Second call: split train and validation
-        ]
+        mock_split_fn.return_value = (train_data, test_data)
         
         # Configure the mock datasets returned by RiskFormerDataset
         mock_train_dataset = MagicMock()
         mock_val_dataset = MagicMock()
         mock_test_dataset = MagicMock()
         
-        # Set the length of the mock datasets to avoid RandomSampler error
+        # Set the length of the mock datasets
         mock_train_dataset.__len__.return_value = 10
         mock_val_dataset.__len__.return_value = 5
         mock_test_dataset.__len__.return_value = 5
         
-        # Add more mock datasets to handle additional calls
-        mock_dataset_class.side_effect = [mock_train_dataset, mock_val_dataset, mock_test_dataset,
-                                         mock_train_dataset, mock_val_dataset, mock_test_dataset]
+        mock_dataset_class.side_effect = [mock_train_dataset, mock_test_dataset]
+        
+        # Mock the random_split function
+        with patch('riskformer.data.datasets.random_split') as mock_random_split:
+            mock_random_split.return_value = (mock_train_dataset, mock_val_dataset)
+            
+            # Create the data module
+            data_module = RiskFormerDataModule(
+                s3_bucket="test-bucket",
+                s3_prefix="test-prefix",
+                metadata_file="mock_metadata.json",
+                cache_dir="/tmp/cache",
+                batch_size=4,
+                num_workers=0, # Use 0 for testing to avoid subprocess issues
+                test_split=0.2,
+                val_split=0.25,
+                include_labels=["odx85", "mphr"]
+            )
+            
+            # Setup the data module
+            with patch.object(data_module, 'patient_examples', mock_patient_examples):
+                with patch.object(data_module, 'feature_stats_path', '/tmp/cache/feature_stats.json'):
+                    with patch('builtins.open', MagicMock()):
+                        with patch('json.load', return_value={"mean": [0.1], "std": [0.2]}):
+                            data_module.setup(stage="fit")
+                            data_module.setup(stage="test")
+            
+            # Test the dataloaders
+            data_module.train_dataset = mock_train_dataset
+            data_module.val_dataset = mock_val_dataset
+            data_module.test_dataset = mock_test_dataset
+            
+            train_loader = data_module.train_dataloader()
+            val_loader = data_module.val_dataloader()
+            test_loader = data_module.test_dataloader()
+            
+            # Check that the dataloaders have the correct batch size
+            assert train_loader.batch_size == 4
+            assert val_loader.batch_size == 4
+            assert test_loader.batch_size == 4
+            
+            # Check that the dataloaders have the correct number of workers
+            assert train_loader.num_workers == 0
+            assert val_loader.num_workers == 0
+            assert test_loader.num_workers == 0
+    
+    @patch('riskformer.data.datasets.S3Cache.prefetch_patient_files')
+    def test_prepare_data(self, mock_prefetch, mock_patient_examples, mock_s3_cache):
+        """Test the prepare_data method."""
+        # Configure the mock to return a dictionary of stats
+        mock_prefetch.return_value = {
+            "mean": [0.1, 0.2, 0.3],
+            "std": [0.4, 0.5, 0.6]
+        }
         
         # Create the data module
         data_module = RiskFormerDataModule(
             s3_bucket="test-bucket",
-            batch_size=4,
-            num_workers=0,  # Use 0 for testing to avoid subprocess issues
-            test_split=0.2,
-            val_split=0.25,
-            seed=42,
-            config_path=None  # Required but we'll patch the config
+            s3_prefix="test-prefix",
+            metadata_file="mock_metadata.json",
+            cache_dir="/tmp/cache",
+            include_labels=["odx85", "mphr"]
         )
         
-        # Manually add the config attribute
-        data_module.config = mock_config
+        # Set up patient examples
+        with patch.object(data_module, 'patient_examples', mock_patient_examples):
+            # Mock open and json.dump
+            with patch('builtins.open', MagicMock()):
+                with patch('json.dump') as mock_json_dump:
+                    # Call prepare_data
+                    data_module.prepare_data()
+                    
+                    # Check that prefetch_patient_files was called with the right parameters
+                    mock_prefetch.assert_called_once_with(
+                        patient_examples=mock_patient_examples,
+                        collect_stats=True
+                    )
+                    
+                    # Check that the feature stats were saved to disk
+                    mock_json_dump.assert_called_once()
+    
+    def test_teardown(self, mock_s3_cache):
+        """Test the teardown method."""
+        # Create the data module
+        data_module = RiskFormerDataModule(
+            s3_bucket="test-bucket",
+            s3_prefix="test-prefix",
+            metadata_file="mock_metadata.json",
+            cache_dir="/tmp/cache",
+            include_labels=["odx85", "mphr"]
+        )
         
-        # Setup the data module
-        data_module.setup()
+        # Set up mock datasets
+        data_module.train_dataset = MagicMock()
+        data_module.val_dataset = MagicMock()
+        data_module.test_dataset = MagicMock()
+        data_module.feature_stats = {"mean": [0.1], "std": [0.2]}
         
-        # Test the dataloaders
-        train_loader = data_module.train_dataloader()
-        val_loader = data_module.val_dataloader()
-        test_loader = data_module.test_dataloader()
+        # Call teardown for fit stage
+        data_module.teardown(stage="fit")
         
-        # We don't compare the dataset objects directly because they might be different instances
-        # even though they represent the same data
+        # Check that train and val datasets were removed
+        assert data_module.train_dataset is None
+        assert data_module.val_dataset is None
+        assert data_module.test_dataset is not None  # Should still be there
+        assert data_module.feature_stats is None
         
-        # Check that the dataloaders have the correct batch size
-        assert train_loader.batch_size == 4
-        assert val_loader.batch_size == 4
-        assert test_loader.batch_size == 4
+        # Set up mock datasets again
+        data_module.train_dataset = MagicMock()
+        data_module.val_dataset = MagicMock()
+        data_module.test_dataset = MagicMock()
+        data_module.feature_stats = {"mean": [0.1], "std": [0.2]}
         
-        # Check that the dataloaders have the correct number of workers
-        assert train_loader.num_workers == 0
-        assert val_loader.num_workers == 0
-        assert test_loader.num_workers == 0 
+        # Call teardown for test stage
+        data_module.teardown(stage="test")
+        
+        # Check that test dataset was removed
+        assert data_module.train_dataset is not None  # Should still be there
+        assert data_module.val_dataset is not None  # Should still be there
+        assert data_module.test_dataset is None
+        assert data_module.feature_stats is None 
