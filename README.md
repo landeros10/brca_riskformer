@@ -71,28 +71,30 @@ The `notebooks/` directory will contain Jupyter notebooks that demonstrate key f
 
 The project is implemented in PyTorch with comprehensive MLOps integration:
 
-- **Distributed Training**: Support for multi-GPU and cloud-based training on AWS
-- **Data Pipeline**: Efficient data loading and preprocessing of large whole slide images
-- **Model Versioning**: Tracking of experiments and model iterations
-- **Containerization**: Docker-based deployment for consistent environments
-- **Cloud Integration**: AWS batch processing for scalable inference
+- **Distributed Training**: Support for multi-GPU and cloud-based training on AWS leveraging PyTorch Lightning's distributed training capabilities
+- **Data Pipeline**: Efficient data loading and preprocessing of large whole slide images with optimized batch processing
+- **Model Versioning**: Tracking of experiments and model iterations using Weights & Biases for comprehensive experiment monitoring
+- **Containerization**: Docker-based deployment configured with specialized dependencies for histopathology image processing
+- **Cloud Integration**: AWS batch processing infrastructure with S3 integration for scalable training and inference
 
 
 ### Project Status Disclaimer
 
-**⚠️ Work in Progress:** This repository represents ongoing research work that is being actively developed. The codebase has successfully transitioned from a research prototype to a robust implementation ready for research use.
+**🚀 Work in Progress:** This repository represents ongoing research work that is being actively developed. The codebase has successfully transitioned from a research prototype to a robust implementation ready for research use.
 
 **Current Implementation Status:**
-- ✅ Data preprocessing pipeline is implemented and fully functional
-- ✅ Basic AWS infrastructure integration (S3, EC2) is set up
-- ✅ Docker containerization is configured and tested
-- ✅ Core transformer model architecture is implemented
-- ✅ Training pipeline is implemented with PyTorch Lightning
-- ✅ Logging and model versioning with Weights & Biases is fully configured
-- ✅ Comprehensive unit and integration tests are implemented
-- ⚠️ MLOps deployment infrastructure is under active development
+- ✅ Data preprocessing pipeline is fully implemented with support for whole slide image processing
+- ✅ AWS infrastructure integration with S3, EC2 is configured and operational
+- ✅ Docker containerization with specialized histopathology dependencies is ready for deployment
+- ✅ Core transformer model architecture implemented with multiple transformer variants
+- ✅ Training pipeline implemented with PyTorch Lightning with distributed training support
+- ✅ Comprehensive experiment tracking and model versioning with Weights & Biases
+- ✅ Extensive unit and integration tests covering all core components
+- ✅ Orchestration scripts for automated batch processing of slide preprocessing and model training
+- 🔄 Advanced explainability methods are being refined for clinical interpretation
+- 🔄 Additional model variants are under active development
 
-This project delivers a production-ready implementation for deep learning breast cancer risk prediction from histopathology images, with ongoing efforts to enhance deployment scalability.
+The codebase is now research-production ready with robust components for the full machine learning lifecycle from data preprocessing to model deployment. Recent updates have focused on optimizing the transformer architecture, improving distributed training performance, and enhancing the reliability of the preprocessing pipeline.
 
 ### Project Structure
 
@@ -118,8 +120,17 @@ brca_riskformer/
 │── resources/          # Static dataset files
 │── riskformer/         # Core package
 │   ├── data/          # Dataset operations
+│   │   ├── datasets.py           # Dataset implementations
+│   │   └── data_preprocess.py    # Preprocessing utilities
 │   ├── training/      # Training logic and model definitions
+│   │   ├── model.py              # RiskFormer model implementation
+│   │   ├── layers.py             # Custom model layers
+│   │   └── train.py              # Training procedures
 │   ├── utils/         # Utility functions
+│       ├── aws_utils.py          # AWS integration
+│       ├── data_utils.py         # Data processing utilities
+│       ├── training_utils.py     # Training helpers
+│       └── logger_config.py      # Logging configuration
 │── scripts/           # Standalone scripts
 │── src/               # Legacy source code
 │── tests/             # Comprehensive unit and integration tests
