@@ -96,7 +96,7 @@ class TestRiskFormerMultiTask:
         """Test that the RiskFormerLightningModule correctly initializes with multi-task config."""
         # Create the model
         lightning_model = RiskFormerLightningModule(
-            model_config=model_config,
+            riskformer_config=model_config,
             optimizer_config=optimizer_config,
             regional_coeff=0.3
         )
@@ -134,7 +134,7 @@ class TestRiskFormerMultiTask:
         
         # Create model
         lightning_model = RiskFormerLightningModule(
-            model_config=model_config,
+            riskformer_config=model_config,
             optimizer_config=optimizer_config,
             regional_coeff=0.3
         )
@@ -204,7 +204,7 @@ class TestRiskFormerMultiTask:
         
         # Create model
         lightning_model = RiskFormerLightningModule(
-            model_config=model_config,
+            riskformer_config=model_config,
             optimizer_config=optimizer_config,
             regional_coeff=0.3
         )
@@ -249,7 +249,7 @@ class TestRiskFormerMultiTask:
         
         # Create model
         lightning_model = RiskFormerLightningModule(
-            model_config=model_config,
+            riskformer_config=model_config,
             optimizer_config=optimizer_config,
             regional_coeff=0.3
         )
@@ -293,7 +293,7 @@ class TestRiskFormerMultiTask:
         for coeff in regional_coeffs:
             # Create model with this coefficient
             lightning_model = RiskFormerLightningModule(
-                model_config=model_config,
+                riskformer_config=model_config,
                 optimizer_config=optimizer_config,
                 regional_coeff=coeff
             )

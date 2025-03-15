@@ -788,20 +788,17 @@ class RiskFormerDataModule(pl.LightningDataModule):
     @classmethod
     def from_config(
             cls,
-            config: Union[Dict[str, Any], str]
+            config: Dict[str, Any]
     ) -> 'RiskFormerDataModule':
         """
         Create a RiskFormerDataModule from a config.
         
         Args:
-            config: Either a dictionary containing configuration parameters or a path to a JSON file containing the configuration.
+            config: Dictionary containing configuration parameters.
         
         Returns:
             A new RiskFormerDataModule instance configured with the parameters from the config.
         """
-        if isinstance(config, str):
-            config = load_train_config(config)
-
         include_labels = list(config['tasks'].keys())
 
         # Create the data module with parameters from config
@@ -834,7 +831,8 @@ class RiskFormerDataModule(pl.LightningDataModule):
         Returns:
             A new RiskFormerDataModule instance configured with the parameters from the config file.
         """
-        return cls.from_config(config_path)
+        config = load_train_config(config_path)
+        return cls.from_config(config)
 
     def __init__(
         self,

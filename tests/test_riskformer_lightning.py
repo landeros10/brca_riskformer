@@ -67,7 +67,7 @@ class TestRiskFormerLightningModule:
     def lightning_module(self, model_config, optimizer_config):
         """Create a RiskFormerLightningModule instance."""
         return RiskFormerLightningModule(
-            model_config=model_config,
+            riskformer_config=model_config,
             optimizer_config=optimizer_config,
             regional_coeff=0.1,
         )

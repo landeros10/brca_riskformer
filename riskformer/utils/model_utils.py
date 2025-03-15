@@ -60,69 +60,6 @@ def setup_loss_functions(config: Dict[str, Any]) -> Dict[str, Dict[int, nn.Modul
     
     return class_loss_map
 
-def create_lightning_module_from_config(
-        config_path: str,
-        task_weights: Optional[Dict[str, float]] = None
-) -> RiskFormerLightningModule:
-    """
-    Create a RiskFormerLightningModule from a configuration file.
-    
-    Args:
-        config_path: Path to the YAML configuration file.
-        task_weights: Optional dictionary mapping task names to task weights.
-        
-    Returns:
-        An initialized RiskFormerLightningModule.
-    """
-    logger.info(f"Creating RiskFormerLightningModule from config file: {config_path}")
-    
-    # Load config
-    config = load_training_config(config_path)
-    
-    # Prepare task configurations if not already in config
-    if 'tasks' not in config:
-        raise ValueError("Config must contain 'tasks' section with task types")
-    
-    # If task weights are provided, update the weights in the tasks config
-    if task_weights:
-        for task, weight in task_weights.items():
-            if task in config['tasks']:
-                config['tasks'][task]['weight'] = weight
-    
-    # Get regional coefficient
-    regional_coeff = config.get('regional_coeff', 0.0)
-    
-    # Create Lightning module
-    return RiskFormerLightningModule.from_config(
-        config=config,
-        regional_coeff=regional_coeff
-    )
-
-def example_usage():
-    """
-    Example of how to use the config-based model creation.
-    This function is for demonstration purposes.
-    """
-    # Path to config file
-    config_path = "configs/training/riskformer_config.yaml"
-    
-    # Create base model directly
-    model = create_model_from_config(config_path)
-    print(f"Created RiskFormer_ViT model with input dimension: {model.input_embed_dim}")
-    
-    # Create Lightning module with default task weights
-    lightning_module = create_lightning_module_from_config(config_path)
-    print(f"Created RiskFormerLightningModule with optimizer: {lightning_module.optimizer_config['optimizer']}")
-    
-    # Create Lightning module with custom task weights
-    task_weights = {"odx_train": 1.0, "odx85": 0.5, "mphr": 0.5}
-    lightning_module_weighted = create_lightning_module_from_config(
-        config_path, 
-        task_weights=task_weights
-    )
-    print(f"Created weighted RiskFormerLightningModule with tasks: {list(task_weights.keys())}")
-    
-    return model, lightning_module, lightning_module_weighted
 
 if __name__ == "__main__":
     # Set up logging

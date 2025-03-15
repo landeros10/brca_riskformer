@@ -228,3 +228,46 @@ def create_wandb_logger(config):
         log_event("error", "wandb_logger_failed", "Failed to create WandB logger", 
                  error_message=str(e))
         return None
+
+
+def setup_training_run_logger(
+        use_wandb: bool, 
+        log_dir: str, 
+        experiment_name: str,
+        wandb_project: str,
+        wandb_entity: str = None,
+):
+    """Set up and configure the logger for training
+    
+    Args:
+        use_wandb (bool): Whether to use Weights & Biases for logging
+        log_dir (str): Directory for logs
+        experiment_name (str): Name of the experiment
+
+                
+    Returns:
+        logger: PyTorch Lightning logger (TensorBoard or WandB)
+    """
+    if use_wandb:
+        wandb_config = {
+            'wandb_project': wandb_project,
+            'experiment_name': experiment_name,
+            'wandb_entity': wandb_entity,
+        }
+        # Try to create WandB logger
+        logger = create_wandb_logger(wandb_config)
+   
+        # Fall back to TensorBoard if WandB fails
+        if logger is None:
+            logger = create_tensorboard_logger(log_dir, experiment_name)
+            log_event("warning", "wandb_fallback", "Failed to create WandB logger, falling back to TensorBoard", 
+                     log_dir=log_dir, experiment_name=experiment_name)
+        else:
+            log_event("info", "wandb_logger_created", "WandB logger created successfully")
+    else:
+        # Create TensorBoard logger using core functionality
+        logger = create_tensorboard_logger(log_dir, experiment_name)
+        log_event("info", "tensorboard_logger_created", "TensorBoard logger created", 
+                 log_dir=log_dir, experiment_name=experiment_name)
+    
+    return logger

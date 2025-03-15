@@ -14,7 +14,6 @@ max_dim: 32
 overlap: 0.1
 
 ### DataLoader parameters
-batch_size: 32
 num_workers: 4
 val_split: 0.2
 test_split: 0.1
@@ -74,10 +73,12 @@ downscale_multiplier: 1.25
 ## Mandatory parameters
 ### Optimizer parameters
 optimizer: "adam"
+batch_size: 32
 learning_rate: 1.0e-4
 weight_decay: 1.0e-6
 scheduler: "plateau"
 regional_coeff: 0.0
+accumulate_grad_batches: 2
 
 ## Optional parameters
 ### Training parameters
@@ -89,7 +90,14 @@ accelerator: "auto"
 devices: 1
 
 ### Logging parameters
-log_dir: "lightning_logs"
+log_dir: "./logs/lightning_logs"
 experiment_name: "riskformer"
 use_wandb: false
 wandb_project: "riskformer" 
+log_every_nsteps: 10
+
+### Checkpointing parameters
+model_dir: "./models"
+save_top_k: 3
+monitor: "val_loss"
+mode: "min"

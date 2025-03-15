@@ -492,3 +492,7 @@ def split_riskformer_data(
     return train_data, test_data
 
 
+def clear_gpu_memory():
+    """Clear GPU memory cache to avoid memory fragmentation"""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()

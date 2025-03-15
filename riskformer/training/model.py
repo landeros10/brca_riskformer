@@ -19,7 +19,8 @@ import torch.nn.functional as F
 import yaml
 
 from riskformer.training.layers import SinusoidalPositionalEncoding2D, MultiScaleBlock, GlobalMaxPoolLayer
-from riskformer.utils.training_utils import create_slide_level_loss, load_training_config
+from riskformer.utils.training_utils import create_slide_level_loss
+from riskformer.utils.config_utils import load_train_config
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,6 @@ class RiskFormer_ViT(nn.Module):
         vflip_prob: Probability of vertical flip
         rotate_prob: Probability of rotation
         noise_aug_prob: Probability of noise augmentation
-        **kwargs: Additional arguments        
     """
     
     @classmethod
@@ -181,7 +181,7 @@ class RiskFormer_ViT(nn.Module):
         Returns:
             An initialized RiskFormer_ViT model.
         """
-        config = load_training_config(config_path)
+        config = load_train_config(config_path)
         return cls.from_config(config)
 
     @classmethod
@@ -195,60 +195,36 @@ class RiskFormer_ViT(nn.Module):
         Returns:
             An initialized RiskFormer_ViT model.
         """
-        # Required parameters with their keys in the config
-        required_params = {
-            'input_embed_dim': 'input_embed_dim',
-            'output_embed_dim': 'output_embed_dim',
-            'use_phi': 'use_phi',
-            'drop_path_rate': 'drop_path_rate',
-            'drop_rate': 'drop_rate',
-            'tasks': 'tasks',
-            'max_dim': 'max_dim',
-            'depth': 'depth',
-            'global_depth': 'global_depth',
-            'encoding_method': 'encoding_method',
-            'num_heads': 'num_heads',
-            'use_attn_mask': 'use_attn_mask',
-            'mlp_ratio': 'mlp_ratio',
-            'use_class_token': 'use_class_token',
-            'attn_global_hidden_dim': 'attn_global_hidden_dim',
-        }
         
-        # Optional parameters with default values
-        optional_params = {
-            'phi_dim': None,
-            'downscale_depth': 1,
-            'downscale_multiplier': 1.25,
-            'downscale_stride_q': 2,
-            'downscale_stride_k': 2,
-            'noise_aug': 0.1,
-            'attnpool_mode': 'conv',
-            'name': None,
-            'hflip_prob': 0.5,
-            'vflip_prob': 0.5,
-            'rotate_prob': 0.5,
-            'noise_aug_prob': 0.5,
-        }
-        
-        # Extract required parameters from config
-        model_args = {}
-        for param, config_key in required_params.items():
-            if config_key not in config:
-                raise ValueError(f"Required parameter '{config_key}' not found in config")
-            model_args[param] = config[config_key]
-        
-        # Extract optional parameters from config
-        for param, default_value in optional_params.items():
-            model_args[param] = config.get(param, default_value)
-                
-        # Pass any other parameters from config
-        for key, value in config.items():
-            if key not in required_params.values() and key not in optional_params:
-                model_args[key] = value
-        
-        logger.info(f"Initializing RiskFormer_ViT from config with parameters: {model_args}")
-        
-        return cls(**model_args)
+        return cls(
+            input_embed_dim=config['input_embed_dim'],
+            output_embed_dim=config['output_embed_dim'],
+            use_phi=config['use_phi'],
+            drop_path_rate=config['drop_path_rate'],
+            drop_rate=config['drop_rate'],
+            tasks=config['tasks'],
+            max_dim=config['max_dim'],
+            depth=config['depth'],
+            global_depth=config['global_depth'],
+            encoding_method=config['encoding_method'],
+            num_heads=config['num_heads'],
+            use_attn_mask=config['use_attn_mask'],
+            mlp_ratio=config['mlp_ratio'],
+            use_class_token=config['use_class_token'],
+            attn_global_hidden_dim=config['attn_global_hidden_dim'],
+            phi_dim=config.get('phi_dim', None),
+            downscale_depth=config.get('downscale_depth', 1),
+            downscale_multiplier=config.get('downscale_multiplier', 1.25),
+            downscale_stride_q=config.get('downscale_stride_q', 2),
+            downscale_stride_k=config.get('downscale_stride_k', 2),
+            noise_aug=config.get('noise_aug', 0.1),
+            attnpool_mode=config.get('attnpool_mode', 'conv'),
+            name=config.get('name', None),
+            hflip_prob=config.get('hflip_prob', 0.5),
+            vflip_prob=config.get('vflip_prob', 0.5),
+            rotate_prob=config.get('rotate_prob', 0.5),
+            noise_aug_prob=config.get('noise_aug_prob', 0.5),
+        )
 
     def __init__(
         self,
@@ -279,7 +255,6 @@ class RiskFormer_ViT(nn.Module):
         vflip_prob: float = 0.5,
         rotate_prob: float = 0.5,
         noise_aug_prob: float = 0.5,
-        **kwargs
     ):
         """
         Initialize the RiskFormer Vision Transformer model.
@@ -997,54 +972,20 @@ class RiskFormerLightningModule(pl.LightningModule):
     """
     
     @classmethod
-    def from_config(cls, config, task_configs=None, regional_coeff=None):
+    def from_config(cls, config: Dict[str, Any]):
         """
         Create a RiskFormerLightningModule from a configuration dictionary.
         
         Args:
             config: A dictionary containing model and optimizer configuration parameters.
-            task_configs: Optional dictionary of task configurations with unified information.
-                If not provided, will be extracted from config['tasks'].
-            regional_coeff: Optional regional loss coefficient.
             
         Returns:
             An initialized RiskFormerLightningModule.
-        """
-        # Create model config from main config
-        model_config = {k: v for k, v in config.items() if k not in [
-            'optimizer', 'learning_rate', 'weight_decay', 'scheduler',
-            'batch_size', 'num_workers', 'max_epochs', 'min_epochs', 'patience'
-        ]}
-        
-        # Add tasks configuration directly to model_config
-        if task_configs is None:
-            # Get tasks from config if not provided as an argument
-            if 'tasks' not in config:
-                raise ValueError("tasks configuration must be provided either in config['tasks'] or as task_configs argument")
-            task_configs = config['tasks']
-        
-        model_config['tasks'] = task_configs
-        
-        # Create optimizer config
-        optimizer_config = {
-            'optimizer': config.get('optimizer', 'adam'),
-            'learning_rate': config.get('learning_rate', 1e-4),
-            'weight_decay': config.get('weight_decay', 1e-6),
-            'scheduler': config.get('scheduler', 'plateau')
-        }
-        
-        # Use provided regional_coeff or get from config
-        if regional_coeff is None:
-            regional_coeff = config.get('regional_coeff', 0.0)
-        
-        return cls(
-            model_config=model_config,
-            optimizer_config=optimizer_config,
-            regional_coeff=regional_coeff
-        )
+        """                
+        return cls(config=config)
     
     @classmethod
-    def from_config_file(cls, config_path, task_configs=None, regional_coeff=None):
+    def from_config_file(cls, config_path: str) -> 'RiskFormerLightningModule':
         """
         Create a RiskFormerLightningModule from a configuration file.
         
@@ -1057,39 +998,76 @@ class RiskFormerLightningModule(pl.LightningModule):
         Returns:
             An initialized RiskFormerLightningModule.
         """
-        config = load_training_config(config_path)
-        return cls.from_config(config, task_configs, regional_coeff)
+        config = load_train_config(config_path)
+        return cls.from_config(config)
     
     def __init__(
         self,
-        model_config: Dict[str, Any],
-        optimizer_config: Dict[str, Any],
-        regional_coeff: float = 0.0,
+        riskformer_config: Dict[str, Any],
     ):
         """
         Initialize the RiskFormer Lightning Module.
         
         Args:
-            model_config: Configuration for the RiskFormer_ViT model
+            riskformer_config: Configuration for the RiskFormer_ViT model
             optimizer_config: Configuration for the optimizer
-            regional_coeff: Coefficient for weighting local vs global loss
         """
         super().__init__()
         self.save_hyperparameters()
         
         # Store all configurations as instance attributes
-        self.model_config = model_config
+        riskformer_params = [
+            "input_embed_dim",
+            "output_embed_dim",
+            "use_phi",
+            "drop_path_rate",
+            "drop_rate",
+            "tasks",  # Dictionary mapping task names to task configurations
+            "max_dim",
+            "depth",
+            "global_depth",
+            "encoding_method",
+            "num_heads",
+            "use_attn_mask",
+            "mlp_ratio",
+            "use_class_token",
+            "attn_global_hidden_dim",
+            "phi_dim",
+            "downscale_depth",
+            "downscale_multiplier",
+            "downscale_stride_q",
+            "downscale_stride_k",
+            "noise_aug",
+            "attnpool_mode",
+            "name",
+            "hflip_prob",
+            "vflip_prob",
+            "rotate_prob",
+            "noise_aug_prob",
+        ]
+        self.riskformer_config = {
+            k: v
+            for k, v in riskformer_config.items()
+            if k in riskformer_params
+        }
+
+        optimizer_config = {
+            'optimizer': riskformer_config.get('optimizer', 'adam'),
+            'learning_rate': riskformer_config.get('learning_rate', 1e-4),
+            'weight_decay': riskformer_config.get('weight_decay', 1e-6),
+            'scheduler': riskformer_config.get('scheduler', 'plateau')
+        }
         self.optimizer_config = optimizer_config
-        self.regional_coeff = regional_coeff
-        self.task_configs = model_config['tasks']
+        self.regional_coeff = riskformer_config['regional_coeff']
+        self.task_configs = riskformer_config['tasks']
         
         # Create the model
-        self.model = RiskFormer_ViT(**model_config)
+        self.model = RiskFormer_ViT.from_config(self.riskformer_config)
         
         # Extract essential information from task_configs
-        self.tasks = list(model_config['tasks'].keys())
-        self.task_types = {task: cfg['type'] for task, cfg in model_config['tasks'].items()}
-        self.task_weights = {task: cfg.get('weight', 1.0) for task, cfg in model_config['tasks'].items()}
+        self.tasks = list(riskformer_config['tasks'].keys())
+        self.task_types = {task: cfg['type'] for task, cfg in riskformer_config['tasks'].items()}
+        self.task_weights = {task: cfg.get('weight', 1.0) for task, cfg in riskformer_config['tasks'].items()}
         
         # Create loss function
         self.loss = create_slide_level_loss(
@@ -1124,8 +1102,8 @@ class RiskFormerLightningModule(pl.LightningModule):
                 # Multiclass classification metrics
                 num_classes = 2  # Default to binary (2 classes) if not specified
                 # For testing, ensure at least 2 classes for torchmetrics
-                if "num_classes" in self.model_config and self.model_config["num_classes"] > 1:
-                    num_classes = self.model_config["num_classes"]
+                if "num_classes" in self.riskformer_config and self.riskformer_config["num_classes"] > 1:
+                    num_classes = self.riskformer_config["num_classes"]
                     
                 task_metrics["train_acc"] = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes).to(device)
                 task_metrics["val_acc"] = torchmetrics.Accuracy(task="multiclass", num_classes=num_classes).to(device)

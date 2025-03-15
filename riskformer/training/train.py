@@ -16,7 +16,7 @@ from __future__ import division, print_function
 
 import os
 import logging
-import torch
+from typing import Union
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 
@@ -28,42 +28,46 @@ logger = logging.getLogger(__name__)
 
 SIZE = 256
 
-def create_data_module(config_path, config=None):
+def create_data_module(
+        config: Union[str, dict]
+) -> RiskFormerDataModule:
     """Create data module from config
     
     Args:
-        config_path (str): Path to the configuration file
-        config (dict, optional): Configuration dictionary. If provided, config_path is ignored.
+        config (Union[str, dict]): Path to the configuration file or dictionary
         
     Returns:
         RiskFormerDataModule: Data module for training
     """
     try:
-        if config is not None:
-            data_module = RiskFormerDataModule(config)
-        else:
-            data_module = RiskFormerDataModule.from_config_file(config_path)
+        if isinstance(config, str):
+            data_module = RiskFormerDataModule.from_config_file(config)
+        elif isinstance(config, dict):
+            data_module = RiskFormerDataModule.from_config(config)
+            
         log_event("info", "data_module_created", "Data module created successfully")
         return data_module
     except Exception as e:
         log_event("error", "data_module_creation_failed", "Failed to create data module", error_message=str(e))
         raise
 
-def create_model(config_path, config=None):
+def create_model(
+        config: Union[str, dict]
+) -> RiskFormerLightningModule:
     """Create model from config
     
     Args:
-        config_path (str): Path to the configuration file
-        config (dict, optional): Configuration dictionary. If provided, config_path is ignored.
+        config (Union[str, dict]): Path to the configuration file or dictionary
         
     Returns:
         RiskFormerLightningModule: Lightning module for training
     """
     try:
-        if config is not None:
-            model = RiskFormerLightningModule(config)
-        else:
-            model = RiskFormerLightningModule.from_config_file(config_path)
+        if isinstance(config, str):
+            model = RiskFormerLightningModule.from_config_file(config)
+        elif isinstance(config, dict):
+            model = RiskFormerLightningModule.from_config(config)
+        
         log_event("info", "model_created", "Model created successfully", model_type=type(model).__name__)
         return model
     except Exception as e:
@@ -110,20 +114,8 @@ def create_trainer(config, callbacks, logger):
         pl.Trainer: PyTorch Lightning trainer
     """
     try:
-        # Extract distributed training parameters
-        strategy_params = {}
-        if config.get('find_unused_parameters', False):
-            strategy_params['find_unused_parameters'] = True
-        
-        # Configure strategy
         strategy = config.get('strategy', 'auto')
-        if strategy != 'auto' and strategy_params:
-            # Only pass strategy_params if they exist and strategy isn't auto
-            strategy = {
-                'class_path': strategy,
-                'init_args': strategy_params
-            }
-        
+
         trainer = pl.Trainer(
             max_epochs=config.get('max_epochs', 100),
             min_epochs=config.get('min_epochs', 10),
@@ -131,10 +123,12 @@ def create_trainer(config, callbacks, logger):
             logger=logger,
             precision=config.get('precision', '32'),
             accelerator=config.get('accelerator', 'auto'),
-            devices=config.get('devices', 1),
+            accumulate_grad_batches=config.get('accumulate_grad_batches', 1),
+            devices=config.get('devices', 'auto'),
             strategy=strategy,
-            log_every_n_steps=10,
-            deterministic=config.get('deterministic', True),
+            log_every_n_steps=config.get('log_every_nsteps', 10),
+            deterministic=config.get('deterministic', None),
+            sync_batchnorm=config.get('sync_batchnorm', False),
         )
         
         # Log trainer configuration details with special attention to distributed setup

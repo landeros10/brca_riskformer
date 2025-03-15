@@ -12,13 +12,23 @@ import argparse
 import subprocess
 import json
 from datetime import datetime
+import uuid
 
 import optuna
 from optuna.integration.wandb import WeightsAndBiasesCallback
 import wandb
+import boto3
+from botocore.exceptions import ClientError
 
 from riskformer.utils.logger_config import logger_setup, log_event
 from riskformer.utils.training_utils import load_train_config, validate_config
+from riskformer.utils.aws_utils import (
+    is_s3_path,
+    initialize_boto3_session,
+    initialize_s3_client,
+    upload_large_files_to_bucket,
+    generate_s3_key
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +65,22 @@ def parse_args():
                         help="Run trials sequentially or in parallel")
     parser.add_argument("--max_parallel_jobs", type=int, default=1,
                         help="Maximum number of parallel jobs (if run_mode is parallel)")
+    
+    # S3 Configuration for model uploads
+    parser.add_argument("--s3_bucket", type=str, default=None,
+                        help="S3 bucket for uploading model checkpoints")
+    parser.add_argument("--s3_prefix", type=str, default="models",
+                        help="S3 prefix for model checkpoints")
+    parser.add_argument("--aws_profile", type=str, default=None,
+                        help="AWS profile name for S3 operations")
+    parser.add_argument("--aws_region", type=str, default=None,
+                        help="AWS region for S3 operations")
+    
+    # Model upload criteria
+    parser.add_argument("--upload_best_only", action="store_true",
+                        help="Upload only the best models to S3")
+    parser.add_argument("--upload_threshold", type=float, default=None,
+                        help="Only upload models with metric better than this threshold")
     
     # Debug mode
     parser.add_argument("--debug", action="store_true",
@@ -143,13 +169,14 @@ def define_search_space(trial, sweep_config):
     return params
 
 
-def run_training_job(params, base_config_path, trial_number):
+def run_training_job(params, base_config_path, trial_number, s3_config=None):
     """Run a training job with the given hyperparameters
     
     Args:
         params (dict): Hyperparameters for this trial
         base_config_path (str): Path to base configuration file
         trial_number (int): Current trial number
+        s3_config (dict): S3 configuration for model upload
         
     Returns:
         dict: Results from the training job including validation metrics
@@ -200,17 +227,84 @@ def run_training_job(params, base_config_path, trial_number):
         return {"val_loss": float('inf')}
     
     # Parse results from the training job
-    # This assumes your train.py script outputs a JSON with metrics to stdout
-    # or saves metrics to a file that we can read
     try:
         # Example: Read results from a file that train.py creates
         results_file = f"results_{experiment_name}.json"
         with open(results_file, "r") as f:
             results = json.load(f)
+            
+        # Upload model to S3 if configured and the model meets criteria
+        if s3_config and s3_config.get('s3_bucket'):
+            # Check if we have a best checkpoint path
+            best_checkpoint_path = results.get('best_checkpoint_path')
+            if best_checkpoint_path and os.path.exists(best_checkpoint_path):
+                # Check if the model meets the performance threshold
+                optimization_metric = sweep_config.get('optimization_metric', 'val_loss')
+                metric_value = results.get(optimization_metric, float('inf'))
+                direction = sweep_config.get('direction', 'minimize')
+                
+                # Determine if we should upload based on threshold and direction
+                should_upload = True
+                threshold = s3_config.get('upload_threshold')
+                if threshold is not None:
+                    if direction == 'minimize':
+                        should_upload = metric_value <= threshold
+                    else:  # maximize
+                        should_upload = metric_value >= threshold
+                
+                if should_upload:
+                    # Initialize S3 client if not already done
+                    s3_client = s3_config.get('s3_client')
+                    if not s3_client:
+                        s3_client = get_s3_client(
+                            s3_config.get('aws_profile'),
+                            s3_config.get('aws_region')
+                        )
+                        s3_config['s3_client'] = s3_client
+                    
+                    if s3_client:
+                        # Build S3 key
+                        s3_key = build_s3_key(
+                            experiment_name=s3_config.get('study_name', 'riskformer-hpo'),
+                            trial_number=trial_number,
+                            model_file=best_checkpoint_path,
+                            is_best=True,
+                            prefix=s3_config.get('s3_prefix', 'models')
+                        )
+                        
+                        # Upload model to S3
+                        s3_path = upload_model_to_s3(
+                            best_checkpoint_path,
+                            s3_config['s3_bucket'],
+                            s3_key,
+                            s3_client
+                        )
+                        
+                        if s3_path:
+                            # Store S3 path in results
+                            results['s3_model_path'] = s3_path
+                            
+                            # Update results file with S3 path
+                            with open(results_file, "w") as f:
+                                json.dump(results, f, indent=4)
+                            
+                            # Log to W&B if enabled
+                            if 'wandb' in sys.modules:
+                                try:
+                                    wandb.log({
+                                        f"trial_{trial_number}/s3_model_path": s3_path,
+                                        f"trial_{trial_number}/{optimization_metric}": metric_value
+                                    })
+                                except Exception as e:
+                                    log_event("warning", "wandb_log_failed", "Failed to log to W&B", error=str(e))
+                    else:
+                        log_event("warning", "s3_upload_skipped", "Skipping S3 upload due to client initialization failure")
         
         # Clean up temporary files
-        os.remove(temp_config_path)
-        os.remove(results_file)
+        try:
+            os.remove(temp_config_path)
+        except Exception as e:
+            log_event("warning", "temp_config_cleanup_failed", "Failed to clean up temporary config file", error=str(e))
         
         return results
     except Exception as e:
@@ -228,14 +322,14 @@ def objective(trial):
     Returns:
         float: Primary metric to optimize (e.g., validation loss)
     """
-    # TODO: should this be val or test loss?
+    global args, sweep_config, s3_config
     
     # Generate hyperparameters for this trial
     params = define_search_space(trial, sweep_config)
     
     # Execute the training with these hyperparameters
     trial_number = trial.number
-    results = run_training_job(params, args.base_config, trial_number)
+    results = run_training_job(params, args.base_config, trial_number, s3_config)
     
     # Extract the primary metric for optimization
     primary_metric = results.get(sweep_config.get('optimization_metric', 'val_loss'), float('inf'))
@@ -267,9 +361,121 @@ def setup_wandb_callback():
     )
 
 
+def get_s3_client(aws_profile=None, aws_region=None):
+    """Initialize an S3 client
+    
+    Args:
+        aws_profile (str): AWS profile name
+        aws_region (str): AWS region
+        
+    Returns:
+        boto3.client: S3 client or None if initialization fails
+    """
+    try:
+        # Try to initialize with the provided profile and region
+        s3_client = initialize_s3_client(aws_profile, aws_region)
+        
+        # If that fails, try with default credentials
+        if not s3_client:
+            log_event("warning", "s3_client_init_failed", 
+                     "Failed to initialize S3 client with provided profile, falling back to default credentials")
+            s3_client = boto3.client('s3')
+        
+        # Test the connection with a simple operation
+        s3_client.list_buckets()
+        
+        log_event("info", "s3_client_initialized", "S3 client initialized successfully",
+                 profile=aws_profile, region=aws_region)
+        return s3_client
+    except Exception as e:
+        log_event("error", "s3_client_failed", "Failed to initialize S3 client", 
+                 error=str(e), profile=aws_profile, region=aws_region)
+        return None
+
+
+def upload_model_to_s3(local_path, s3_bucket, s3_key, s3_client=None):
+    """Upload a model checkpoint to S3
+    
+    Args:
+        local_path (str): Path to local model file
+        s3_bucket (str): S3 bucket name
+        s3_key (str): S3 key for the file
+        s3_client (boto3.client): S3 client to use for upload
+        
+    Returns:
+        bool: True if upload successful, False otherwise
+    """
+    try:
+        # Check if the file exists
+        if not os.path.exists(local_path):
+            log_event("error", "model_file_not_found", "Model file not found", local_path=local_path)
+            return False
+            
+        # Create a client if one wasn't provided
+        if s3_client is None:
+            s3_client = boto3.client('s3')
+
+        # Use upload_large_files_to_bucket for larger files
+        if os.path.getsize(local_path) > 100 * 1024 * 1024:  # 100MB
+            # This function has better handling for large files with multipart uploads
+            prefix = '/'.join(s3_key.split('/')[:-1])
+            filename = s3_key.split('/')[-1]
+            upload_large_files_to_bucket(
+                s3_client, 
+                s3_bucket,
+                [local_path],
+                file_names=[filename], 
+                prefix=prefix,
+                reupload=True
+            )
+        else:
+            # Use direct upload for smaller files
+            s3_client.upload_file(local_path, s3_bucket, s3_key)
+            
+        log_event("info", "s3_upload_success", "Successfully uploaded model to S3", 
+                 local_path=local_path, s3_bucket=s3_bucket, s3_key=s3_key)
+        
+        # Return the full S3 path
+        return f"s3://{s3_bucket}/{s3_key}"
+    except Exception as e:
+        log_event("error", "s3_upload_failed", "Failed to upload model to S3", 
+                 local_path=local_path, s3_bucket=s3_bucket, s3_key=s3_key, error_message=str(e))
+        return False
+
+
+def build_s3_key(experiment_name, trial_number, model_file, is_best=False, prefix="models"):
+    """Build a standardized S3 key for model checkpoints
+    
+    Args:
+        experiment_name (str): Name of the experiment
+        trial_number (int/str): Trial number or identifier
+        model_file (str): Name or path of the model file
+        is_best (bool): Whether this is the best model
+        prefix (str): S3 prefix
+        
+    Returns:
+        str: S3 key for the model checkpoint
+    """
+    # Extract just the filename from the model path
+    model_name = os.path.basename(model_file)
+    
+    # Generate a timestamp
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    
+    # Create a unique run ID
+    run_id = str(uuid.uuid4())[:8]
+    
+    if is_best:
+        s3_key = f"{prefix}/{experiment_name}/best/trial_{trial_number}_{timestamp}_{run_id}_{model_name}"
+    else:
+        s3_key = f"{prefix}/{experiment_name}/checkpoints/trial_{trial_number}_{timestamp}_{run_id}_{model_name}"
+    
+    return s3_key
+
+
 def main():
     """Main function to run the hyperparameter optimization"""
-    global args, sweep_config
+    global args, sweep_config, s3_config
     args = parse_args()
     
     # Set up logger
@@ -292,6 +498,28 @@ def main():
     except ValueError as e:
         log_event("error", "invalid_sweep_config", "Invalid sweep configuration file", error_message=str(e))
         return 1
+    
+    # Set up S3 configuration if bucket is provided
+    s3_config = None
+    if args.s3_bucket:
+        s3_config = {
+            's3_bucket': args.s3_bucket,
+            's3_prefix': args.s3_prefix,
+            'aws_profile': args.aws_profile,
+            'aws_region': args.aws_region,
+            'upload_threshold': args.upload_threshold,
+            'upload_best_only': args.upload_best_only,
+            'study_name': args.study_name,
+        }
+        
+        # Initialize S3 client once to reuse
+        s3_client = get_s3_client(args.aws_profile, args.aws_region)
+        if s3_client:
+            s3_config['s3_client'] = s3_client
+            log_event("info", "s3_upload_enabled", "S3 model upload enabled", 
+                     bucket=args.s3_bucket, prefix=args.s3_prefix)
+        else:
+            log_event("warning", "s3_upload_disabled", "S3 model upload disabled due to client initialization failure")
     
     # Create output directory if it doesn't exist
     os.makedirs(args.output_dir, exist_ok=True)
@@ -355,7 +583,7 @@ def main():
     final_training = input("Do you want to train a final model with the best parameters? (y/n): ")
     if final_training.lower() == "y":
         log_event("info", "final_training_started", "Starting final model training with best parameters")
-        final_results = run_training_job(best_params, args.base_config, "final")
+        final_results = run_training_job(best_params, args.base_config, "final", s3_config)
         log_event("info", "final_training_completed", "Final model training completed", metrics=final_results)
     
     return 0
