@@ -16,17 +16,9 @@ from datetime import datetime
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 
-from riskformer.training.train import (
-    create_data_module,
-    create_model,
-    create_callbacks,
-    create_trainer,
-    train_model,
-    test_model,
-)
-from riskformer.utils.training_utils import clear_gpu_memory
-from riskformer.utils.config_utils import load_train_config
-from riskformer.utils.logger_config import logger_setup, log_event, setup_training_run_logger
+from riskformer.training.train import run_one_training_session
+from riskformer.utils.training_utils import clear_gpu_memory, load_train_config
+from riskformer.utils.logger_config import logger_setup, log_event
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +83,6 @@ def parse_args():
     # Hyperparameter optimization integration
     parser.add_argument("--save_results", action="store_true",
                         help="Save test results to a JSON file for hyperparameter optimization")
-    parser.add_argument("--results_dir", type=str, default="./",
-                        help="Directory to save results JSON file")
     
     # Checkpoint resumption
     parser.add_argument("--resume_from_checkpoint", type=str, default=None,
@@ -103,20 +93,25 @@ def parse_args():
 
 def log_gpu_info():
     """Log information about available GPUs"""
-    if torch.cuda.is_available():
-        device_count = torch.cuda.device_count()
-        log_event("info", "gpu_setup", "GPU information", 
-                 device_count=device_count,
-                 cuda_version=torch.version.cuda)
-        
-        for i in range(device_count):
-            log_event("info", "gpu_device", "GPU device information",
-                     device_index=i,
-                     device_name=torch.cuda.get_device_name(i),
-                     memory_allocated=f"{torch.cuda.memory_allocated(i)/1024**3:.2f} GB",
-                     memory_reserved=f"{torch.cuda.memory_reserved(i)/1024**3:.2f} GB")
-    else:
-        log_event("warning", "gpu_setup", "No GPUs available, using CPU")
+    try:
+        if torch.cuda.is_available():
+            device_count = torch.cuda.device_count()
+            log_event("info", "gpu_setup", "GPU information", 
+                    device_count=device_count,
+                    cuda_version=torch.version.cuda)
+            
+            for i in range(device_count):
+                log_event("info", "gpu_device", "GPU device information",
+                        device_index=i,
+                        device_name=torch.cuda.get_device_name(i),
+                        memory_allocated=f"{torch.cuda.memory_allocated(i)/1024**3:.2f} GB",
+                        memory_reserved=f"{torch.cuda.memory_reserved(i)/1024**3:.2f} GB")
+        else:
+            log_event("warning", "gpu_setup", "No GPUs available, using CPU")
+    except Exception as e:
+        log_event("error", "gpu_info_error", "Error while checking GPU information", 
+                error_type=type(e).__name__, error_message=str(e))
+        logger.debug("GPU info error details", exc_info=True)
 
 
 def check_disk_space(path, required_gb=10):
@@ -145,16 +140,6 @@ def check_disk_space(path, required_gb=10):
         log_event("error", "disk_space_check_failed", "Failed to check disk space", 
                 error_message=str(e))
         return True  # Assume there's enough space if check fails
-
-
-def cleanup_resources():
-    """Clean up resources to prevent memory leaks and ensure proper shutdown"""
-    # Clear GPU memory
-    clear_gpu_memory()
-    
-    # Close any open file handles or connections
-    # Note: Most handles should be closed by their respective objects' __del__ methods
-    log_event("debug", "resources_cleaned", "Resources cleaned up")
 
 
 def load_training_run_config(
@@ -255,250 +240,46 @@ def check_local_disks(
         log_event("warning", "low_disk_space_logs", "Low disk space for logging", 
                     path=log_dir)
     return True
-
-
-def setup_model_checkpoint_callback(
-        model_dir: str, 
-        experiment_name: str, 
-        run_id: str, 
-        monitor: str, 
-        monitor_mode: str, 
-        save_top_k: int
-) -> ModelCheckpoint:
-
-    checkpoint_dir = os.path.join(model_dir, f"{experiment_name}_{run_id}")
-    os.makedirs(checkpoint_dir, exist_ok=True)
-
-    # Create the checkpoint callback
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=checkpoint_dir,
-        filename='{epoch:02d}-{' + monitor + ':.4f}',
-        monitor=monitor,
-        mode=monitor_mode,
-        save_top_k=save_top_k,
-        save_last=True,
-        verbose=True
-    )
-
-    return checkpoint_callback, checkpoint_dir
-
-
-def setup_callbacks(
-        model_dir: str, 
-        early_stop_patience: int, 
-        experiment_name: str, 
-        run_id: str, 
-        monitor: str, 
-        monitor_mode: str, 
-        save_top_k: int
-):
-    callbacks = create_callbacks(model_dir, early_stop_patience)
-    checkpoint_callback, checkpoint_dir = setup_model_checkpoint_callback(
-        model_dir=model_dir, 
-        experiment_name=experiment_name, 
-        run_id=run_id, 
-        monitor=monitor, 
-        monitor_mode=monitor_mode, 
-        save_top_k=save_top_k
-    )
-    # Add to callbacks list - replace any existing ModelCheckpoint
-    for i, callback in enumerate(callbacks):
-        if isinstance(callback, ModelCheckpoint):
-            callbacks[i] = checkpoint_callback
-            break
-    else:
-        callbacks.append(checkpoint_callback)
-
-    log_event("info", "checkpoint_callback_created", "Model checkpoint callback created", 
-                checkpoint_dir=checkpoint_dir, save_top_k=save_top_k, monitor=monitor)
-    
-    log_event("debug", "callbacks_created", "Training callbacks created", 
-                early_stop_patience=early_stop_patience, model_dir=model_dir)
-    return callbacks
-    
-
-def save_results_to_json(
-        test_results: list,
-        config: dict,
-        results_dir: str = "./",
-        best_checkpoint_path: str = None
-) -> str | None:
-    """Save test results to a JSON file for hyperparameter optimization
-    
-    Args:
-        test_results (list): Results from testing
-        config (dict): Configuration used for training
-        results_dir (str): Directory to save results
-        best_checkpoint_path (str): Path to the best checkpoint
-    """
-    if not test_results:
-        log_event("warning", "save_results_to_json", "No test results to save")
-        return None
-    
-    # Create a normalized dictionary from the test results
-    results_dict = {}
-    if isinstance(test_results, list) and test_results:
-        results_dict = test_results[0]  # Get the first element if it's a list
-    elif isinstance(test_results, dict):
-        results_dict = test_results
-    
-    # Add the entire config to the results
-    results_dict["config"] = config
-    
-    # Add checkpoint path information
-    if best_checkpoint_path and os.path.exists(best_checkpoint_path):
-        results_dict["best_checkpoint_path"] = best_checkpoint_path
-    
-    # Add timestamp and experiment name
-    results_dict["timestamp"] = datetime.now().isoformat()
-    experiment_name = config.get("experiment_name", "riskformer")
-    
-    # Save to file
-    os.makedirs(results_dir, exist_ok=True)
-    results_file = os.path.join(results_dir, f"results_{experiment_name}.json")
-    
-    try:
-        with open(results_file, "w") as f:
-            json.dump(results_dict, f, indent=4)
-        log_event("info", "results_saved", "Test results saved to JSON file", file_path=results_file)
-        return results_file
-    except Exception as e:
-        log_event("error", "results_save_failed", "Failed to save test results", error_message=str(e))
-        return None
-
-
-def save_test_results(
-        test_results: dict,
-        save_results: bool,
-        results_dir: str,
-        callbacks: list,
-        config: dict
-) -> str | None:
-    """Save test results to JSON for hyperparameter optimization
-    
-    Args:
-        test_results (dict): Results from model testing
-        save_results (bool): Whether to save results
-        results_dir (str): Directory to save results
-        callbacks (list): List of callbacks that may contain ModelCheckpoint
-        config (dict): Complete configuration used for training
-    
-    Returns:
-        str: Path to the saved results file, or None if not saved
-    """
-    if not save_results:
-        return None
-    
-    # Get the best checkpoint path from the ModelCheckpoint callback
-    best_checkpoint_path = None
-    for callback in callbacks:
-        if isinstance(callback, pl.callbacks.ModelCheckpoint):
-            if hasattr(callback, 'best_model_path') and callback.best_model_path:
-                best_checkpoint_path = callback.best_model_path
-                break
-    
-    # Save the complete config with the results
-    results_file = save_results_to_json(test_results, config, results_dir, best_checkpoint_path)
-    
-    if results_file:
-        log_event("info", "results_saved", "Test results saved to JSON", file_path=results_file)
-    
-    return results_file
-
+         
 
 def main():
-    """Main training function."""
+    args = parse_args()
+    # Set up logger
+    logger_setup(log_group="riskformer-train", debug=args.debug, log_dir=args.log_dir)
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+    
+    # Load configuration from file
+    config_path = args.config
+    config = load_training_run_config(config_path, args)
+
+    # Set seed for reproducibility
+    seed = config.get('seed', 42)
+    pl.seed_everything(seed)
+    run_id = str(uuid.uuid4())[:8]
+    log_event("debug", "seed_set", "Random seed set for reproducibility", seed=seed)
+
+    # Set up local dirs
+    model_dir = config['model_dir']
+    log_dir = config['log_dir']
+    if not check_local_disks(model_dir, log_dir):
+        log_event("error", "disk_space_check_failed", "Disk space check failed, aborting training")
+        return 1
+
+    log_gpu_info()
+    clear_gpu_memory()
+    
     try:
-        ### Setup ###
-        args = parse_args()
-        
-        # Set up logger
-        logger_setup(log_group="riskformer-train", debug=args.debug, log_dir=args.log_dir)
-        if args.debug:
-            logger.setLevel(logging.DEBUG)
-        
-        # Load configuration from file
-        config_path = args.config
-        config = load_training_run_config(config_path, args)
-
-        # Set seed for reproducibility
-        seed = config.get('seed', 42)
-        pl.seed_everything(seed)
-        run_id = str(uuid.uuid4())[:8]
-        log_event("debug", "seed_set", "Random seed set for reproducibility", seed=seed)
-        
-        # Set up local dirs
-        model_dir = config['model_dir']
-        log_dir = config['log_dir']
-        if not check_local_disks(model_dir, log_dir):
-            log_event("error", "disk_space_check_failed", "Disk space check failed, aborting training")
-            return 1
-
-        # Create data module using core functionality
-        data_module = create_data_module(config)
-        log_event("info", "data_module_created", "Data module created successfully")
-        
-        # Create model using core functionality
-        model = create_model(config)
-        log_event("info", "model_created", "Model architecture created successfully")
-        
-        # Create callbacks using core functionality
-        callbacks = setup_callbacks(
-            model_dir=model_dir, 
-            early_stop_patience=config['early_stop'], 
-            experiment_name=config['experiment_name'], 
-            run_id=run_id, 
-            monitor=config['monitor'], 
-            monitor_mode=config['monitor_mode'], 
-            save_top_k=config['save_top_k']
-        )
-
-        # Create logger with the imported function
-        tb_logger = setup_training_run_logger(
-            use_wandb=config['use_wandb'],
-            log_dir=log_dir,
-            experiment_name=config['experiment_name'],
-            wandb_project=config['wandb_project'],
-            wandb_entity=config['wandb_entity']
-        )
-        
-        # Create trainer using core functionality
-        trainer = create_trainer(config, callbacks, tb_logger)
-        log_event("info", "trainer_created", "PyTorch Lightning trainer created successfully")
-        
-        # Get checkpoint path if resuming
-        ckpt_path = config.get('resume_from_checkpoint', None)
-        if ckpt_path:
-            log_event("info", "resuming_training", "Resuming training from checkpoint", checkpoint_path=ckpt_path)
-        
-        ### Training Run ###
-        log_event("info", "training_start", "Starting RiskFormer Training Pipeline")
-        log_gpu_info()
-        clear_gpu_memory()
-            
-        trainer = train_model(trainer, model, data_module, ckpt_path)
-        clear_gpu_memory()
-        log_event("info", "training_completed", "Model training completed successfully")
-        
-        ### Testing ###
-        test_results = test_model(trainer, model, data_module)
-        log_event("info", "testing_completed", "Model evaluation completed", metrics=test_results)
-        
-        # Add run_id to config
-        config['run_id'] = run_id
-        
-        # Save test results with complete config
-        save_test_results(
-            test_results=test_results,
+        results = run_one_training_session(
+            config=config,
             save_results=args.save_results,
-            results_dir=args.results_dir,
-            callbacks=callbacks,
-            config=config
+            model_dir=model_dir,
+            log_dir=log_dir,
+            run_id=run_id,
         )
-        
         log_event("info", "training_pipeline_complete", "Training pipeline completed successfully")
-        return 0  # Success exit code
-        
+        clear_gpu_memory()
+        return 0
     except Exception as e:
         log_event("error", "training_pipeline_failed", "Training pipeline failed with uncaught exception", 
                  error_type=type(e).__name__, error_message=str(e))
@@ -506,8 +287,8 @@ def main():
         return 1  # Error exit code
     
     finally:
-        # Ensure resources are cleaned up regardless of success or failure
-        cleanup_resources()
+        clear_gpu_memory()
+        log_event("debug", "resources_cleaned", "Resources cleaned up")
         log_event("info", "pipeline_shutdown", "Training pipeline shutdown complete")
 
 

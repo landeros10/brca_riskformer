@@ -20,7 +20,7 @@ import yaml
 
 from riskformer.training.layers import SinusoidalPositionalEncoding2D, MultiScaleBlock, GlobalMaxPoolLayer
 from riskformer.utils.training_utils import create_slide_level_loss
-from riskformer.utils.config_utils import load_train_config
+from riskformer.utils.preprocess_utils import load_train_config
 
 logger = logging.getLogger(__name__)
 

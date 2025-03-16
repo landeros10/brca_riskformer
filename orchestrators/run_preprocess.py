@@ -21,7 +21,7 @@ from pathlib import Path
 from entrypoints.preprocess import preprocess_one_slide
 from riskformer.utils.logger_config import logger_setup, log_event
 from riskformer.utils.aws_utils import initialize_s3_client, list_bucket_files, upload_large_files_to_bucket
-from riskformer.utils.config_utils import load_preprocessing_config
+from riskformer.utils.preprocess_utils import load_preprocessing_config
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,7 @@ def load_dataset_files(s3_client, config, project_root):
               filtered_count=len(to_process))
     return to_process
 
+
 def download_s3_model_files(s3_client, config, model_dir):
     """Download model files from S3."""
     log_event("debug", "download_s3_model_files", "started",
@@ -101,6 +102,7 @@ def download_s3_model_files(s3_client, config, model_dir):
               s3_prefix=config['model']['key'], 
               local_dir=model_dir)
     return model_files
+
 
 def upload_preprocessing_results(s3_client, config, local_out_dir):
     """Upload preprocessing results to S3."""
@@ -139,6 +141,7 @@ def upload_preprocessing_results(s3_client, config, local_out_dir):
               s3_prefix=f"{config['s3']['output_dir']}/{config['model']['key']}")
     return
 
+
 def arg_parse():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Data loading / Preprocessing Orchestrator")
@@ -147,6 +150,7 @@ def arg_parse():
     parser.add_argument("--debug", action="store_true", help="Override debug mode from config")
     args = parser.parse_args()
     return args
+
 
 def main():
     args = arg_parse()
@@ -310,6 +314,7 @@ def main():
                   file_name=raw_key)
         
     log_event("info", "run_preprocess", "success")
+
 
 if __name__ == "__main__":
     try:

@@ -26,9 +26,9 @@ import timm
 from timm.data import resolve_data_config # type: ignore
 from timm.data.transforms_factory import create_transform # type: ignore
 
-from riskformer.utils.data_utils import (open_svs, get_slide_samplepoints,)
+from riskformer.utils.preprocess_utils import (open_svs, get_slide_samplepoints,)
 from riskformer.utils.logger_config import log_config
-from riskformer.utils.config_utils import load_yaml_config
+from riskformer.utils.preprocess_utils import load_yaml_config
 
 
 logger = logging.getLogger(__name__)

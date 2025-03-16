@@ -220,6 +220,8 @@ def run_training_job(params, base_config_path, trial_number, s3_config=None):
             check=True
         )
         log_event("info", "trial_completed", f"Trial {trial_number} completed successfully")
+        # TODO: figure out how to grab the results from this cmd subprocess
+        
     except subprocess.CalledProcessError as e:
         log_event("error", "trial_failed", f"Trial {trial_number} failed", 
                  error=str(e), stderr=e.stderr)
@@ -229,6 +231,7 @@ def run_training_job(params, base_config_path, trial_number, s3_config=None):
     # Parse results from the training job
     try:
         # Example: Read results from a file that train.py creates
+        # TODO: this is just a placeholder
         results_file = f"results_{experiment_name}.json"
         with open(results_file, "r") as f:
             results = json.load(f)
@@ -469,7 +472,6 @@ def build_s3_key(experiment_name, trial_number, model_file, is_best=False, prefi
         s3_key = f"{prefix}/{experiment_name}/best/trial_{trial_number}_{timestamp}_{run_id}_{model_name}"
     else:
         s3_key = f"{prefix}/{experiment_name}/checkpoints/trial_{trial_number}_{timestamp}_{run_id}_{model_name}"
-    
     return s3_key
 
 

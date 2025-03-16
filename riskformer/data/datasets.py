@@ -23,9 +23,9 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 import pytorch_lightning as pl
 
-from riskformer.utils.data_utils import sample_slide_image
+from riskformer.utils.preprocess_utils import sample_slide_image
 from riskformer.utils.training_utils import PatchInfo, split_riskformer_data, set_seed
-from riskformer.utils.config_utils import load_train_config
+from riskformer.utils.preprocess_utils import load_train_config
 from riskformer.utils.aws_utils import initialize_s3_client, list_bucket_files
 from riskformer.utils.logger_config import log_event
 
