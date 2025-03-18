@@ -91,7 +91,9 @@ The project is implemented in PyTorch with comprehensive MLOps integration:
 - ✅ Comprehensive experiment tracking and model versioning with Weights & Biases
 - ✅ Extensive unit and integration tests covering all core components
 - ✅ Orchestration scripts for automated batch processing of slide preprocessing and model training
+- ✅ Hyperparameter optimization pipeline with Optuna integration for model tuning
 - 🔄 Advanced explainability methods are being refined for clinical interpretation
+- 🔄 Deployment and inference structure is under active development for clinical integration
 - 🔄 Additional model variants are under active development
 
 The codebase is now research-production ready with robust components for the full machine learning lifecycle from data preprocessing to model deployment. Recent updates have focused on optimizing the transformer architecture, improving distributed training performance, and enhancing the reliability of the preprocessing pipeline.
@@ -103,6 +105,7 @@ brca_riskformer/
 │── configs/             # Configuration files
 │   ├── preprocessing/  # Preprocessing configurations
 │   ├── training/       # Model training configurations
+│   ├── inference/      # Inference configurations
 │── docker/             # Docker-related files
 │   ├── Dockerfile      # Container definition
 │── docs/               # Documentation and images
@@ -111,12 +114,14 @@ brca_riskformer/
 │   ├── train.py        # Model training entry point
 │── logs/               # Execution logs
 │── lightning_logs/     # PyTorch Lightning logs
+│── models/             # Saved model checkpoints
 │── notebooks/          # Jupyter notebooks
 │   ├── experiments/    # Training experiments
 │   ├── testing/        # Debugging notebooks
 │── orchestrators/      # Job orchestration scripts
 │   ├── run_preprocess.py  # Preprocessing orchestration
 │   ├── run_train.py      # Training orchestration
+│   ├── run_sweep.py       # Hyperparameter optimization orchestration
 │── resources/          # Static dataset files
 │── riskformer/         # Core package
 │   ├── data/          # Dataset operations
@@ -132,7 +137,6 @@ brca_riskformer/
 │       ├── training_utils.py     # Training helpers
 │       └── logger_config.py      # Logging configuration
 │── scripts/           # Standalone scripts
-│── src/               # Legacy source code
 │── tests/             # Comprehensive unit and integration tests
 │── wandb/             # Weights & Biases logging
 │── requirements.txt   # Python dependencies
@@ -165,11 +169,19 @@ Train the RiskFormer model with PyTorch Lightning:
 python entrypoints/train.py --config configs/training/config.yaml
 ```
 
-Or use the orchestrator for distributed training:
+### Hyperparameter Optimization
+
+Optimize RiskFormer model hyperparameters using Optuna and Weights & Biases:
 
 ```bash
-python orchestrators/run_train.py --config configs/training/config.yaml
+python orchestrators/run_sweep.py --base_config configs/training/config.yaml --sweep_config configs/hp_sweep.yaml
 ```
+
+This will:
+- Initialize a hyperparameter sweep based on the configuration in hp_sweep.yaml
+- Execute multiple training runs with different parameter combinations
+- Track all experiments in Weights & Biases
+- Save the best performing model configuration for further use
 
 ### Development
 
