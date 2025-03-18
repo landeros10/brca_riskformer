@@ -10,60 +10,6 @@ class TestRiskFormerLightningModule:
     """Test the RiskFormerLightningModule class."""
     
     @pytest.fixture
-    def model_config(self):
-        """Create a basic model configuration."""
-        return {
-            "input_embed_dim": 64,
-            "output_embed_dim": 32,
-            "use_phi": True,
-            "drop_path_rate": 0.1,
-            "drop_rate": 0.1,
-            "max_dim": 16,
-            "depth": 2,
-            "global_depth": 1,
-            "encoding_method": "sinusoidal",
-            "num_heads": 4,
-            "use_attn_mask": True,
-            "mlp_ratio": 2.0,
-            "use_class_token": False,
-            "attn_global_hidden_dim": 128,
-            "phi_dim": 32,
-            "downscale_depth": 1,
-            "downscale_multiplier": 1.25,
-            "downscale_stride_q": 2,
-            "downscale_stride_k": 2,
-            "noise_aug": 0.1,
-            "attnpool_mode": "conv",
-            "hflip_prob": 0.5,
-            "vflip_prob": 0.5,
-            "rotate_prob": 0.5,
-            "noise_aug_prob": 0.5,
-            "name": None,
-            "tasks": {
-                "risk": {
-                    "type": "binary",
-                    "num_classes": 1,
-                    "weight": 1.0,
-                    "loss_fn": nn.BCEWithLogitsLoss(),
-                    "activation": "sigmoid"
-                }
-            }
-        }
-    
-    @pytest.fixture
-    def optimizer_config(self):
-        """Create a basic optimizer configuration."""
-        return {
-            "optimizer": "adam",
-            "learning_rate": 1e-4,
-            "weight_decay": 1e-6,
-            "scheduler": "plateau",
-            "patience": 5,
-            "learning_rate_scaling": "linear",
-            "learning_rate_warmup_epochs": 10,
-        }
-    
-    @pytest.fixture
     def lightning_module(self, model_config, optimizer_config):
         """Create a RiskFormerLightningModule instance."""
         # Combine model_config and optimizer_config into a single riskformer_config
@@ -76,14 +22,6 @@ class TestRiskFormerLightningModule:
         return RiskFormerLightningModule(
             riskformer_config=riskformer_config,
         )
-    
-    @pytest.fixture
-    def input_tensor(self):
-        """Create a dummy input tensor."""
-        batch_size = 2
-        height = width = 4
-        channels = 64
-        return torch.rand(batch_size, channels, height, width)
     
     def test_initialization(self, lightning_module, model_config):
         """Test that the Lightning module initializes correctly."""
@@ -106,20 +44,20 @@ class TestRiskFormerLightningModule:
         assert hasattr(lightning_module, "metrics")
         assert "risk" in lightning_module.metrics
     
-    def test_forward(self, lightning_module, input_tensor):
+    def test_forward(self, lightning_module, create_dummy_input):
         """Test the forward method."""
         # Mock the model's forward method instead of replacing the model
         mock_output = {"risk": torch.rand(2, 1)}  # Mock output for binary task
         with patch.object(lightning_module.model, 'forward', return_value=mock_output):
             # Test the forward method
-            output = lightning_module(input_tensor)
+            output = lightning_module(create_dummy_input)
             
             # Check output format
             assert isinstance(output, dict)
             assert "risk" in output
             
             # Verify model was called
-            lightning_module.model.forward.assert_called_once_with(input_tensor, False)
+            lightning_module.model.forward.assert_called_once_with(create_dummy_input, False)
     
     @patch('torch.optim.Adam')
     def test_configure_optimizers(self, mock_adam, lightning_module):

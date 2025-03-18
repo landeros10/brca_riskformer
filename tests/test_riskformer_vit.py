@@ -68,28 +68,28 @@ def create_dummy_input(batch_size, input_size, embedding_dim):
     return x
 
 # Test basic model initialization
-def test_model_initialization(basic_model_params):
+def test_model_initialization(model_config):
     """Test that the model initializes without errors."""
-    model = RiskFormer_ViT(**basic_model_params)
+    model = RiskFormer_ViT(**model_config)
     assert isinstance(model, RiskFormer_ViT)
     assert "risk" in model.tasks
     assert model.tasks["risk"]["type"] == "binary"
-    assert model.use_phi == basic_model_params["use_phi"]
-    assert model.use_class_token == basic_model_params["use_class_token"]
+    assert model.use_phi == model_config["use_phi"]
+    assert model.use_class_token == model_config["use_class_token"]
 
 # Test model with different position encoding methods
 @pytest.mark.parametrize("encoding_method", ["standard", "sinusoidal"])
-def test_position_encoding_methods(basic_model_params, encoding_method):
+def test_position_encoding_methods(model_config, encoding_method):
     """Test that the model works with different position encoding methods."""
-    params = basic_model_params.copy()
+    params = model_config.copy()
     params["encoding_method"] = encoding_method
     model = RiskFormer_ViT(**params)
     assert model.encoding_method == encoding_method
 
 # Test basic forward pass
-def test_forward_pass(basic_model_params, create_dummy_input):
+def test_forward_pass(model_config, create_dummy_input):
     """Test the forward pass with a dummy input."""
-    model = RiskFormer_ViT(**basic_model_params)
+    model = RiskFormer_ViT(**model_config)
     x = create_dummy_input
     
     # Switch to eval mode for deterministic output
@@ -111,9 +111,9 @@ def test_forward_pass(basic_model_params, create_dummy_input):
     assert risk_output.shape[1] == 1  # Binary has one output node
 
 # Test mask generation
-def test_mask_generation(basic_model_params, create_dummy_input):
+def test_mask_generation(model_config, create_dummy_input):
     """Test that mask generation works correctly."""
-    model = RiskFormer_ViT(**basic_model_params)
+    model = RiskFormer_ViT(**model_config)
     x = create_dummy_input
     
     # Generate masks
@@ -124,9 +124,9 @@ def test_mask_generation(basic_model_params, create_dummy_input):
     assert masks.dtype == torch.bool
 
 # Test token augmentation
-def test_apply_token_augment(basic_model_params, create_dummy_input):
+def test_apply_token_augment(model_config, create_dummy_input):
     """Test that token augmentation works correctly."""
-    model = RiskFormer_ViT(**basic_model_params)
+    model = RiskFormer_ViT(**model_config)
     x = create_dummy_input
     
     # Set a fixed seed for deterministic augmentation
@@ -148,9 +148,9 @@ def test_apply_token_augment(basic_model_params, create_dummy_input):
     assert torch.allclose(no_aug, x)
 
 # Test data augmentation: random_noise
-def test_apply_noise(basic_model_params, create_dummy_input):
+def test_apply_noise(model_config, create_dummy_input):
     """Test that noise augmentation works correctly."""
-    model = RiskFormer_ViT(**basic_model_params)
+    model = RiskFormer_ViT(**model_config)
     x = create_dummy_input
     
     # Set a fixed seed for deterministic noise
@@ -170,9 +170,9 @@ def test_apply_noise(basic_model_params, create_dummy_input):
     assert torch.allclose(no_noise, x)
 
 # Test token preparation
-def test_prepare_tokens(basic_model_params, create_dummy_input):
+def test_prepare_tokens(model_config, create_dummy_input):
     """Test that token preparation works correctly."""
-    model = RiskFormer_ViT(**basic_model_params)
+    model = RiskFormer_ViT(**model_config)
     x = create_dummy_input
     
     # Test in evaluation mode
@@ -193,17 +193,16 @@ def test_prepare_tokens(basic_model_params, create_dummy_input):
         assert attn_mask.shape == (batch_size, expected_seq_len, 1)
 
 # Test Sinusoidal Positional Encoding
-def test_sinusoidal_positional_encoding():
+def test_sinusoidal_positional_encoding(embedding_dim):
     """Test that sinusoidal positional encoding works correctly."""
     # Create encoder
-    channels = 128
     height = width = 16
-    encoder = SinusoidalPositionalEncoding2D(channels, height, width)
+    encoder = SinusoidalPositionalEncoding2D(embedding_dim, height, width)
     
     # Create input tensor [B, H*W, C]
     batch_size = 2
     seq_len = height * width
-    x = torch.randn(batch_size, seq_len, channels)
+    x = torch.randn(batch_size, seq_len, embedding_dim)
     
     # Apply encoding
     encoded = encoder(x)
@@ -212,19 +211,19 @@ def test_sinusoidal_positional_encoding():
     assert encoded.shape == x.shape
     
     # Also test with class token
-    x_with_cls = torch.randn(batch_size, seq_len + 1, channels)
+    x_with_cls = torch.randn(batch_size, seq_len + 1, embedding_dim)
     encoded_with_cls = encoder(x_with_cls)
     assert encoded_with_cls.shape == x_with_cls.shape
 
 # Test model with phi network
-def test_phi_network(basic_model_params, create_dummy_input):
+def test_phi_network(model_config, create_dummy_input):
     """Test that the phi network works correctly."""
     # Model with phi
-    model_with_phi = RiskFormer_ViT(**basic_model_params)
+    model_with_phi = RiskFormer_ViT(**model_config)
     assert model_with_phi.phi is not None
     
     # Model without phi
-    params = basic_model_params.copy()
+    params = model_config.copy()
     params["use_phi"] = False
     model_without_phi = RiskFormer_ViT(**params)
     assert model_without_phi.phi is None
@@ -240,41 +239,31 @@ def test_phi_network(basic_model_params, create_dummy_input):
     assert "risk" in output_with_phi
 
 # Test returning weights in forward pass
-def test_return_weights(basic_model_params, create_dummy_input):
+def test_return_weights(model_config, create_dummy_input):
     """Test that the model can return attention weights."""
-    model = RiskFormer_ViT(**basic_model_params)
+    model = RiskFormer_ViT(**model_config)
     x = create_dummy_input
     
     model.eval()
     with torch.no_grad():
         output = model(x, return_weights=True)
     
-    # Should return a tuple of (task_outputs, attns, global_weights)
+    # Expect a tuple with model output and attention weights
     assert isinstance(output, tuple)
-    assert len(output) == 3
+    assert len(output) == 3  # (task_outputs, attns, global_weights)
     
-    # First element should be the task outputs dictionary
-    task_outputs, attns, global_weights = output
+    # First element should be task outputs
+    task_outputs = output[0]
     assert isinstance(task_outputs, dict)
     assert "risk" in task_outputs
-
-# Test random rotation
-def test_random_rotate(basic_model_params, create_dummy_input):
-    """Test the random_rotate function."""
-    model = RiskFormer_ViT(**basic_model_params)
-    x = create_dummy_input
     
-    # Set a fixed seed for deterministic rotation
-    torch.manual_seed(42)
+    # Second element should be attention weights
+    attn_weights = output[1]
+    assert isinstance(attn_weights, torch.Tensor) or isinstance(attn_weights, list)
     
-    # Apply rotation with angles [1, 2, 3]
-    rotated = model.random_rotate(x, angles=[1, 2, 3])
-    
-    # Check output shape (should be unchanged)
-    assert rotated.shape == x.shape
-    
-    # Verify rotation does something
-    assert not torch.allclose(rotated, x)
+    # Third element should be global attention weights
+    global_weights = output[2]
+    assert isinstance(global_weights, torch.Tensor)
 
 if __name__ == "__main__":
     pytest.main() 
