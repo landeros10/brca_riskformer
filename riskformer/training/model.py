@@ -20,7 +20,7 @@ import yaml
 
 from riskformer.training.layers import SinusoidalPositionalEncoding2D, MultiScaleBlock, GlobalMaxPoolLayer
 from riskformer.utils.training_utils import create_slide_level_loss
-from riskformer.utils.preprocess_utils import load_train_config
+from riskformer.utils.training_utils import load_train_config
 
 logger = logging.getLogger(__name__)
 
@@ -709,8 +709,8 @@ class RiskFormer_ViT(nn.Module):
         """Add class token to tokens.
         
         Args:
-            x: Input tensor of shape [B, D, S, S]
-            masks: Attention masks  
+            x: Input tensor of shape [B, L, D]
+            masks: Attention masks of shape [B, L, 1]
             
         Returns:
             Input tensor with class token added and updated masks
@@ -726,8 +726,10 @@ class RiskFormer_ViT(nn.Module):
         
         # Update masks to include class token if using attention masks
         if masks is not None:
-            cls_mask = torch.ones((batch_size, 1), dtype=torch.bool, device=masks.device)
+            # Create class token mask - always attended to
+            cls_mask = torch.ones((batch_size, 1, 1), dtype=masks.dtype, device=masks.device)
             masks = torch.cat((cls_mask, masks), dim=1)
+            
         return x, masks
     
     def prepare_tokens(self, x):
@@ -765,7 +767,11 @@ class RiskFormer_ViT(nn.Module):
         # Reshape into sequence format [B, N, D] for transformer
         batch_size, channels, height, width = x.shape
         x = x.reshape(batch_size, -1, channels) # [B, H*W, D]
-        attn_mask = attn_mask.reshape(batch_size, -1) if attn_mask is not None else None # [B, H*W]
+        
+        # Reshape the attention mask into sequence format and add feature dimension
+        if attn_mask is not None:
+            attn_mask = attn_mask.reshape(batch_size, -1).unsqueeze(-1)  # [B, H*W, 1]
+        
         if self.use_class_token:
             x, attn_mask = self.add_class_token(x, attn_mask)
 
@@ -775,41 +781,42 @@ class RiskFormer_ViT(nn.Module):
         # Add class token if required
         return x, attn_mask, (height, width)
         
-    def process_downscale_blocks(self, x, hw_shape):
+    def process_downscale_blocks(self, x, hw_shape, attn_mask=None):
         """Process through downscale blocks.
         
         Args:
             x: Input tensor of shape [B, H*W, D]
             hw_shape: Height and width shape tuple (h, w)
-            attn_mask: Attention masks of shape [B, H*W]
+            attn_mask: Attention masks of shape [B, H*W, 1]
             
         Returns:
-            Processed features and new hw_shape
+            Processed features, new hw_shape, and updated attention mask
         """
         # Process through downscale blocks
         for i, block in enumerate(self.downscale_blocks):
-            x, _, hw_shape = block(x, hw_shape)
-        return x, hw_shape
+            x, _, hw_shape, attn_mask = block(x, hw_shape, attn_mask=attn_mask)
+                
+        return x, hw_shape, attn_mask
     
-    def process_local_blocks(self, x, hw_shape):
+    def process_local_blocks(self, x, hw_shape, attn_mask=None):
         """Process through local transformer blocks.
         
         Args:
             x: Input tensor of shape [B, H*W, D]
             hw_shape: Height and width shape tuple (h, w)
-            attn_mask: Attention masks of shape [B, H*W]
+            attn_mask: Attention masks of shape [B, H*W, 1]
             
         Returns:
-            Processed features, new hw_shape, and attention weights
+            Processed features, new hw_shape, attention weights, and updated attention mask
         """
         attns = []
         
         # Process through local blocks
         for i, block in enumerate(self.local_blocks):
-            x, attn, hw_shape = block(x, hw_shape)
+            x, attn, hw_shape, attn_mask = block(x, hw_shape, attn_mask)
             attns.append(attn)
                         
-        return x, hw_shape, torch.stack(attns) if attns else None
+        return x, hw_shape, torch.stack(attns) if attns else None, attn_mask
     
     def process_global_blocks(self, x, hw_shape, mask=None):
         """Process through global transformer blocks.
@@ -858,12 +865,10 @@ class RiskFormer_ViT(nn.Module):
         return global_pred
     
     def forward_features(self, x, return_weights=False):
-        """Process features through all stages. Expects a single pre-processed slide as input.
-        Each pre-processed slide produces B region-level token arrays of shape (C, S, S) where C
-        is the embedding dimension and S is the region-level token array size.
-
+        """Forward pass through all transformer blocks.
+        
         Args:
-            x: Input tensor of shape [B, C, S, S] representing a patch token array.
+            x: Input tensor of shape [B, C, H, W]
             return_weights: Whether to return attention weights
             
         Returns:
@@ -873,14 +878,13 @@ class RiskFormer_ViT(nn.Module):
         x, attn_mask, hw_shape = self.prepare_tokens(x)
         
         # Spatially consolidate tokens of shape (bs, H * W, D)
-        x, hw_shape = self.process_downscale_blocks(x, hw_shape)
+        x, hw_shape, attn_mask = self.process_downscale_blocks(x, hw_shape, attn_mask)
 
         # Process spatially consolidated tokens of shape (bs, h * w, D')
-        x, hw_shape, attns = self.process_local_blocks(x, hw_shape)
+        x, hw_shape, attns, attn_mask = self.process_local_blocks(x, hw_shape, attn_mask)
 
         # Create (bs) region-level tokens
         x, hw_shape = self.process_global_blocks(x, hw_shape, mask=attn_mask)
-
         
         # Handle class token for bag predictions
         norm_x = self.norm_local(x) # (bs, D')

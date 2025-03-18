@@ -1082,6 +1082,7 @@ def load_dataset_metadata(metadata_file: str) -> Tuple[Set[str], Dict[str, dict]
         slide_data: Dictionary of slide metadata
     """
     slide_ids = None
+    slide_data = {}  # Initialize to empty dict to prevent UnboundLocalError
     if metadata_file and os.path.isfile(metadata_file):
         try:
             with open(metadata_file, 'r') as f:

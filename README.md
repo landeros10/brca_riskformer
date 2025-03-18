@@ -174,7 +174,7 @@ python entrypoints/train.py --config configs/training/config.yaml
 Optimize RiskFormer model hyperparameters using Optuna and Weights & Biases:
 
 ```bash
-python orchestrators/run_sweep.py --base_config configs/training/config.yaml --sweep_config configs/hp_sweep.yaml
+python orchestrators/run_sweep.py --base_config configs/training/config.yaml --sweep_config configs/training/hp_sweep.yaml
 ```
 
 This will:

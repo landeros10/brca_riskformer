@@ -22,6 +22,9 @@ from scipy.ndimage import binary_fill_holes
 from skimage.measure import label, regionprops
 from histomicstk.segmentation import simple_mask # type: ignore
 
+# Import load_train_config from training_utils to fix import errors
+from riskformer.utils.training_utils import load_train_config
+
 logger = logging.getLogger(__name__)
 
 # Configuration dataclasses

@@ -142,7 +142,7 @@ def test_preprocess_one_slide(mock_output_dir, mock_model_dir, mock_config):
         f.write(b"mock SVS file")
     
     # Patch the necessary functions to avoid actual processing
-    with patch('riskformer.utils.data_utils.OpenSlide') as mock_openslide, \
+    with patch('riskformer.utils.preprocess_utils.OpenSlide') as mock_openslide, \
          patch('entrypoints.preprocess.torch.load') as mock_load, \
          patch('entrypoints.preprocess.torch.no_grad') as mock_no_grad, \
          patch('entrypoints.preprocess.SingleSlideDataset') as mock_dataset, \

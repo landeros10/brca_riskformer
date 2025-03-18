@@ -34,7 +34,7 @@ def basic_model_params():
                 "activation": "sigmoid"
             }
         },
-        "max_dim": 256,
+        "max_dim": 16,
         "depth": 2,
         "global_depth": 1,
         "encoding_method": "standard",
@@ -51,7 +51,6 @@ def basic_model_params():
         "noise_aug": 0.1,
         "attnpool_mode": "conv",
         "name": None,
-        "background_tile_path": None,
         "hflip_prob": 0.5,
         "vflip_prob": 0.5,
         "rotate_prob": 0.5,
@@ -191,7 +190,7 @@ def test_prepare_tokens(basic_model_params, create_dummy_input):
     
     # Check attention mask shape if used
     if model.use_attn_mask:
-        assert attn_mask.shape == (batch_size, expected_seq_len)
+        assert attn_mask.shape == (batch_size, expected_seq_len, 1)
 
 # Test Sinusoidal Positional Encoding
 def test_sinusoidal_positional_encoding():

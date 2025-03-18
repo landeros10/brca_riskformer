@@ -700,7 +700,7 @@ class MultiScaleBlock(nn.Module):
         
         # First normalization layer
         self.norm1 = norm_layer(dim)
-        
+
         # Attention module
         attn_dim = dim_out if dim_mul_in_att else dim
         self.attn = MultiScaleAttention(
@@ -755,6 +755,13 @@ class MultiScaleBlock(nn.Module):
                     stride=stride_skip,
                     padding=padding_skip,
                 )
+                
+            # Create a parallel pool specifically for the attention mask
+            self.pool_attn = nn.MaxPool2d(
+                kernel_skip,
+                stride=stride_skip,
+                padding=padding_skip,
+            )
             
         # Handle dimension change - projection after attention if needed
         if dim != dim_out:
@@ -777,7 +784,7 @@ class MultiScaleBlock(nn.Module):
         else:
             self.mlp = nn.Identity()
             
-    def forward(self, x, hw_shape):
+    def forward(self, x, hw_shape, attn_mask=None):
         # Apply attention
         x_norm = self.norm1(x)
         
@@ -791,6 +798,13 @@ class MultiScaleBlock(nn.Module):
         # Apply pooling to x for residual path
         if self.pool_skip is not None:
             x_res, _ = attention_pool(x, self.pool_skip, hw_shape, has_cls_embed=self.has_cls_embed)
+            
+            # Also apply pooling to attention mask if provided
+            if attn_mask is not None:
+                # Use the same attention_pool function for the mask
+                mask_dtype = attn_mask.dtype
+                attn_mask, _ = attention_pool(attn_mask.to(torch.float32), self.pool_attn, hw_shape, has_cls_embed=self.has_cls_embed)
+                attn_mask = attn_mask.to(mask_dtype)
         else:
             x_res = x
             
@@ -805,8 +819,8 @@ class MultiScaleBlock(nn.Module):
             if not self.dim_mul_in_att and self.dim != self.dim_out:
                 x = self.proj(x_norm)
             x = x + self.drop_path(mlp_out)
-            
-        return x, attn_weights, hw_shape_new
+                
+        return x, attn_weights, hw_shape_new, attn_mask
 
 class GlobalMaxPoolLayer(nn.Module):
     """
@@ -817,14 +831,24 @@ class GlobalMaxPoolLayer(nn.Module):
         super().__init__()
         self.use_class_token = use_class_token
         
-    def forward(self, x, mask=None):        
-        x_max_pooled = torch.max(x, dim=1)[0] # (bs, D)
+    def forward(self, x, mask=None):
+        """
+        Args:
+            x: Tensor of shape [B, L, D]
+            mask: Tensor of shape [B, L, 1]
+        Returns:
+            Tensor of shape [B, D]
+        """
+        x_max_pooled = torch.max(x, dim=1)[0] # [B, D]
         if mask is not None:
-                x_avg_pooled = torch.mean(x[:, mask, :], dim=1) # (bs, D)
+            mask_float = mask.to(x.dtype)  # [B, L, 1]
+            x_sum = torch.sum(x * mask_float, dim=1)  # [B, D]
+            mask_sum = torch.sum(mask_float, dim=1).clamp(min=1e-5)  # [B, 1]
+            x_avg_pooled = x_sum / mask_sum  # [B, D]
         else:
-            x_avg_pooled = torch.mean(x, dim=1) # (bs, D)
+            x_avg_pooled = torch.mean(x, dim=1) # [B, D]
         x_pooled = x_max_pooled + x_avg_pooled
-        return x_pooled
+        return x_pooled # [B, D] representing B region-level features
 
 class SinusoidalPositionalEncoding2D(nn.Module):
     """
