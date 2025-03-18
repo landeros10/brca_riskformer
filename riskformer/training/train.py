@@ -34,8 +34,8 @@ SIZE = 256
 def create_data_module(
         config: Union[str, dict]
 ) -> RiskFormerDataModule:
-    """Create data module from config
-    
+    """Create data module from config.
+
     Args:
         config (Union[str, dict]): Path to the configuration file or dictionary
         
@@ -78,7 +78,42 @@ def create_model(
         raise RuntimeError(f"Failed to create PyTorch Lightning LightningModule: {str(e)}") from e
 
 
-def create_callbacks(model_dir=None, early_stop_patience=25):
+def setup_model_checkpoint_callback(
+        model_dir: str, 
+        experiment_name: str, 
+        run_id: str, 
+        monitor: str, 
+        monitor_mode: str, 
+        save_top_k: int
+) -> ModelCheckpoint:
+
+    checkpoint_dir = os.path.join(model_dir, f"{experiment_name}_{run_id}")
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    metric_name = monitor.replace('val_', '').replace('test_', '')
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=checkpoint_dir,
+        filename=f'epoch={{epoch:02d}}-{metric_name}={{' + monitor + ':.4f}}',
+        monitor=monitor,
+        mode=monitor_mode,
+        save_top_k=save_top_k,
+        save_last=True,
+        verbose=True
+    )
+    
+    logger.debug(f"Checkpoint naming format: epoch=XX-{metric_name}=Y.YYYY.ckpt")
+    return checkpoint_callback
+
+
+def create_callbacks(
+    model_dir: str, 
+    early_stop_patience: int, 
+    experiment_name: str, 
+    run_id: str, 
+    monitor: str, 
+    monitor_mode: str, 
+    save_top_k: int,
+):
     """Create training callbacks
     
     Args:
@@ -89,65 +124,111 @@ def create_callbacks(model_dir=None, early_stop_patience=25):
         list: List of PyTorch Lightning callbacks
     """
     callbacks = [
-        ModelCheckpoint(
-            monitor="val_loss",
-            filename="riskformer-{epoch:02d}-{val_loss:.4f}",
-            save_top_k=3,
-            mode="min",
-            dirpath=os.path.join(model_dir or './models', 'checkpoints'),
+        setup_model_checkpoint_callback(
+            model_dir=model_dir, 
+            experiment_name=experiment_name, 
+            run_id=run_id, 
+            monitor=monitor, 
+            monitor_mode=monitor_mode, 
+            save_top_k=save_top_k
         ),
         EarlyStopping(
-            monitor="val_loss",
+            monitor=monitor,
             patience=early_stop_patience,
-            mode="min",
+            mode=monitor_mode,
         ),
         LearningRateMonitor(logging_interval="epoch"),
     ]
     return callbacks
 
 
-def create_trainer(config, callbacks, logger):
+def get_best_ckpt(
+        trainer: pl.Trainer = None,
+        callbacks: list = None,
+) -> str:
+    """Get the best checkpoint path from the trainer or callbacks
+    
+    Args:
+        trainer (pl.Trainer, optional): PyTorch Lightning trainer. Defaults to None.
+        callbacks (list, optional): List of PyTorch Lightning callbacks. Defaults to None.
+
+    Returns:
+        str: Best checkpoint path
+    """
+    best_ckpt_path = None
+    if trainer and hasattr(trainer, 'checkpoint_callback'):
+        if hasattr(trainer.checkpoint_callback, 'best_model_path'):
+            best_ckpt_path = trainer.checkpoint_callback.best_model_path
+        else:
+            logger.warning("No best checkpoint path found in trainer")
+            return None
+    
+    elif callbacks:
+        for callback in callbacks:
+            if isinstance(callback, ModelCheckpoint):
+                if hasattr(callback, 'best_model_path'):
+                    best_ckpt_path = callback.best_model_path
+                    break
+    
+    else:
+        logger.warning("No best checkpoint path found")
+        return None
+
+    return best_ckpt_path
+
+
+def create_trainer(
+        strategy: str = "auto",
+        max_epochs: int = 100,
+        min_epochs: int = 10,
+        precision: str = "32",
+        accelerator: str = "auto",
+        accumulate_grad_batches: int = 1,
+        devices: str = "auto",
+        log_every_n_steps: int = 10,
+        deterministic: bool = None,
+        sync_batchnorm: bool = False,
+        callbacks: list = None,
+        pl_logger: pl.loggers.Logger = None,
+) -> pl.Trainer:
     """Create PyTorch Lightning trainer
     
     Args:
-        config (dict): Training configuration
         callbacks (list): List of PyTorch Lightning callbacks
-        logger: PyTorch Lightning logger
+        pl_logger: PyTorch Lightning logger
         
     Returns:
         pl.Trainer: PyTorch Lightning trainer
     """
     try:
-        strategy = config.get('strategy', 'auto')
-
         trainer = pl.Trainer(
-            max_epochs=config.get('max_epochs', 100),
-            min_epochs=config.get('min_epochs', 10),
+            max_epochs=max_epochs,
+            min_epochs=min_epochs,
             callbacks=callbacks,
-            logger=logger,
-            precision=config.get('precision', '32'),
-            accelerator=config.get('accelerator', 'auto'),
-            accumulate_grad_batches=config.get('accumulate_grad_batches', 1),
-            devices=config.get('devices', 'auto'),
+            logger=pl_logger,
+            precision=precision,
+            accelerator=accelerator,
+            accumulate_grad_batches=accumulate_grad_batches,
+            devices=devices,
             strategy=strategy,
-            log_every_n_steps=config.get('log_every_nsteps', 10),
-            deterministic=config.get('deterministic', None),
-            sync_batchnorm=config.get('sync_batchnorm', False),
+            log_every_n_steps=log_every_n_steps,
+            deterministic=deterministic,
+            sync_batchnorm=sync_batchnorm,
         )
         
         # Log trainer configuration details with special attention to distributed setup
         log_params = {
-            'max_epochs': config.get('max_epochs', 100),
-            'devices': config.get('devices', 1),
-            'accelerator': config.get('accelerator', 'auto'),
+            'max_epochs': max_epochs,
+            'devices': devices,
+            'accelerator': accelerator,
             'strategy': strategy if isinstance(strategy, str) else str(strategy),
-            'precision': config.get('precision', '32')
+            'precision': precision
         }
-        
+        logger.debug(f"Trainer configuration: {log_params}")
         return trainer
     except Exception as e:
         logger.error(f"Failed to create trainer: {str(e)}")
-        logger.debug(f"Trainer configuration that caused the error: {config}", exc_info=True)
+        logger.debug(f"Trainer configuration that caused the error: {trainer.state_dict()}", exc_info=True)
         raise RuntimeError(f"Failed to create PyTorch Lightning trainer: {str(e)}") from e
 
 
@@ -168,8 +249,12 @@ def train_model(
         trainer: Trained PyTorch Lightning trainer
     """
     try:
-        # TODO: incorporate ckpt_path
-        trainer.fit(model, data_module)
+        trainer.fit(
+            model=model, 
+            datamodule=data_module, 
+            ckpt_path=ckpt_path
+        )
+        
         return trainer
     except Exception as e:
         logger.error(f"Model training failed: {str(e)}")
@@ -182,19 +267,32 @@ def train_model(
         raise RuntimeError(f"Model training failed: {str(e)}") from e
 
 
-def test_model(trainer, model, data_module):
-    """Test the model
+def test_model(
+        trainer: pl.Trainer, 
+        data_module: RiskFormerDataModule,
+        model: RiskFormerLightningModule = None,
+        ckpt_path: str = None,
+) -> dict:
+    """Test the model using the best checkpoint from the callback
+    established during trainer creation.
+    
+    If no model or ckpt_path is provided, the best checkpoint from the
+    trainer will be used. Must be called after training.
     
     Args:
         trainer (pl.Trainer): PyTorch Lightning trainer
-        model (RiskFormerLightningModule): Lightning module for training
         data_module (RiskFormerDataModule): Data module for training
-        
+        model (RiskFormerLightningModule, optional): Lightning module for testing. Defaults to None.
+        ckpt_path (str, optional): Path to the checkpoint file. Defaults to None.
     Returns:
         dict: Test results
     """
     try:
-        test_results = trainer.test(model, data_module)
+        test_results = trainer.test(
+            datamodule=data_module, 
+            model=model,
+            ckpt_path=ckpt_path,
+        )
         if test_results and isinstance(test_results, list):
             return test_results[0]
         else:
@@ -238,42 +336,42 @@ def save_model(trainer, model_dir, filename='final_model.ckpt'):
         raise RuntimeError(f"Failed to save model to {model_dir}: {str(e)}") from e
 
 
-def get_trainer_callbacks(
-        model_dir: str, 
-        early_stop_patience: int, 
-        experiment_name: str, 
-        run_id: str, 
-        monitor: str, 
-        monitor_mode: str, 
-        save_top_k: int
-):
-    callbacks = create_callbacks(model_dir, early_stop_patience)
-    checkpoint_callback, checkpoint_dir = setup_model_checkpoint_callback(
-        model_dir=model_dir, 
-        experiment_name=experiment_name, 
-        run_id=run_id, 
-        monitor=monitor, 
-        monitor_mode=monitor_mode, 
-        save_top_k=save_top_k
-    )
-    # Add to callbacks list - replace any existing ModelCheckpoint
-    for i, callback in enumerate(callbacks):
-        if isinstance(callback, ModelCheckpoint):
-            callbacks[i] = checkpoint_callback
-            break
-    else:
-        callbacks.append(checkpoint_callback)
-    return callbacks
-
-
 def run_one_training_session(
         config: dict,
-        save_results: bool = True,
+        results_file_path: str = None,
         model_dir: str = "./models",
         log_dir: str = "./logs",
-        run_id: str = "0000",    
+        run_id: str = "0000",
+        validate_config: bool = False,    
 ):
-    """Main training function."""
+    """Main training function.
+    
+    This function expects a configuration dictionary that has been validated
+    
+    Args:
+        config (dict): Configuration dictionary containing model and training parameters.
+                      Must have been validated through riskformer.utils.training_utils.
+        results_file_path (str, optional): Path where to save test results. If None, results won't be saved.
+                                         Defaults to None.
+        model_dir (str, optional): Directory to save model checkpoints. Defaults to "./models".
+        log_dir (str, optional): Directory to save logs. Defaults to "./logs".
+        run_id (str, optional): Unique identifier for this run. Defaults to "0000".
+        validate_config (bool, optional): Whether to validate the config using 
+                                        _validate_training_config(). Set to True 
+                                        if the config hasn't been validated yet. 
+                                        Defaults to False.
+    
+    Returns:
+        Union[str, dict]: Path to results file if save_results is True, otherwise test results dictionary.
+        
+    Raises:
+        ValueError: If validate_config is True and config fails validation.
+    """
+    # Validate config if requested
+    if validate_config:
+        from riskformer.utils.training_utils import _validate_training_config
+        _validate_training_config(config)
+    
     # Create data module using core functionality
     data_module = create_data_module(config)
     
@@ -281,7 +379,7 @@ def run_one_training_session(
     model = create_model(config)
     
     # Create callbacks using core functionality
-    callbacks = get_trainer_callbacks(
+    callbacks = create_callbacks(
         model_dir=model_dir, 
         early_stop_patience=config['early_stop'], 
         experiment_name=config['experiment_name'], 
@@ -301,7 +399,20 @@ def run_one_training_session(
     )
     
     # Create trainer using core functionality
-    trainer = create_trainer(config, callbacks, tb_logger)
+    trainer = create_trainer(
+        strategy=config['strategy'],
+        max_epochs=config['max_epochs'],
+        min_epochs=config['min_epochs'],
+        precision=config['precision'],
+        accelerator=config['accelerator'],
+        accumulate_grad_batches=config['accumulate_grad_batches'],
+        devices=config['devices'],
+        log_every_n_steps=config['log_every_n_steps'],
+        deterministic=config['deterministic'],
+        sync_batchnorm=config['sync_batchnorm'],
+        callbacks=callbacks,
+        pl_logger=tb_logger,
+    )
     
     # Get checkpoint path if resuming
     ckpt_path = config.get('resume_from_checkpoint', None)
@@ -311,123 +422,60 @@ def run_one_training_session(
         trainer=trainer, 
         model=model, 
         data_module=data_module, 
-        ckpt_path=ckpt_path
+        ckpt_path=ckpt_path,
     )
     
     ### Testing ###
-    test_results = test_model(trainer, model, data_module)
+    test_results = test_model(
+        trainer=trainer, 
+        data_module=data_module,
+    )
         
     # Save test results with complete config
-    if test_results and save_results:
-        best_checkpoint_path = None
-        for callback in callbacks:
-            if isinstance(callback, pl.callbacks.ModelCheckpoint):
-                if hasattr(callback, 'best_model_path') and callback.best_model_path:
-                    best_checkpoint_path = callback.best_model_path
-                    break
+    if test_results:
+        # Fallback if results_file_path is not provided
+        if not results_file_path:
+            results_file_path = os.path.join(
+                model_dir,
+                "results",
+                f"{config['experiment_name']}_{run_id}.json"
+            )
+
         test_results['config'] = config
         test_results['run_id'] = run_id
         test_results["timestamp"] = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        test_results["best_checkpoint_path"] = best_checkpoint_path
+        test_results["best_checkpoint_path"] = get_best_ckpt(trainer)
 
-        results_dir = os.path.join(model_dir, "results")
-        results_file = save_test_results(
+        save_test_results(
             test_results=test_results,
-            results_dir=results_dir
+            results_file_path=results_file_path
         )
-        return results_file
-    else:
-        return test_results
-
-
-def setup_model_checkpoint_callback(
-        model_dir: str, 
-        experiment_name: str, 
-        run_id: str, 
-        monitor: str, 
-        monitor_mode: str, 
-        save_top_k: int
-) -> ModelCheckpoint:
-
-    checkpoint_dir = os.path.join(model_dir, f"{experiment_name}_{run_id}")
-    os.makedirs(checkpoint_dir, exist_ok=True)
-
-    metric_name = monitor.replace('val_', '').replace('test_', '')
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=checkpoint_dir,
-        filename=f'epoch={{epoch:02d}}-{metric_name}={{' + monitor + ':.4f}}',
-        monitor=monitor,
-        mode=monitor_mode,
-        save_top_k=save_top_k,
-        save_last=True,
-        verbose=True
-    )
-    
-    logger.info(f"Model checkpoints will be saved to {checkpoint_dir}")
-    logger.debug(f"Checkpoint naming format: epoch=XX-{metric_name}=Y.YYYY.ckpt")
-
-    return checkpoint_callback, checkpoint_dir
 
 
 def save_test_results(
         test_results: dict,
-        results_dir: str,
+        results_file_path: str,
 ) -> str | None:
     """Save test results to JSON for hyperparameter optimization
     
     Args:
         test_results (dict): Results from model testing
-        results_dir (str): Directory to save results
+        results_file_path (str): File path to save results
     
     Returns:
         str: Path to the saved results file, or None if not saved
-    """    
+    """     
     try:
-        # Extract key identifiers for the filename
-        config = test_results.get('config', {})
-        experiment_name = config.get('experiment_name', 'unknown_experiment')
-        run_id = test_results.get('run_id', 'unknown_run')
-        ts = test_results.get('timestamp', datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
-        
-        # Look for metrics with "test_" prefix first
-        metric = None
-        metric_val = None
-        
-        # First try to find metrics that start with "test_"
-        for key, value in test_results.items():
-            if (key.startswith('test_') and 
-                isinstance(value, (int, float)) and 
-                key != 'test_epoch'):
-                metric = key
-                metric_val = value
-                break
-        
-        # If no test_ metrics found, fall back to first numeric metric
-        if metric is None:
-            for key, value in test_results.items():
-                if (isinstance(value, (int, float)) and 
-                    key != 'epoch' and 
-                    not key.startswith('config') and 
-                    not key in ['run_id', 'timestamp']):
-                    metric = key
-                    metric_val = value
-                    break
-
-        # Set filename
-        filename = f"{experiment_name}_{run_id}_{ts}"
-        if metric and metric_val is not None:
-            if isinstance(metric_val, float):
-                metric_str = f"{metric}={metric_val:.4f}"
-            else:
-                metric_str = f"{metric}={metric_val}"
-            filename += f"_{metric_str}"
-        filename = filename.replace(" ", "_").replace("/", "_")
-
+        # Create directory if it doesn't exist
+        results_dir = os.path.dirname(results_file_path)
         os.makedirs(results_dir, exist_ok=True)
-        results_file = os.path.join(results_dir, f"{filename}.json")
-        with open(results_file, "w") as f:
+        
+        # Save results to the specified path
+        with open(results_file_path, "w") as f:
             json.dump(test_results, f, indent=4)
-        return results_file
+            
+        return results_file_path
+    
     except Exception as e:
         logger.error(f"Failed to save test results: {str(e)}")
         logger.debug("Error details", exc_info=True)

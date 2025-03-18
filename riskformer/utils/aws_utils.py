@@ -359,3 +359,152 @@ def listdir_s3_or_local(path, s3_client=None):
     else:
         return os.listdir(path)
 
+
+def upload_model_to_s3(local_path, s3_bucket, s3_key, s3_client=None, logger=None):
+    """Upload a model checkpoint to S3
+    
+    Args:
+        local_path (str): Path to local model file
+        s3_bucket (str): S3 bucket name
+        s3_key (str): S3 key for the file
+        s3_client (boto3.client): S3 client to use for upload
+        logger (logging.Logger): Logger for logging events
+        
+    Returns:
+        str: S3 path if upload successful, False otherwise
+    """
+    try:
+        # Check if the file exists
+        if not os.path.exists(local_path):
+            if logger:
+                logger.error(f"Model file not found: {local_path}")
+            else:
+                logging.error(f"Model file not found: {local_path}")
+            return False
+        
+        # Check file size for logging and handling
+        file_size_mb = os.path.getsize(local_path) / (1024 * 1024)
+        if logger:
+            logger.info(f"Starting model upload to S3: {local_path} ({file_size_mb:.2f} MB)")
+        else:
+            logging.info(f"Starting model upload to S3: {local_path} ({file_size_mb:.2f} MB)")
+            
+        # Create a client if one wasn't provided
+        if s3_client is None:
+            s3_client = boto3.client('s3')
+
+        # Use upload_large_files_to_bucket for larger files
+        if file_size_mb > 100:  # 100MB
+            # This function has better handling for large files with multipart uploads
+            prefix = '/'.join(s3_key.split('/')[:-1])
+            filename = s3_key.split('/')[-1]
+            
+            if logger:
+                logger.info(f"Using multipart upload for large file: {file_size_mb:.2f} MB")
+            else:
+                logging.info(f"Using multipart upload for large file: {file_size_mb:.2f} MB")
+            
+            upload_large_files_to_bucket(
+                s3_client, 
+                s3_bucket,
+                [local_path],
+                file_names=[filename], 
+                prefix=prefix,
+                reupload=True
+            )
+        else:
+            # Use direct upload for smaller files
+            if logger:
+                logger.info(f"Using direct upload for file: {file_size_mb:.2f} MB")
+            else:
+                logging.info(f"Using direct upload for file: {file_size_mb:.2f} MB")
+            s3_client.upload_file(local_path, s3_bucket, s3_key)
+            
+        if logger:
+            logger.info(f"Successfully uploaded model to S3: {local_path} -> s3://{s3_bucket}/{s3_key}")
+        else:
+            logging.info(f"Successfully uploaded model to S3: {local_path} -> s3://{s3_bucket}/{s3_key}")
+        
+        # Return the full S3 path
+        return f"s3://{s3_bucket}/{s3_key}"
+    except Exception as e:
+        if logger:
+            logger.error(f"Failed to upload model to S3: {local_path} -> s3://{s3_bucket}/{s3_key}, Error: {str(e)}")
+        else:
+            logging.error(f"Failed to upload model to S3: {local_path} -> s3://{s3_bucket}/{s3_key}, Error: {str(e)}")
+        return False
+
+
+def build_model_s3_key(experiment_name, trial_identifier, model_file, is_best=False, prefix="models", is_final_model=False):
+    """Build a standardized S3 key for model checkpoints
+    
+    Args:
+        experiment_name (str): Name of the experiment
+        trial_identifier (int/str): Trial number or identifier
+        model_file (str): Name or path of the model file
+        is_best (bool): Whether this is the best model
+        prefix (str): S3 prefix
+        is_final_model (bool): Whether this is the final model trained with best params
+        
+    Returns:
+        str: S3 key for the model checkpoint
+    """
+    # Extract just the filename from the model path
+    model_name = os.path.basename(model_file)
+    
+    # Generate a timestamp
+    from datetime import datetime
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    
+    # Create a unique run ID
+    short_uuid = uuid.uuid4().hex[:8]
+    
+    if is_final_model:
+        # Final model gets a special path
+        s3_key = f"{prefix}/{experiment_name}/final_model/{timestamp}_{short_uuid}_{model_name}"
+    elif is_best:
+        s3_key = f"{prefix}/{experiment_name}/best/trial_{trial_identifier}_{timestamp}_{short_uuid}_{model_name}"
+    else:
+        s3_key = f"{prefix}/{experiment_name}/checkpoints/trial_{trial_identifier}_{timestamp}_{short_uuid}_{model_name}"
+    
+    return s3_key
+
+
+def get_s3_client_with_fallback(aws_profile=None, aws_region=None, logger=None):
+    """Initialize an S3 client with fallback to default credentials
+    
+    Args:
+        aws_profile (str): AWS profile name
+        aws_region (str): AWS region
+        logger (logging.Logger): Logger object for logging events
+        
+    Returns:
+        boto3.client: S3 client or None if initialization fails
+    """
+    try:
+        # Try to initialize with the provided profile and region
+        s3_client = initialize_s3_client(aws_profile, aws_region)
+        
+        # If that fails, try with default credentials
+        if not s3_client:
+            if logger:
+                logger.warning("Failed to initialize S3 client with provided profile, falling back to default credentials")
+            else:
+                logging.warning("Failed to initialize S3 client with provided profile, falling back to default credentials")
+            s3_client = boto3.client('s3')
+        
+        # Test the connection with a simple operation
+        s3_client.list_buckets()
+        
+        if logger:
+            logger.info(f"S3 client initialized successfully (profile: {aws_profile}, region: {aws_region})")
+        else:
+            logging.info(f"S3 client initialized successfully (profile: {aws_profile}, region: {aws_region})")
+        return s3_client
+    except Exception as e:
+        if logger:
+            logger.error(f"Failed to initialize S3 client: {str(e)} (profile: {aws_profile}, region: {aws_region})")
+        else:
+            logging.error(f"Failed to initialize S3 client: {str(e)} (profile: {aws_profile}, region: {aws_region})")
+        return None
+

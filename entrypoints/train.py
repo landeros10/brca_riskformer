@@ -81,8 +81,8 @@ def parse_args():
 
     
     # Hyperparameter optimization integration
-    parser.add_argument("--save_results", action="store_true",
-                        help="Save test results to a JSON file for hyperparameter optimization")
+    parser.add_argument("--results_file_path", type=str, default=None,
+                        help="Path where to save test results. If not provided, results won't be saved.")
     
     # Checkpoint resumption
     parser.add_argument("--resume_from_checkpoint", type=str, default=None,
@@ -272,25 +272,23 @@ def main():
     try:
         results = run_one_training_session(
             config=config,
-            save_results=args.save_results,
+            results_file_path=args.results_file_path,
             model_dir=model_dir,
             log_dir=log_dir,
             run_id=run_id,
         )
         log_event("info", "training_pipeline_complete", "Training pipeline completed successfully")
-        clear_gpu_memory()
-        return 0
+
     except Exception as e:
         log_event("error", "training_pipeline_failed", "Training pipeline failed with uncaught exception", 
                  error_type=type(e).__name__, error_message=str(e))
         log_event("debug", "exception_traceback", "Full exception traceback", exc_info=True)
-        return 1  # Error exit code
-    
+        return 1
     finally:
         clear_gpu_memory()
         log_event("debug", "resources_cleaned", "Resources cleaned up")
         log_event("info", "pipeline_shutdown", "Training pipeline shutdown complete")
-
+        return 0
 
 if __name__ == "__main__":
     exit(main())
