@@ -231,24 +231,42 @@ def create_wandb_logger(config):
 
 
 def setup_training_run_logger(
-        use_wandb: bool, 
         log_dir: str, 
         experiment_name: str,
-        wandb_project: str,
+        logger_type: str = "tensorboard",
+        wandb_project: str = None,
         wandb_entity: str = None,
 ):
     """Set up and configure the logger for training
     
     Args:
-        use_wandb (bool): Whether to use Weights & Biases for logging
         log_dir (str): Directory for logs
         experiment_name (str): Name of the experiment
-
+        logger_type (str, optional): Type of logger to use. Options:
+                                    "tensorboard" - Uses TensorBoard logger (default)
+                                    "wandb" - Uses Weights & Biases logger
+                                    "csv" - Uses CSV logger (useful for testing)
+        wandb_project (str, optional): Weights & Biases project name.
+                                      Only used when logger_type is "wandb".
+        wandb_entity (str, optional): Weights & Biases entity name.
+                                     Only used when logger_type is "wandb".
                 
     Returns:
-        logger: PyTorch Lightning logger (TensorBoard or WandB)
+        logger: PyTorch Lightning logger (TensorBoard, WandB, or CSV)
     """
-    if use_wandb:
+    # If CSV logger is requested, use it regardless of other settings
+    if logger_type == "csv":
+        from pytorch_lightning.loggers import CSVLogger
+        logger = CSVLogger(
+            save_dir=log_dir,
+            name=experiment_name
+        )
+        log_event("info", "csv_logger_created", "CSV logger created for testing", 
+                 log_dir=log_dir, experiment_name=experiment_name)
+        return logger
+    
+    # If WandB logger is requested
+    elif logger_type == "wandb":
         wandb_config = {
             'wandb_project': wandb_project,
             'experiment_name': experiment_name,
@@ -264,8 +282,10 @@ def setup_training_run_logger(
                      log_dir=log_dir, experiment_name=experiment_name)
         else:
             log_event("info", "wandb_logger_created", "WandB logger created successfully")
+            return logger
+    
+    # Default to TensorBoard
     else:
-        # Create TensorBoard logger using core functionality
         logger = create_tensorboard_logger(log_dir, experiment_name)
         log_event("info", "tensorboard_logger_created", "TensorBoard logger created", 
                  log_dir=log_dir, experiment_name=experiment_name)

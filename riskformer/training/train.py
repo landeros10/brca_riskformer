@@ -232,7 +232,7 @@ def create_trainer(
         raise RuntimeError(f"Failed to create PyTorch Lightning trainer: {str(e)}") from e
 
 
-def train_model(
+def run_model_train(
         trainer: pl.Trainer, 
         model: RiskFormerLightningModule, 
         data_module: RiskFormerDataModule,
@@ -267,7 +267,7 @@ def train_model(
         raise RuntimeError(f"Model training failed: {str(e)}") from e
 
 
-def test_model(
+def run_model_test(
         trainer: pl.Trainer, 
         data_module: RiskFormerDataModule,
         model: RiskFormerLightningModule = None,
@@ -342,7 +342,8 @@ def run_one_training_session(
         model_dir: str = "./models",
         log_dir: str = "./logs",
         run_id: str = "0000",
-        validate_config: bool = False,    
+        validate_config: bool = False,
+        logger_type: str = "tensorboard"    
 ):
     """Main training function.
     
@@ -360,6 +361,10 @@ def run_one_training_session(
                                         _validate_training_config(). Set to True 
                                         if the config hasn't been validated yet. 
                                         Defaults to False.
+        logger_type (str, optional): Type of logger to use. Options:
+                                    "tensorboard" - Uses TensorBoard logger (default)
+                                    "wandb" - Uses Weights & Biases logger
+                                    "csv" - Uses CSV logger (useful for testing)
     
     Returns:
         Union[str, dict]: Path to results file if save_results is True, otherwise test results dictionary.
@@ -389,11 +394,16 @@ def run_one_training_session(
         save_top_k=config['save_top_k']
     )
 
+    # Convert use_wandb flag to logger_type if not explicitly provided
+    actual_logger_type = logger_type
+    if logger_type == "tensorboard" and config.get('use_wandb', False):
+        actual_logger_type = "wandb"
+    
     # Create logger with the imported function
     tb_logger = setup_training_run_logger(
-        use_wandb=config['use_wandb'],
         log_dir=log_dir,
         experiment_name=config['experiment_name'],
+        logger_type=actual_logger_type,
         wandb_project=config['wandb_project'],
         wandb_entity=config['wandb_entity']
     )
@@ -418,7 +428,7 @@ def run_one_training_session(
     ckpt_path = config.get('resume_from_checkpoint', None)
     
     ### Training Run ###
-    trainer = train_model(
+    trainer = run_model_train(
         trainer=trainer, 
         model=model, 
         data_module=data_module, 
@@ -426,7 +436,7 @@ def run_one_training_session(
     )
     
     ### Testing ###
-    test_results = test_model(
+    test_results = run_model_test(
         trainer=trainer, 
         data_module=data_module,
     )

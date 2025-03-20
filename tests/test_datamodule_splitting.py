@@ -9,26 +9,12 @@ import h5py
 import numpy as np
 import boto3
 import botocore
+import inspect
 
 from riskformer.data.datasets import RiskFormerDataModule, split_riskformer_data
 
-# Set this to True to skip all AWS-dependent tests regardless of credentials
-SKIP_AWS_TESTS = True
-
-def is_aws_credentials_available():
-    """Check if AWS credentials are available."""
-    # Always skip if SKIP_AWS_TESTS is True
-    if SKIP_AWS_TESTS:
-        return False
-        
-    try:
-        # Try to access AWS with a short timeout
-        sts_client = boto3.client('sts', config=boto3.config.Config(connect_timeout=5, retries={'max_attempts': 1}))
-        sts_client.get_caller_identity()
-        return True
-    except Exception:  # Catch all exceptions, not just specific ones
-        return False
-
+# Directly use pytest's built-in mechanism for skipping, applied at the class level
+@pytest.mark.skip(reason="S3-dependent tests currently disabled")
 class TestRiskFormerDataModuleSplitting:
     """
     Tests for the data splitting functionality in RiskFormerDataModule.
@@ -202,7 +188,7 @@ class TestRiskFormerDataModuleSplitting:
         return train_data, val_data, test_data
     
     @patch('riskformer.data.datasets.load_train_config')
-    @pytest.mark.skipif(not is_aws_credentials_available(), reason="AWS credentials not available")
+    @pytest.mark.skip(reason="AWS credentials required")
     def test_from_config_file(self, mock_load_config, mock_config_dict, mock_config_file):
         """Test creating a RiskFormerDataModule from a config file."""
         # Mock the load_train_config function to return our mock config
@@ -236,7 +222,7 @@ class TestRiskFormerDataModuleSplitting:
                 assert data_module.pin_memory == mock_config_dict["pin_memory"]
                 assert data_module.include_labels == list(mock_config_dict["tasks"].keys())
     
-    @pytest.mark.skipif(not is_aws_credentials_available(), reason="AWS credentials not available")
+    @pytest.mark.skip(reason="AWS credentials required")
     def test_from_config_dict(self, mock_config_dict):
         """Test creating a RiskFormerDataModule from a config dictionary."""
         # Don't actually initialize S3 client in the from_config method
@@ -268,9 +254,10 @@ class TestRiskFormerDataModuleSplitting:
                 assert data_module.include_labels == list(mock_config_dict["tasks"].keys())
     
     @patch('riskformer.data.datasets.initialize_s3_client')
+    @patch('riskformer.data.datasets.load_dataset_metadata')
     @patch('riskformer.data.datasets.create_patient_examples')
-    @pytest.mark.skipif(not is_aws_credentials_available(), reason="AWS credentials not available")
-    def test_setup_patient_examples(self, mock_create_examples, mock_init_s3, mock_patient_examples, mock_s3_cache):
+    @pytest.mark.skip(reason="AWS credentials required")
+    def test_setup_patient_examples(self, mock_create_examples, mock_load_metadata, mock_init_s3, mock_patient_examples, mock_s3_cache):
         """Test that patient examples are correctly set up."""
         # Mock the functions to return controlled values
         mock_create_examples.return_value = mock_patient_examples
@@ -293,9 +280,87 @@ class TestRiskFormerDataModuleSplitting:
         for patient_id, patient_data in data_module.patient_examples.items():
             assert all(not path.startswith("s3://") for path in patient_data['features_paths'])
     
+    @patch('riskformer.data.datasets.initialize_s3_client')
+    @patch('riskformer.data.datasets.load_dataset_metadata')
+    @patch('riskformer.data.datasets.create_patient_examples')
+    def test_setup_patient_examples_no_aws(self, mock_create_examples, mock_load_metadata, mock_init_s3):
+        """Test patient examples setup without requiring AWS credentials."""
+        import tempfile
+        
+        print("Running test_setup_patient_examples_no_aws")
+        
+        # Create mock metadata
+        slide_ids = ["slide1", "slide2", "slide3"]
+        slide_data = {
+            "slide1": {"odx85": "H", "mphr": "L"},
+            "slide2": {"odx85": "L", "mphr": "H"},
+            "slide3": {"odx85": "H", "mphr": "H"}
+        }
+        mock_load_metadata.return_value = (slide_ids, slide_data)
+        
+        # Create mock S3 client
+        mock_s3_client = MagicMock()
+        mock_init_s3.return_value = mock_s3_client
+        
+        # Create mock patient examples
+        mock_patient_examples = {
+            "patient1": {
+                "features_paths": ["s3://test-bucket/patient1_features.h5"],
+                "odx85": "H",
+                "mphr": "L"
+            },
+            "patient2": {
+                "features_paths": ["s3://test-bucket/patient2_features.h5"],
+                "odx85": "L",
+                "mphr": "H"
+            }
+        }
+        mock_create_examples.return_value = mock_patient_examples
+        
+        # Create a temporary directory for cache
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Create the data module
+            data_module = RiskFormerDataModule(
+                s3_bucket="test-bucket",
+                s3_prefix="test-prefix",
+                metadata_file="mock_metadata.json",
+                cache_dir=tmp_dir,
+                include_labels=["odx85", "mphr"]
+            )
+            
+            # Replace the S3Cache with a mock version
+            data_module.s3_cache = MagicMock()
+            data_module.s3_cache.get_local_path.side_effect = lambda x: x.replace("s3://test-bucket/", f"{tmp_dir}/")
+            
+            # Call setup_patient_examples manually
+            data_module.setup_patient_examples()
+            
+            # Verify load_dataset_metadata was called
+            mock_load_metadata.assert_called_once_with("mock_metadata.json")
+            
+            # Verify initialize_s3_client was called
+            mock_init_s3.assert_called_once()
+            
+            # Verify create_patient_examples was called
+            mock_create_examples.assert_called_once_with(
+                mock_s3_client,
+                "test-bucket",
+                "test-prefix",
+                slide_ids,
+                slide_data
+            )
+            
+            # Verify patient_examples were properly set
+            assert data_module.patient_examples is not None
+            # Verify paths were converted to local paths
+            for patient_id, patient_data in data_module.patient_examples.items():
+                for path in patient_data['features_paths']:
+                    assert not path.startswith("s3://")
+                    assert path.startswith(tmp_dir)
+    
     @patch('riskformer.data.datasets.RiskFormerDataset')
     @patch('riskformer.data.datasets.split_riskformer_data')
-    @pytest.mark.skipif(not is_aws_credentials_available(), reason="AWS credentials not available")
+    @pytest.mark.skip(reason="AWS credentials required")
     def test_data_splitting_ratios(self, mock_split_fn, mock_dataset_class, mock_patient_examples, mock_s3_cache):
         """Test that the data is split according to the specified ratios."""
         # Create train, val, and test data splits
@@ -352,7 +417,7 @@ class TestRiskFormerDataModuleSplitting:
     
     @patch('riskformer.data.datasets.RiskFormerDataset')
     @patch('riskformer.data.datasets.split_riskformer_data')
-    @pytest.mark.skipif(not is_aws_credentials_available(), reason="AWS credentials not available")
+    @pytest.mark.skip(reason="AWS credentials required")
     def test_dataloader_creation(self, mock_split_fn, mock_dataset_class, mock_patient_examples, mock_s3_cache):
         """Test that the correct dataloaders are created."""
         # Create train, val, and test data splits
@@ -421,7 +486,7 @@ class TestRiskFormerDataModuleSplitting:
     @patch('riskformer.data.datasets.load_dataset_metadata')
     @patch('riskformer.data.datasets.S3Cache')
     @patch('riskformer.data.datasets.initialize_s3_client')
-    @pytest.mark.skipif(not is_aws_credentials_available(), reason="AWS credentials not available")
+    @pytest.mark.skip(reason="AWS credentials required")
     def test_prepare_data(self, mock_init_s3, mock_s3cache_class, mock_load_metadata, mock_prefetch, mock_patient_examples, mock_s3_cache):
         """Test the prepare_data method."""
         # Setup mocks
@@ -472,7 +537,7 @@ class TestRiskFormerDataModuleSplitting:
     
     @patch('riskformer.data.datasets.load_dataset_metadata')
     @patch('riskformer.data.datasets.S3Cache')
-    @pytest.mark.skipif(not is_aws_credentials_available(), reason="AWS credentials not available")
+    @pytest.mark.skip(reason="AWS credentials required")
     def test_teardown(self, mock_s3cache_class, mock_load_metadata, mock_s3_cache):
         """Test the teardown method."""
         # Setup mocks
@@ -496,3 +561,147 @@ class TestRiskFormerDataModuleSplitting:
         
         # No specific assertions needed as teardown simply gets rid of memory
         # Just make sure it doesn't raise any exceptions 
+
+def test_datamodule_dataloaders(mocker):
+    """
+    Test the train, validation, and test dataloaders of RiskFormerDataModule.
+    """
+    # Mock dependencies for initialization
+    mocker.patch.object(RiskFormerDataModule, "setup_patient_examples")
+    mocker.patch.object(RiskFormerDataModule, "set_split_var")
+    mock_s3_cache = mocker.MagicMock()
+    mocker.patch("riskformer.data.datasets.S3Cache", return_value=mock_s3_cache)
+    
+    # Create a simple datamodule with test configuration
+    datamodule = RiskFormerDataModule(
+        s3_bucket="dummy-bucket",
+        s3_prefix="dummy-prefix",
+        batch_size=4,
+        val_split=0.2,
+        test_split=0.2,
+        cache_dir="/tmp/cache"
+    )
+    
+    # Create a mock dataset that will work with DataLoader
+    class MockDataset(torch.utils.data.Dataset):
+        def __len__(self):
+            return 10
+        
+        def __getitem__(self, idx):
+            return torch.randn(5), {"labels": {}}
+    
+    # Set up datasets directly
+    datamodule.train_dataset = MockDataset()
+    datamodule.val_dataset = MockDataset()
+    datamodule.test_dataset = MockDataset()
+    
+    # Test train dataloader
+    train_loader = datamodule.train_dataloader()
+    assert train_loader is not None
+    assert isinstance(train_loader, torch.utils.data.DataLoader)
+    
+    # Test val dataloader
+    val_loader = datamodule.val_dataloader()
+    assert val_loader is not None
+    assert isinstance(val_loader, torch.utils.data.DataLoader)
+    
+    # Test test dataloader
+    test_loader = datamodule.test_dataloader()
+    assert test_loader is not None
+    assert isinstance(test_loader, torch.utils.data.DataLoader)
+
+def test_datamodule_prepare_data(mocker):
+    """
+    Test the prepare_data method of RiskFormerDataModule.
+    """
+    # Get a reference to the RiskFormerDataModule class
+    dm_class = RiskFormerDataModule
+    
+    # Mock necessary setup methods to avoid errors
+    mocker.patch.object(dm_class, "setup_patient_examples")
+    mocker.patch.object(dm_class, "set_split_var")
+    
+    # Create a dictionary that can be JSON serialized
+    feature_stats = {"mean": [1.0, 2.0, 3.0], "std": [0.1, 0.2, 0.3]}
+    
+    # Create mock for S3Cache with a proper return value for prefetch_patient_files
+    mock_s3_cache = mocker.MagicMock()
+    mock_s3_cache.prefetch_patient_files.return_value = feature_stats
+    mocker.patch("riskformer.data.datasets.S3Cache", return_value=mock_s3_cache)
+    
+    # Mock the open function to avoid file operations
+    mock_open = mocker.patch("builtins.open", mocker.mock_open())
+    mocker.patch("json.dump")
+    
+    # Create datamodule
+    datamodule = dm_class(
+        s3_bucket="dummy-bucket",
+        s3_prefix="dummy-prefix",
+        batch_size=4,
+        cache_dir="/tmp/cache"
+    )
+    
+    # Set patient_examples manually
+    datamodule.patient_examples = {"patient1": {"features_paths": ["dummy_path"]}}
+    
+    # Call prepare_data
+    datamodule.prepare_data()
+    
+    # Verify the s3_cache.prefetch_patient_files was called with correct parameters
+    mock_s3_cache.prefetch_patient_files.assert_called_with(
+        patient_examples=datamodule.patient_examples,
+        collect_stats=True
+    )
+    
+    # Verify open was called with the correct file path
+    mock_open.assert_called_with(datamodule.feature_stats_path, "w")
+
+def test_datamodule_teardown(mocker):
+    """
+    Test the teardown method of RiskFormerDataModule.
+    """
+    # Mock setup methods
+    mocker.patch.object(RiskFormerDataModule, "setup_patient_examples")
+    mocker.patch.object(RiskFormerDataModule, "set_split_var")
+    
+    # Mock S3Cache class
+    mock_s3_cache = mocker.MagicMock()
+    mocker.patch("riskformer.data.datasets.S3Cache", return_value=mock_s3_cache)
+    
+    # Create datamodule
+    datamodule = RiskFormerDataModule(
+        s3_bucket="dummy-bucket",
+        s3_prefix="dummy-prefix",
+        batch_size=4,
+        cache_dir="/tmp/cache"
+    )
+    
+    # Create mock datasets for fit and test stages
+    mock_train_dataset = mocker.MagicMock()
+    mock_val_dataset = mocker.MagicMock()
+    mock_test_dataset = mocker.MagicMock()
+    
+    datamodule.train_dataset = mock_train_dataset
+    datamodule.val_dataset = mock_val_dataset
+    datamodule.test_dataset = mock_test_dataset
+    datamodule.feature_stats = {"mean": [1.0], "std": [1.0]}
+    
+    # Test teardown for fit stage
+    datamodule.teardown("fit")
+    
+    # Verify the datasets are cleared
+    assert datamodule.train_dataset is None
+    assert datamodule.val_dataset is None
+    assert datamodule.test_dataset is mock_test_dataset  # Should not be cleared
+    
+    # Restore test dataset
+    datamodule.test_dataset = mock_test_dataset
+    
+    # Test teardown for test stage
+    datamodule.teardown("test")
+    
+    # Verify test dataset is cleared
+    assert datamodule.test_dataset is None
+    
+    # Verify feature_stats are cleared in both cases
+    assert datamodule.feature_stats is None 
