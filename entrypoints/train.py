@@ -106,6 +106,8 @@ def log_gpu_info():
                         device_name=torch.cuda.get_device_name(i),
                         memory_allocated=f"{torch.cuda.memory_allocated(i)/1024**3:.2f} GB",
                         memory_reserved=f"{torch.cuda.memory_reserved(i)/1024**3:.2f} GB")
+            # Reset CUDA cache after logging
+            torch.cuda.empty_cache()
         else:
             log_event("warning", "gpu_setup", "No GPUs available, using CPU")
     except Exception as e:
@@ -222,25 +224,57 @@ def update_overrrides_config(
     return config
 
 
-def check_local_disks(
-        model_dir: str, 
-        log_dir: str
-) -> bool:
-    # Check disk space for logs and model artifacts
-    os.makedirs(model_dir, exist_ok=True)
-    os.makedirs(log_dir, exist_ok=True)
+def check_local_disks(model_dir: str, log_dir: str) -> bool:
+    """Check if directories exist and have sufficient disk space
     
-    # Check for sufficient disk space (requires at least 5GB)
-    if not check_disk_space(model_dir, required_gb=5):
-        log_event("error", "insufficient_disk_space", "Not enough disk space for model artifacts", 
-                    path=model_dir)
-        return False
+    Args:
+        model_dir (str): Directory to save model checkpoints
+        log_dir (str): Directory to save logs
         
-    if not check_disk_space(log_dir, required_gb=2):
-        log_event("warning", "low_disk_space_logs", "Low disk space for logging", 
+    Returns:
+        bool: True if directories are valid and have sufficient space
+    """
+    try:
+        # Validate model directory
+        if not os.path.exists(model_dir):
+            try:
+                os.makedirs(model_dir, exist_ok=True)
+                log_event("info", "dir_created", "Created model directory", path=model_dir)
+            except OSError as e:
+                log_event("error", "dir_creation_failed", "Failed to create model directory", 
+                        path=model_dir, error=str(e))
+                return False
+        elif not os.access(model_dir, os.W_OK):
+            log_event("error", "dir_not_writable", "Model directory is not writable", 
+                    path=model_dir)
+            return False
+            
+        # Validate log directory
+        if not os.path.exists(log_dir):
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+                log_event("info", "dir_created", "Created log directory", path=log_dir)
+            except OSError as e:
+                log_event("error", "dir_creation_failed", "Failed to create log directory", 
+                        path=log_dir, error=str(e))
+                return False
+        elif not os.access(log_dir, os.W_OK):
+            log_event("error", "dir_not_writable", "Log directory is not writable", 
                     path=log_dir)
-    return True
-         
+            return False
+            
+        # Check disk space for both directories
+        model_dir_space = check_disk_space(model_dir, required_gb=10)  # Models need more space
+        log_dir_space = check_disk_space(log_dir, required_gb=2)  # Logs typically need less space
+        
+        return model_dir_space and log_dir_space
+        
+    except Exception as e:
+        log_event("error", "dir_check_failed", "Failed to validate directories", 
+                error=str(e))
+        logger.debug("Directory validation error details", exc_info=True)
+        return False
+
 
 def main():
     args = parse_args()
@@ -249,8 +283,13 @@ def main():
     if args.debug:
         logger.setLevel(logging.DEBUG)
     
-    # Load configuration from file
+    # Check if config file exists
     config_path = args.config
+    if not os.path.exists(config_path):
+        log_event("error", "config_not_found", "Configuration file not found", config_path=config_path)
+        return 1
+
+    # Load configuration from file
     config = load_training_run_config(config_path, args)
 
     # Set seed for reproducibility
@@ -259,11 +298,22 @@ def main():
     run_id = str(uuid.uuid4())[:8]
     log_event("debug", "seed_set", "Random seed set for reproducibility", seed=seed)
 
-    # Set up local dirs
-    model_dir = config['model_dir']
-    log_dir = config['log_dir']
+    # Set up and validate local directories
+    model_dir = args.model_dir or config.get('model_dir', './models')
+    log_dir = args.log_dir or config.get('log_dir', './logs')
+    
+    # Convert relative paths to absolute if needed
+    if not os.path.isabs(model_dir):
+        model_dir = os.path.abspath(model_dir)
+    if not os.path.isabs(log_dir):
+        log_dir = os.path.abspath(log_dir)
+        
+    log_event("debug", "paths_setup", "Directory paths configured", 
+            model_dir=model_dir, log_dir=log_dir)
+    
     if not check_local_disks(model_dir, log_dir):
-        log_event("error", "disk_space_check_failed", "Disk space check failed, aborting training")
+        log_event("error", "dir_validation_failed", "Directory validation failed, aborting training",
+                model_dir=model_dir, log_dir=log_dir)
         return 1
 
     log_gpu_info()

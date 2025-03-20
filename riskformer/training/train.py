@@ -88,7 +88,12 @@ def setup_model_checkpoint_callback(
 ) -> ModelCheckpoint:
 
     checkpoint_dir = os.path.join(model_dir, f"{experiment_name}_{run_id}")
-    os.makedirs(checkpoint_dir, exist_ok=True)
+    try:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+    except OSError as e:
+        logger.error(f"Failed to create checkpoint directory: {str(e)}")
+        logger.debug("Directory creation error details", exc_info=True)
+        raise RuntimeError(f"Failed to create checkpoint directory at {checkpoint_dir}: {str(e)}") from e
 
     metric_name = monitor.replace('val_', '').replace('test_', '')
     checkpoint_callback = ModelCheckpoint(
@@ -113,7 +118,7 @@ def create_callbacks(
     monitor: str, 
     monitor_mode: str, 
     save_top_k: int,
-):
+) -> list[pl.Callback]:
     """Create training callbacks
     
     Args:
@@ -145,7 +150,7 @@ def create_callbacks(
 def get_best_ckpt(
         trainer: pl.Trainer = None,
         callbacks: list = None,
-) -> str:
+) -> str | None:
     """Get the best checkpoint path from the trainer or callbacks
     
     Args:
@@ -153,7 +158,7 @@ def get_best_ckpt(
         callbacks (list, optional): List of PyTorch Lightning callbacks. Defaults to None.
 
     Returns:
-        str: Best checkpoint path
+        str | None: Best checkpoint path or None if not found
     """
     best_ckpt_path = None
     if trainer and hasattr(trainer, 'checkpoint_callback'):
@@ -309,7 +314,11 @@ def run_model_test(
         raise RuntimeError(f"Model testing failed: {str(e)}") from e
 
 
-def save_model(trainer, model_dir, filename='final_model.ckpt'):
+def save_model(
+        trainer: pl.Trainer, 
+        model_dir: str, 
+        filename: str = 'final_model.ckpt'
+) -> str:
     """Save the trained model
     
     Args:
@@ -344,7 +353,7 @@ def run_one_training_session(
         run_id: str = "0000",
         validate_config: bool = False,
         logger_type: str = "tensorboard"    
-):
+) -> Union[str, dict]:
     """Main training function.
     
     This function expects a configuration dictionary that has been validated
@@ -367,7 +376,7 @@ def run_one_training_session(
                                     "csv" - Uses CSV logger (useful for testing)
     
     Returns:
-        Union[str, dict]: Path to results file if save_results is True, otherwise test results dictionary.
+        Union[str, dict]: Path to results file if results_file_path is provided, otherwise test results dictionary.
         
     Raises:
         ValueError: If validate_config is True and config fails validation.
@@ -456,10 +465,13 @@ def run_one_training_session(
         test_results["timestamp"] = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         test_results["best_checkpoint_path"] = get_best_ckpt(trainer)
 
-        save_test_results(
+        saved_path = save_test_results(
             test_results=test_results,
             results_file_path=results_file_path
         )
+        return saved_path if results_file_path else test_results
+    
+    return None  # Return None if no test results available
 
 
 def save_test_results(
