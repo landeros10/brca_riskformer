@@ -18,7 +18,7 @@ from torchvision import transforms
 import torch.nn.functional as F
 import yaml
 
-from riskformer.training.layers import SinusoidalPositionalEncoding2D, MultiScaleBlock, GlobalMaxPoolLayer
+from riskformer.training.layers import SinusoidalPositionalEncoding2D, MultiScaleBlock, GlobalPoolLayer
 from riskformer.utils.training_utils import create_slide_level_loss
 from riskformer.utils.training_utils import load_train_config
 
@@ -60,7 +60,7 @@ class RiskFormer_Head(nn.Module):
         ])
         
     def _head_activation(self, activation):
-        if activation is None or activation == "None":
+        if activation is None or activation == "None" or activation == "linear":
             return nn.Identity()
         elif activation == "tanh":
             return nn.Tanh()
@@ -255,6 +255,7 @@ class RiskFormer_ViT(nn.Module):
         vflip_prob: float = 0.5,
         rotate_prob: float = 0.5,
         noise_aug_prob: float = 0.5,
+        pool_method: str = "avg",
     ):
         """
         Initialize the RiskFormer Vision Transformer model.
@@ -291,6 +292,7 @@ class RiskFormer_ViT(nn.Module):
             vflip_prob: Probability of vertical flip
             rotate_prob: Probability of rotation
             noise_aug_prob: Probability of noise augmentation
+            pool_method: Global pooling method. Must be one of "avg", "max", or "combined"
             **kwargs: Additional arguments        
         """
         super().__init__()
@@ -323,9 +325,10 @@ class RiskFormer_ViT(nn.Module):
         self.rotate_prob = rotate_prob
         self.noise_aug_prob = noise_aug_prob
         self.tasks = tasks
+        self.pool_method = pool_method
         
         # Define Model Dimensions
-        self.blocks_input_dim = self.phi_dim if use_phi else self.output_embed_dim
+        self.blocks_input_dim = self.phi_dim if use_phi else self.input_embed_dim
         self.blocks_output_dim = self.blocks_input_dim
 
         self.downscale_output_dims = []
@@ -412,7 +415,8 @@ class RiskFormer_ViT(nn.Module):
             self.pos_encoding = SinusoidalPositionalEncoding2D(
                 channels=self.blocks_input_dim,
                 height=height,
-                width=width
+                width=width,
+                use_cls_token=self.use_class_token
             )
             self.pos_drop = nn.Dropout(p=self.drop_rate)
         else:
@@ -527,7 +531,7 @@ class RiskFormer_ViT(nn.Module):
         
         # Add GlobalMaxPoolLayer as the first global block
         self.global_blocks.append(
-            GlobalMaxPoolLayer(use_class_token=self.use_class_token)
+            GlobalPoolLayer(pool_method=self.pool_method)
         )
             
     def initialize_global_attn(self):

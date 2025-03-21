@@ -988,18 +988,19 @@ class RiskFormerDataModule(pl.LightningDataModule):
             with open(self.feature_stats_path, "r") as f:
                 self.feature_stats = json.load(f)
                             
-        # Split dataset for training and validation
-        train_data, test_data = split_riskformer_data(
-            examples=self.patient_examples,
-            label_var=self.split_var,
-            positive_label="H",
-            test_split_ratio=self.test_split
-        )
+        # Split dataset for training and validation only if not already split
+        if not hasattr(self, '_train_data') or not hasattr(self, '_test_data'):
+            self._train_data, self._test_data = split_riskformer_data(
+                examples=self.patient_examples,
+                label_var=self.split_var,
+                positive_label="H",
+                test_split_ratio=self.test_split
+            )
         
         if stage == "fit":
             # Create training and validation datasets
             self.train_dataset = RiskFormerDataset(
-                patient_examples=train_data,
+                patient_examples=self._train_data,
                 max_dim=self.max_dim,
                 overlap=self.overlap,
                 s3_cache=self.s3_cache,
@@ -1008,15 +1009,15 @@ class RiskFormerDataModule(pl.LightningDataModule):
             
             if self.val_split > 0:
                 # random split train data into train and validation
-                num_val = int(len(train_data) * self.val_split)
-                num_train = len(train_data) - num_val
+                num_val = int(len(self._train_data) * self.val_split)
+                num_train = len(self._train_data) - num_val
                 self.train_dataset, self.val_dataset = random_split(
                     self.train_dataset, 
                     [num_train, num_val]
                 )
         elif stage == "test":
             self.test_dataset = RiskFormerDataset(
-                patient_examples=test_data,
+                patient_examples=self._test_data,
                 max_dim=self.max_dim,
                 overlap=self.overlap,
                 s3_cache=self.s3_cache,
