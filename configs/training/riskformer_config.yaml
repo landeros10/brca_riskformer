@@ -5,7 +5,7 @@
 ### Data parameters 
 s3_bucket: "tcga-riskformer-data-2025"
 s3_prefix: "preprocessed/uni/uni2-h"
-metadata_file: "resources/riskformer_slide_samples.json"
+metadata_file: "/home/ec2-user/brca_riskformer/resources/riskformer_slide_samples.json"
 cache_dir: "/tmp/riskformer_cache"
 
 ## Optional parameters

@@ -120,6 +120,11 @@ class S3Cache:
         self.s3_client = boto3.client('s3')
         self._download_lock = threading.Lock()
         
+        # Suppress boto3/botocore logging messages about checksum validation
+        logging.getLogger('boto3').setLevel(logging.WARNING)
+        logging.getLogger('botocore').setLevel(logging.WARNING)
+        logging.getLogger('s3transfer').setLevel(logging.WARNING)
+        
     def get_local_path(self, s3_path: str) -> Path:
         """Get local cache path for S3 file."""
         # Otherwise, parse the S3 URL
@@ -230,8 +235,8 @@ class S3Cache:
             self,
             patient_examples: Dict[str, Dict[str, Any]],
             collect_stats: bool = True,
-            max_workers: int = 4,
-    ) -> None:
+            num_workers: int = 4,
+    ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, float]]:
         """
         Prefetch all files for a collection of patients in parallel.
         
@@ -243,7 +248,7 @@ class S3Cache:
         patient_examples_local = patient_examples.copy()
         
         # First, download all files in parallel
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = []
             for patient_id in patient_examples:
                 coords_paths = patient_examples[patient_id]["coords_paths"]
@@ -276,7 +281,7 @@ class S3Cache:
                 all_feature_paths.extend(patient_examples_local[patient_id]["features_paths"])
             
             # Collect feature statistics
-            feature_stats = self._collect_feature_stats(all_feature_paths, max_workers)
+            feature_stats = self._collect_feature_stats(all_feature_paths, num_workers)
             return patient_examples_local, feature_stats
         
         log_event("info", "prefetch_patient_files", "complete", 
@@ -1023,7 +1028,7 @@ class RiskFormerDataModule(pl.LightningDataModule):
             label_var = self.include_labels[0]
         self.split_var = label_var
 
-    def prepare_data(self):
+    def prepare_data(self, prefetch_num_workers: int = 4):
         """
         Download and prepare data. This method is called only once and on 1 GPU.
         
@@ -1033,8 +1038,8 @@ class RiskFormerDataModule(pl.LightningDataModule):
         patient_examples_local, feature_stats = self.s3_cache.prefetch_patient_files(
             patient_examples=self.patient_examples, 
             collect_stats=True,
+            num_workers=prefetch_num_workers,
         )
-        self.patient_examples = patient_examples_local
 
         # Save feature stats (mean and std) to disk using cache_dir
         with open(self.feature_stats_path, "w") as f:
