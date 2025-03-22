@@ -13,7 +13,7 @@ import yaml
 import random
 import logging
 from dataclasses import dataclass
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Union
 
 import numpy as np
 import torch
@@ -442,7 +442,7 @@ def convert_to_soft_label(score, beta=1.50):
 def split_riskformer_data(
     examples: Dict[str, Dict],
     label_var: str = "odx85",
-    positive_label: str = "H",
+    positive_label: Union[str, int] = "H",
     test_split_ratio: float = 0.2,
     seed: int = 42
 ):
@@ -453,7 +453,7 @@ def split_riskformer_data(
     Args:
         examples (dict): Dictionary of SVS file paths and corresponding dictionary of data.
         label_var (str): The key in the data dictionary that contains the label.
-        positive_label (str): The value that indicates a positive sample.
+        positive_label (Union[str, int]): The value that indicates a positive sample.
         test_split_ratio (float): Ratio of data to use for testing.
     
     Returns:
@@ -465,7 +465,6 @@ def split_riskformer_data(
         for patient_id in patient_ids
     ])
 
-
     num_pos = int(len(patient_ids) * (test_split_ratio) / 2)
     if num_pos == 0:
         logger.error("Test split ratio too low, not enough samples.")
@@ -474,7 +473,8 @@ def split_riskformer_data(
     pos_samples = patient_ids[labels == positive_label]
     neg_samples = patient_ids[labels != positive_label]
     if len(pos_samples) == 0 or len(neg_samples) == 0:
-        logger.error("No positive or negative samples found.")
+        logger.error(f"Number of positive samples: {len(pos_samples)}")
+        logger.error(f"Number of negative samples: {len(neg_samples)}")
         raise ValueError("No positive or negative samples found.")
 
     logger.debug(f"Dataset contains {len(patient_ids)} samples, {len(pos_samples)} positive and {len(neg_samples)} negative samples.")

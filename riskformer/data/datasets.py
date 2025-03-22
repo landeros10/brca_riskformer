@@ -16,6 +16,8 @@ import botocore
 from urllib.parse import urlparse
 import logging
 import json
+import contextlib
+import io
 
 import torch
 import torchvision.transforms as transforms
@@ -120,6 +122,7 @@ class S3Cache:
         
     def get_local_path(self, s3_path: str) -> Path:
         """Get local cache path for S3 file."""
+        # Otherwise, parse the S3 URL
         parsed = urlparse(s3_path)
         bucket = parsed.netloc
         key = parsed.path.lstrip('/')
@@ -145,11 +148,83 @@ class S3Cache:
             if not local_path.exists():
                 local_path.parent.mkdir(parents=True, exist_ok=True)
                 try:
-                    self.s3_client.download_file(bucket, key, str(local_path))
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        self.s3_client.download_file(bucket, key, str(local_path))
                 except botocore.exceptions.ClientError as e:
                     raise RuntimeError(f"Failed to download {s3_path}: {e}")
                 
         return str(local_path)
+    
+    def _collect_feature_stats(self, feature_paths: List[Path], max_workers: int = 4) -> Dict[str, List[float]]:
+        """
+        Collect feature statistics from a list of feature paths.
+        
+        Args:
+            feature_paths: List of paths to feature files
+            max_workers: Maximum number of workers for parallel processing
+            
+        Returns:
+            Dictionary containing feature statistics (mean and std)
+        """
+        logger.debug(f"Calculating feature stats asynchronously for {len(feature_paths)} files")
+        
+        # Helper function to process one feature file and return its stats
+        def process_feature_file(feature_path):
+            try:
+                with h5py.File(feature_path, 'r') as f:
+                    # Convert dataset to numpy array
+                    features_array = np.array(f['features'])
+                    
+                    # Calculate stats using numpy
+                    example_sum = np.sum(features_array, axis=0)
+                    example_sum_of_squares = np.sum(np.square(features_array), axis=0)
+                    
+                    return {
+                        'sum': example_sum,
+                        'sum_squares': example_sum_of_squares,
+                        'count': features_array.shape[0],
+                        'dim': features_array.shape[1]
+                    }
+            except Exception as e:
+                logger.error(f"Error processing {feature_path}: {str(e)}")
+                return None
+        
+        # Process files in parallel
+        results = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(process_feature_file, path) for path in feature_paths]
+            
+            # Collect results as they complete
+            for future in futures:
+                result = future.result()
+                if result is not None:
+                    results.append(result)
+        
+        # Aggregate results
+        if results:
+            # Get dimensions from first valid result
+            feature_dim = results[0]['dim']
+            
+            # Initialize aggregation arrays
+            rolling_sum = np.zeros(feature_dim)
+            rolling_sum_of_squares = np.zeros(feature_dim)
+            rolling_count = 0
+            
+            # Sum up all the individual results
+            for result in results:
+                rolling_sum += result['sum']
+                rolling_sum_of_squares += result['sum_squares']
+                rolling_count += result['count']
+            
+            # Calculate final stats
+            feature_stats = {
+                'mean': (rolling_sum / rolling_count).tolist(),
+                'std': np.sqrt(rolling_sum_of_squares / rolling_count - (rolling_sum / rolling_count) ** 2).tolist(),
+            }
+            return feature_stats
+        else:
+            logger.warning("No valid feature files processed")
+            return {'mean': [], 'std': []}
     
     def prefetch_patient_files(
             self,
@@ -165,50 +240,49 @@ class S3Cache:
             collect_stats: Whether to collect statistics about the downloaded files
             max_workers: Maximum number of parallel download workers
         """
-        if collect_stats:
-            feature_dim = None
-
+        patient_examples_local = patient_examples.copy()
+        
+        # First, download all files in parallel
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = []
             for patient_id in patient_examples:
                 coords_paths = patient_examples[patient_id]["coords_paths"]
                 features_paths = patient_examples[patient_id]["features_paths"]
+
+                coords_paths_local = []
+                features_paths_local = []
                 for coords_path, features_path in zip(coords_paths, features_paths):
                     futures.append(executor.submit(self.download_if_needed, coords_path))
                     futures.append(executor.submit(self.download_if_needed, features_path))
 
-                    if collect_stats:
-                        local_features_path = self.get_local_path(features_path)
-                        with h5py.File(local_features_path, 'r') as f:
-                            features = f['features']
-                            if feature_dim is None:
-                                feature_dim = features.shape[1]
-                                rolling_sum = torch.zeros(feature_dim)
-                                rolling_sum_of_squares = torch.zeros(feature_dim)
-                                rolling_count = 0
+                    local_coords_path = self.get_local_path(coords_path)
+                    local_features_path = self.get_local_path(features_path)
 
-                            example_sum = features.sum(axis=0) # (D,)
-                            example_sum_of_squares = (features ** 2).sum(axis=0) # (D,)
+                    coords_paths_local.append(local_coords_path)
+                    features_paths_local.append(local_features_path)
 
-                            rolling_sum += example_sum
-                            rolling_sum_of_squares += example_sum_of_squares
-                            rolling_count += features.shape[0]
+                patient_examples_local[patient_id]["coords_paths"] = coords_paths_local
+                patient_examples_local[patient_id]["features_paths"] = features_paths_local
 
             # Wait for all downloads to complete
             for future in futures:
                 future.result()
 
-            if collect_stats:
-                feature_stats = {
-                    'mean': rolling_sum / rolling_count,
-                    'std': np.sqrt(rolling_sum_of_squares / rolling_count - (rolling_sum / rolling_count) ** 2),
-                }
-                return feature_stats
+        # If collecting stats, process all feature files in parallel
+        if collect_stats:
+            # Gather all feature paths
+            all_feature_paths = []
+            for patient_id in patient_examples_local:
+                all_feature_paths.extend(patient_examples_local[patient_id]["features_paths"])
+            
+            # Collect feature statistics
+            feature_stats = self._collect_feature_stats(all_feature_paths, max_workers)
+            return patient_examples_local, feature_stats
         
         log_event("info", "prefetch_patient_files", "complete", 
                  patient_count=len(patient_examples),
                  file_count=sum(len(patient_examples[p]["coords_paths"]) * 2 for p in patient_examples))
-
+        return patient_examples_local
 
 class RiskFormerDataset(Dataset):
     """
@@ -923,24 +997,21 @@ class RiskFormerDataModule(pl.LightningDataModule):
         Gather available examples and update paths to local paths
         """
         slide_ids, slide_data = load_dataset_metadata(self.metadata_file)
+        if not slide_data:
+            raise RuntimeError("No slide data found in metadata file")
+
         s3_client = initialize_s3_client(self.profile_name, self.region_name)
         if s3_client is None:
             raise RuntimeError("Failed to initialize S3 client")
         
         # Gather available examples and update paths to local paths
         self.patient_examples = create_patient_examples(
-            s3_client,
-            self.s3_bucket,
-            self.s3_prefix,
-            slide_ids,
-            slide_data
+            s3_client=s3_client,
+            s3_bucket=self.s3_bucket,
+            s3_prefix=self.s3_prefix,
+            slide_ids=slide_ids,
+            slide_data=slide_data
         )
-        for patient_id, patient_data in self.patient_examples.items():
-            updated_paths = [
-                self.s3_cache.get_local_path(path)
-                for path in patient_data['features_paths']
-            ]
-            self.patient_examples[patient_id]['features_paths'] = updated_paths
 
     def set_split_var(self):
         """
@@ -959,10 +1030,11 @@ class RiskFormerDataModule(pl.LightningDataModule):
         This is where we can download data, preprocess it, etc.
         """
         # Prefetch all files
-        feature_stats = self.s3_cache.prefetch_patient_files(
+        patient_examples_local, feature_stats = self.s3_cache.prefetch_patient_files(
             patient_examples=self.patient_examples, 
             collect_stats=True,
         )
+        self.patient_examples = patient_examples_local
 
         # Save feature stats (mean and std) to disk using cache_dir
         with open(self.feature_stats_path, "w") as f:
@@ -993,7 +1065,7 @@ class RiskFormerDataModule(pl.LightningDataModule):
             self._train_data, self._test_data = split_riskformer_data(
                 examples=self.patient_examples,
                 label_var=self.split_var,
-                positive_label="H",
+                positive_label=1,
                 test_split_ratio=self.test_split
             )
         
@@ -1182,7 +1254,14 @@ def create_patient_examples(
     Create a list of patient examples from the S3 bucket.
     """
     
-    slide_examples = create_slide_examples(s3_client, s3_bucket, s3_prefix, slide_ids, slide_data)
+    slide_examples = create_slide_examples(
+        s3_client=s3_client, 
+        s3_bucket=s3_bucket, 
+        s3_prefix=s3_prefix, 
+        slide_ids=slide_ids, 
+        slide_data=slide_data
+    )
+
     all_patients_slides = {}
     for slide_id, data in slide_examples.items():
         patient_id = data["patient_id"]
@@ -1200,7 +1279,6 @@ def create_patient_examples(
         patient_examples[patient_id]["coords_paths"] = patient_coords_paths
         patient_examples[patient_id]["features_paths"] = patient_features_paths
 
-
         slides_odx_train = [float(slide_data[slide_id]["odx_train"]) for slide_id in patient_slides]
         slides_odx85 = [int(slide_data[slide_id]["odx85"] == "H") for slide_id in patient_slides]
         slides_mphr = [int(slide_data[slide_id]["mphr"] == "H") for slide_id in patient_slides]
@@ -1208,6 +1286,7 @@ def create_patient_examples(
         slides_necrosis = [int(slide_data[slide_id]["Necrosis"] == "Present") for slide_id in patient_slides]
         slides_pleo = [int(slide_data[slide_id]["Pleomorph"]) for slide_id in patient_slides]
 
+        
         patient_odx_train = max(slides_odx_train)
         patient_odx85 = max(slides_odx85)
         patient_mphr = max(slides_mphr)
