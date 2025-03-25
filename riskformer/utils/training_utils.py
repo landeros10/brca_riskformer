@@ -473,9 +473,7 @@ def split_riskformer_data(
     pos_samples = patient_ids[labels == positive_label]
     neg_samples = patient_ids[labels != positive_label]
     if len(pos_samples) == 0 or len(neg_samples) == 0:
-        logger.error(f"Number of positive samples: {len(pos_samples)}")
-        logger.error(f"Number of negative samples: {len(neg_samples)}")
-        raise ValueError("No positive or negative samples found.")
+        logger.warning(f"No positive and/or negative samples found. Positive: {len(pos_samples)}, Negative: {len(neg_samples)}")
 
     logger.debug(f"Dataset contains {len(patient_ids)} samples, {len(pos_samples)} positive and {len(neg_samples)} negative samples.")
     np.random.shuffle(pos_samples)

@@ -261,8 +261,8 @@ class S3Cache:
                     futures.append(executor.submit(self.download_if_needed, coords_path))
                     futures.append(executor.submit(self.download_if_needed, features_path))
 
-                    local_coords_path = self.get_local_path(coords_path)
-                    local_features_path = self.get_local_path(features_path)
+                    local_coords_path = self.get_local_path(coords_path) if "s3" in coords_path else coords_path
+                    local_features_path = self.get_local_path(features_path) if "s3" in features_path else features_path
 
                     coords_paths_local.append(local_coords_path)
                     features_paths_local.append(local_features_path)
@@ -433,9 +433,12 @@ class RiskFormerDataset(Dataset):
         assert len(coords_paths) == len(features_paths), "Number of coordinates and features paths must match"
         all_sparse_tensors = []
         for coords_path, features_path in zip(coords_paths, features_paths):
+            coords_path = str(coords_path)
+            features_path = str(features_path
+                                )
             # Get local paths (files should already be downloaded by prepare_data)
-            local_coords_path = str(self.s3_cache.get_local_path(coords_path))
-            local_features_path = str(self.s3_cache.get_local_path(features_path))
+            local_coords_path = str(self.s3_cache.get_local_path(coords_path)) if "s3" in coords_path else coords_path
+            local_features_path = str(self.s3_cache.get_local_path(features_path)) if "s3" in features_path else features_path
             
             with h5py.File(local_coords_path, 'r') as f:
                 coords = torch.tensor(f['coords'][:].T, dtype=torch.long)  # Shape: (2, N)
@@ -844,7 +847,7 @@ class RiskFormerDataset(Dataset):
 
         coords_paths = patient_data["coords_paths"]
         features_paths = patient_data["features_paths"]
-        
+
         # Create dense features from sparse representations
         dense_features = self._create_dense_features(
             coords_paths=coords_paths,
@@ -875,6 +878,12 @@ class RiskFormerDataset(Dataset):
         # Produce channels-first tensor batch
         example_features = example_features.permute(0, 3, 1, 2)
         return example_features, example_data
+
+    def get_thumb(self, slide_id: str) -> torch.Tensor:
+        """
+        Get the thumbnail for a given slide ID.
+        """
+        pass
     
     def set_feature_dim(self, dim: int) -> None:
         """
