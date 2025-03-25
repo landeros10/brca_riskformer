@@ -577,5 +577,210 @@ class TestDatasetIntegration:
         # The error should be related to file not found
         assert "No such file" in str(excinfo.value) or "not exist" in str(excinfo.value) or "Cannot open" in str(excinfo.value)
 
+    def test_normalize_features_with_specific_values(self, dataset_info, mock_s3_cache):
+        """Test feature normalization with specific known values."""
+        patient_examples, stats_path = dataset_info
+        
+        # Create specific feature stats with known values
+        feature_stats = {
+            "mean": np.array([10.0, 20.0, 30.0]).tolist(),
+            "std": np.array([2.0, 5.0, 10.0]).tolist(),
+        }
+        
+        # Write these specific stats to the stats file
+        with open(stats_path, 'w') as f:
+            json.dump(feature_stats, f)
+        
+        # Create dataset
+        dataset = RiskFormerDataset(
+            patient_examples=patient_examples,
+            feature_stats_path=stats_path,
+            s3_cache=mock_s3_cache,
+            include_labels=["odx85"]
+        )
+        
+        # Create test features with known values
+        test_features = torch.tensor([
+            [12.0, 25.0, 40.0],  # Should become [1.0, 1.0, 1.0]
+            [8.0, 15.0, 20.0],   # Should become [-1.0, -1.0, -1.0]
+            [10.0, 20.0, 30.0],  # Should become [0.0, 0.0, 0.0]
+        ])
+        
+        # Normalize features
+        normalized = dataset.normalize_features(test_features)
+        
+        # Check normalized values with small tolerance
+        assert torch.allclose(normalized[0], torch.tensor([1.0, 1.0, 1.0]), atol=1e-5)
+        assert torch.allclose(normalized[1], torch.tensor([-1.0, -1.0, -1.0]), atol=1e-5)
+        assert torch.allclose(normalized[2], torch.tensor([0.0, 0.0, 0.0]), atol=1e-5)
+
+    def test_empty_feature_handling(self, mock_s3_cache, mock_data_files):
+        """Test handling of empty feature lists in integration context."""
+        data_dir, stats_path = mock_data_files
+        
+        # Create minimal feature stats
+        feature_stats = {
+            "mean": np.zeros(128).tolist(),
+            "std": np.ones(128).tolist()
+        }
+        
+        with open(stats_path, 'w') as f:
+            json.dump(feature_stats, f)
+        
+        # Create a patient with empty feature paths
+        empty_patient = {
+            "empty_patient": {
+                "features_paths": [],
+                "coords_paths": [],
+                "odx85": "H",
+                "mphr": "L"
+            }
+        }
+        
+        # Create dataset with explicit feature_dim
+        dataset = RiskFormerDataset(
+            patient_examples=empty_patient,
+            feature_stats_path=stats_path,
+            s3_cache=mock_s3_cache,
+            include_labels=["odx85"],
+            feature_dim=128  # Explicitly set feature_dim
+        )
+        
+        # Verify dataset behavior with empty features
+        assert len(dataset) == 1  # One patient, even with empty features
+        assert dataset.feature_dim == 128  # From explicit setting
+        
+        # Get item should return empty tensors with correct dimensions
+        example_features, example_data = dataset[0]
+        assert example_features.shape == (0, dataset.feature_dim, dataset.max_dim, dataset.max_dim)  # Channels first
+        assert example_data['patch_info'].shape == (0, 10)  # 10 columns for patch info
+        assert isinstance(example_data['labels'], dict)
+        assert "odx85" in example_data['labels']
+
+    def test_patch_creation_with_specific_dimensions(self, dataset_info, mock_s3_cache):
+        """Test patch creation with specific dimensions and values."""
+        patient_examples, stats_path = dataset_info
+        
+        # Create dataset with specific max_dim and feature_dim
+        max_dim = 32
+        feature_dim = 128
+        dataset = RiskFormerDataset(
+            patient_examples=patient_examples,
+            feature_stats_path=stats_path,
+            s3_cache=mock_s3_cache,
+            include_labels=["odx85"],
+            max_dim=max_dim,
+            feature_dim=feature_dim
+        )
+        
+        # Create test features with specific dimensions and a non-zero region
+        test_features = torch.zeros(20, 15, dataset.feature_dim)
+        test_features[5:15, 3:12] = torch.randn(10, 9, dataset.feature_dim)  # Create a single non-zero region
+
+        # Process features into patches
+        patches, patch_info = dataset.split_and_pad_features(
+            features_list=[test_features],
+            max_dim=max_dim,
+            overlap=0.0
+        )
+        
+        # Print patch info for debugging
+        print("\nPatch info:")
+        for i in range(patch_info.shape[0]):
+            print(f"Patch {i}:")
+            print(f"  feature_id: {patch_info[i, 0]}")
+            print(f"  region_id: {patch_info[i, 1]}")
+            print(f"  region_min_row: {patch_info[i, 2]}")
+            print(f"  region_min_col: {patch_info[i, 3]}")
+            print(f"  patch_row_start: {patch_info[i, 4]}")
+            print(f"  patch_col_start: {patch_info[i, 5]}")
+            print(f"  patch_row_end: {patch_info[i, 6]}")
+            print(f"  patch_col_end: {patch_info[i, 7]}")
+            print(f"  region_max_row: {patch_info[i, 8]}")
+            print(f"  region_max_col: {patch_info[i, 9]}")
+
+        # Verify patch dimensions
+        assert patches.shape[1] == max_dim  # Height
+        assert patches.shape[2] == max_dim  # Width
+        assert patches.shape[3] == feature_dim  # Feature dimension
+        
+        # Verify patch info structure
+        assert patch_info.shape[1] == 10  # Number of info columns
+        assert patch_info.shape[0] == patches.shape[0]  # Number of patches
+        assert patch_info.dtype == torch.int32  # Patch info should be int32
+        
+        # Verify patch info values
+        for i in range(patch_info.shape[0]):
+            # First 4 columns should be 0 for single feature/region case
+            assert patch_info[i, 0] == 0  # feature_id
+            assert patch_info[i, 1] == 0  # region_id
+            assert patch_info[i, 2] == 5  # region_min_row (start of non-zero region)
+            assert patch_info[i, 3] == 3  # region_min_col (start of non-zero region)
+            
+            # Get patch coordinates
+            row_start = patch_info[i, 4]
+            col_start = patch_info[i, 5]
+            row_end = patch_info[i, 6]
+            col_end = patch_info[i, 7]
+            
+            # Verify patch coordinates are within bounds of the region
+            assert row_start >= 0
+            assert col_start >= 0
+            assert row_end <= 10  # Height of non-zero region
+            assert col_end <= 9   # Width of non-zero region
+
+            # Verify region dimensions match non-zero region
+            assert patch_info[i, 8] == 10  # region_max_row (end of non-zero region)
+            assert patch_info[i, 9] == 9   # region_max_col (end of non-zero region)
+
+            # Verify patch dimensions match the actual patch size
+            patch_height = row_end - row_start
+            patch_width = col_end - col_start
+            assert patch_height <= max_dim
+            assert patch_width <= max_dim
+
+    def test_feature_dim_validation(self, dataset_info, mock_s3_cache):
+        """Test feature dimension initialization and setting."""
+        patient_examples, stats_path = dataset_info
+        
+        # Test with explicit feature_dim
+        dataset = RiskFormerDataset(
+            patient_examples=patient_examples,
+            feature_stats_path=stats_path,
+            s3_cache=mock_s3_cache,
+            include_labels=["odx85"],
+            feature_dim=128
+        )
+        assert dataset.feature_dim == 128
+        
+        # Test with invalid feature_dim
+        with pytest.raises(ValueError) as excinfo:
+            dataset = RiskFormerDataset(
+                patient_examples=patient_examples,
+                feature_stats_path=stats_path,
+                s3_cache=mock_s3_cache,
+                include_labels=["odx85"],
+                feature_dim=-1
+            )
+        assert "Feature dimension must be positive" in str(excinfo.value)
+        
+        # Test initialization from data
+        dataset = RiskFormerDataset(
+            patient_examples=patient_examples,
+            feature_stats_path=stats_path,
+            s3_cache=mock_s3_cache,
+            include_labels=["odx85"]
+        )
+        assert dataset.feature_dim == 128  # Should be determined from data
+        
+        # Test set_feature_dim method
+        dataset.set_feature_dim(256)
+        assert dataset.feature_dim == 256
+        
+        # Test set_feature_dim with invalid value
+        with pytest.raises(ValueError) as excinfo:
+            dataset.set_feature_dim(0)
+        assert "Feature dimension must be positive" in str(excinfo.value)
+
 if __name__ == "__main__":
     pytest.main() 

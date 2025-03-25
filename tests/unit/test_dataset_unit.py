@@ -1,9 +1,12 @@
 import pytest
 import torch
 import numpy as np
+import json
+import tempfile
+import os
 from riskformer.data.datasets import RiskFormerDataset
 
-class TestDatasetProcessing:
+class TestDatasetProcessingUnit:
     """Unit tests for dataset processing functions."""
     
     @pytest.fixture
@@ -122,13 +125,17 @@ class TestDatasetProcessing:
         
         # Create feature stats
         feature_stats = {
-            "mean": features.mean(dim=(0, 1)),
-            "std": features.std(dim=(0, 1)),
+            "mean": features.mean(dim=(0, 1)).numpy().tolist(),
+            "std": features.std(dim=(0, 1)).numpy().tolist(),
         }
+        tmp_dir = tempfile.mkdtemp()
+        feature_stats_path = os.path.join(tmp_dir, "feature_stats.json")
+        with open(feature_stats_path, "w") as f:
+            json.dump(feature_stats, f)
         
         dataset = RiskFormerDataset(
             patient_examples={},
-            feature_stats=feature_stats,
+            feature_stats_path=feature_stats_path,
             include_labels=[],
         )
         normalized = dataset.normalize_features(features)
@@ -194,8 +201,7 @@ class TestDatasetProcessing:
 
     def test_split_and_pad_features_empty(self):
         """Test handling of empty feature lists."""
-        dataset = RiskFormerDataset({})
-        dataset.feature_dim = 128  # Set feature_dim explicitly to avoid errors
+        dataset = RiskFormerDataset({}, feature_dim=128)  # Set feature_dim explicitly
         
         # Test with empty feature list
         empty_features, empty_info = dataset.split_and_pad_features([])
@@ -207,8 +213,7 @@ class TestDatasetProcessing:
 
     def test_create_single_patch(self, embedding_dim):
         """Test creation of a single patch."""
-        dataset = RiskFormerDataset({}, include_labels=[])
-        dataset.feature_dim = embedding_dim
+        dataset = RiskFormerDataset({}, include_labels=[], feature_dim=embedding_dim)
         
         # Create test features region
         region_features = torch.randn(20, 15, embedding_dim)
@@ -244,13 +249,17 @@ class TestDatasetProcessing:
         """Test feature normalization with specific values."""
         # Create specific feature stats
         feature_stats = {
-            "mean": torch.tensor([10.0, 20.0, 30.0]),
-            "std": torch.tensor([2.0, 5.0, 10.0]),
+            "mean": np.array([10.0, 20.0, 30.0]).tolist(),
+            "std": np.array([2.0, 5.0, 10.0]).tolist(),
         }
+        tmp_dir = tempfile.mkdtemp()
+        feature_stats_path = os.path.join(tmp_dir, "feature_stats.json")
+        with open(feature_stats_path, "w") as f:
+            json.dump(feature_stats, f)
         
         dataset = RiskFormerDataset(
             patient_examples={},
-            feature_stats=feature_stats,
+            feature_stats_path=feature_stats_path,
             include_labels=[],
         )
         

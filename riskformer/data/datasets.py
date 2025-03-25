@@ -336,6 +336,7 @@ class RiskFormerDataset(Dataset):
         feature_stats_path: Optional[Dict[str, float]] = None,
         s3_cache: Optional[S3Cache] = None,
         include_labels: Optional[List[str]] = None,
+        feature_dim: Optional[int] = None,
     ):
         """
         Initialize the RiskFormer dataset.
@@ -347,6 +348,8 @@ class RiskFormerDataset(Dataset):
             feature_stats: Dictionary of mean and std of the features, channel-wise.
             s3_cache: S3Cache object
             include_labels: List of label names to include
+            feature_dim: Feature dimension. If None or <= 0, will try to determine from data.
+                        Otherwise, will use this value and validate against data.
         """
         self.patient_examples = patient_examples
         self.patient_ids = list(patient_examples.keys())
@@ -365,19 +368,10 @@ class RiskFormerDataset(Dataset):
         self.include_labels = include_labels
 
         # Determine feature dimension
-        if len(self.patient_ids) > 0:
-            test_features_s3_path = patient_examples[self.patient_ids[0]]["features_paths"][0]
-            if os.path.exists(test_features_s3_path):
-                test_features_local_path = test_features_s3_path
-            else:
-                test_features_local_path = self.s3_cache.get_local_path(test_features_s3_path)
-            if os.path.exists(test_features_local_path):
-                with h5py.File(str(test_features_local_path), 'r') as f:
-                    self.feature_dim = f['features'].shape[1]
+        if feature_dim is not None:
+            self.set_feature_dim(feature_dim)
         else:
-            # Default feature dimension if no data available
-            self.feature_dim = 1024
-            logger.warning("No patient examples provided. Creating empty Dataset.")
+            self._initialize_feature_dim()
         
         # Precompute lowercase include labels for faster comparison
         self._lowercase_include_labels = None
@@ -646,7 +640,7 @@ class RiskFormerDataset(Dataset):
         # Generate splits with overlap
         for row_start in range(0, row_end_limit + row_step, row_step):
             for col_start in range(0, col_end_limit + col_step, col_step):
-                # Ensure we don't exceed boundaries
+                # Initial end positions
                 row_end = min(row_start + max_dim, height)
                 col_end = min(col_start + max_dim, width)
                 
@@ -882,6 +876,44 @@ class RiskFormerDataset(Dataset):
         example_features = example_features.permute(0, 3, 1, 2)
         return example_features, example_data
     
+    def set_feature_dim(self, dim: int) -> None:
+        """
+        Set the feature dimension with basic error handling.
+        
+        Args:
+            dim: The feature dimension to set
+            
+        Raises:
+            ValueError: If the dimension is not positive
+        """
+        if not isinstance(dim, int):
+            raise ValueError(f"Feature dimension must be an integer, got {type(dim)}")
+        if dim <= 0:
+            raise ValueError(f"Feature dimension must be positive, got {dim}")
+        self.feature_dim = dim
+        logger.debug(f"Set feature dimension to {dim}")
+
+    def _initialize_feature_dim(self) -> None:
+        """
+        Initialize the feature dimension from data if available, otherwise use default.
+        """
+        if len(self.patient_ids) > 0:
+            test_features_s3_path = self.patient_examples[self.patient_ids[0]].get("features_paths", [])
+            if test_features_s3_path:  # Only try to read if there are features
+                test_features_s3_path = test_features_s3_path[0]
+                if os.path.exists(test_features_s3_path):
+                    test_features_local_path = test_features_s3_path
+                else:
+                    test_features_local_path = self.s3_cache.get_local_path(test_features_s3_path)
+                if os.path.exists(test_features_local_path):
+                    with h5py.File(str(test_features_local_path), 'r') as f:
+                        self.set_feature_dim(f['features'].shape[1])
+                    return
+        
+        # Default feature dimension if no valid data available
+        self.set_feature_dim(1024)
+        logger.warning("No valid feature files found. Using default feature_dim=1024")
+
 
 class RiskFormerDataModule(pl.LightningDataModule):
     """
