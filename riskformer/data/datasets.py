@@ -6,6 +6,7 @@ import zarr
 import openslide
 import h5py
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import List, Tuple, Set, Dict, Optional, Union, Any
@@ -327,7 +328,7 @@ class RiskFormerDataset(Dataset):
         patient_examples: Dict[str, Dict[str, Any]],
         max_dim: int = 32,
         overlap: float = 0.1,
-        feature_stats: Optional[Dict[str, float]] = None,
+        feature_stats_path: Optional[Dict[str, float]] = None,
         s3_cache: Optional[S3Cache] = None,
         include_labels: Optional[List[str]] = None,
     ):
@@ -349,10 +350,11 @@ class RiskFormerDataset(Dataset):
         self.max_dim = max_dim
         self.overlap = overlap
 
-        self.normalize_features = False
-        if feature_stats is not None:
-            self.normalize_features = True
-            self.feature_stats = feature_stats
+        self.apply_normalization = False
+        self.feature_stats_path = feature_stats_path
+        if self.feature_stats_path is not None:
+            self.apply_normalization = True
+            self.load_feature_stats()
         
         # Set up labels to include
         self.include_labels = include_labels
@@ -360,9 +362,13 @@ class RiskFormerDataset(Dataset):
         # Determine feature dimension
         if len(self.patient_ids) > 0:
             test_features_s3_path = patient_examples[self.patient_ids[0]]["features_paths"][0]
-            test_features_local_path = self.s3_cache.get_local_path(test_features_s3_path)
-            with h5py.File(str(test_features_local_path), 'r') as f:
-                self.feature_dim = f['features'].shape[1]
+            if os.path.exists(test_features_s3_path):
+                test_features_local_path = test_features_s3_path
+            else:
+                test_features_local_path = self.s3_cache.get_local_path(test_features_s3_path)
+            if os.path.exists(test_features_local_path):
+                with h5py.File(str(test_features_local_path), 'r') as f:
+                    self.feature_dim = f['features'].shape[1]
         else:
             # Default feature dimension if no data available
             self.feature_dim = 1024
@@ -376,6 +382,15 @@ class RiskFormerDataset(Dataset):
     def __len__(self):
         return len(self.patient_ids)
     
+    def load_feature_stats(self):
+        with open(self.feature_stats_path, 'r') as f:
+            stats = json.load(f)
+        
+        torch_stats = {}
+        for key, value in stats.items():
+            torch_stats[key] = torch.tensor(value, dtype=torch.float32)
+        self.feature_stats = torch_stats
+
     def _create_dense_features(
             self,
             coords_paths: List[str],
@@ -429,6 +444,9 @@ class RiskFormerDataset(Dataset):
             with h5py.File(local_features_path, 'r') as f:
                 feats = torch.tensor(f['features'][:], dtype=torch.float32)  # Shape: (N, D)
                 
+                if self.apply_normalization:
+                    feats = self.normalize_features(feats)
+                
             # Get dimensions for sparse tensor
             H, W = coords.max(dim=1).values + 1
             sparse_size = (H, W, self.feature_dim)
@@ -444,9 +462,15 @@ class RiskFormerDataset(Dataset):
     def _create_feature_regionprops(
             self,
             features: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> List:
         """
         Create a feature mask from a dense feature tensor.
+
+        Args:
+            features: Dense feature tensor of shape (H, W, D)
+
+        Returns:
+            List of region properties
         """
         binary_mask = (features != 0).to(torch.int).max(dim=-1).values
         labeled_mask = label(binary_mask.cpu().numpy())
@@ -708,87 +732,95 @@ class RiskFormerDataset(Dataset):
         # Otherwise, only include labels in the list
         return label_name.lower() in self._lowercase_include_labels
         
-    def process_special_binary_fields(
+    def process_label_values(
             self,
             patient_data: Dict[str, Any],
-            example_data: Dict[str, Any]
-    ) -> None:
+    ) -> Dict[str, torch.Tensor]:
         """
-        Process special binary classification fields.
+        Process all label fields, including special cases like Mitosis.
         
         Args:
             patient_data: Dictionary of patient data
-            example_data: Dictionary to store processed example data
-        """
-        for field, mapping in self.SPECIAL_BINARY_FIELDS.items():
-            if self.should_include_label(field):
-                if field in patient_data and patient_data[field] is not None:
-                    if patient_data[field] in mapping:
-                        example_data['labels'][field.lower()] = torch.tensor([mapping[patient_data[field]]], dtype=torch.float32)
-    
-    def process_binary_fields(self, patient_data: Dict[str, Any], metadata: Dict[str, Any]) -> None:
-        """
-        Process standard binary categorical fields.
-        
-        Args:
-            patient_data: Dictionary of patient data
-            metadata: Dictionary to store processed metadata
-        """
-        for field, mapping in self.BINARY_FIELDS.items():
-            if field in patient_data and patient_data[field] is not None and self.should_include_label(field):
-                if patient_data[field] in mapping:
-                    field_lower = field.lower()
-                    metadata['labels'][field_lower] = torch.tensor([mapping[patient_data[field]]], dtype=torch.float32)
-    
-    def process_regression_fields(self, patient_data: Dict[str, Any], metadata: Dict[str, Any]) -> None:
-        """
-        Process regression fields.
-        
-        Args:
-            patient_data: Dictionary of patient data
-            metadata: Dictionary to store processed metadata
-        """
-        for field in self.REGRESSION_FIELDS:
-            if field in patient_data and patient_data[field] is not None and self.should_include_label(field):
-                try:
-                    value = float(patient_data[field])
-                    field_lower = field.lower()
-                    metadata['labels'][field_lower] = torch.tensor([value], dtype=torch.float32)
-                except (ValueError, TypeError):
-                    # Skip if the value cannot be converted to float
-                    pass
-    
-    def process_mitosis_field(self, patient_data: Dict[str, Any], metadata: Dict[str, Any]) -> None:
-        """
-        Process the special Mitosis field which has ordered categories.
-        
-        Args:
-            patient_data: Dictionary of patient data
-            metadata: Dictionary to store processed metadata
-        """
-        if 'Mitosis' in patient_data and patient_data['Mitosis'] is not None and self.should_include_label('Mitosis'):
-            mitosis_text = patient_data['Mitosis']
-            score = None
             
-            if '(score = 1)' in mitosis_text:
-                score = 1.0
-            elif '(score = 2)' in mitosis_text:
-                score = 2.0
-            elif '(score = 3)' in mitosis_text:
-                score = 3.0
-            else:
-                # Try to extract numeric score if present
-                import re
-                match = re.search(r'\(score = (\d+)\)', mitosis_text)
-                score = float(match.group(1)) if match else None
-                
-            if score is not None:
-                metadata['labels']['mitosis'] = torch.tensor([score], dtype=torch.float32)
+        Returns:
+            Dictionary of label tensors
+        """
+        labels = {}
+        
+        # Process standard fields
+        for field, label_value in patient_data.items():
+            if self.should_include_label(field):  # Skip Mitosis for special handling
+                try:
+                    torch_label = self.map_label(field, label_value)
+                    labels[field.lower()] = torch_label
+                except ValueError as e:
+                    logger.warning(f"Skipping field '{field}': {str(e)}")
+                    continue
+        return labels
     
-    def normalize_features(self, features: torch.Tensor) -> torch.Tensor:
+    def map_label(
+            self,
+            field: str,
+            label_value: Any,
+    ) -> torch.Tensor:
+        """
+        Map a label value to a tensor.
+        
+        Args:
+            field: Name of the field
+            label_value: Value to map
+            
+        Returns:
+            Tensor representation of the label
+            
+        Raises:
+            ValueError: If the field or value is not recognized
+        """
+        if label_value is None:
+            raise ValueError(f"Null value for field {field}")
+        
+        if field in self.SPECIAL_BINARY_FIELDS:
+            mapping = self.SPECIAL_BINARY_FIELDS.get(field)
+            if label_value in mapping:
+                label = mapping[label_value]
+            else:
+                raise ValueError(f"Unrecognized value '{label_value}' for field '{field}'")
+        elif field in self.BINARY_FIELDS:
+            mapping = self.BINARY_FIELDS.get(field)
+            if label_value in mapping:
+                label = mapping[label_value]
+            else:
+                raise ValueError(f"Unrecognized value '{label_value}' for field '{field}'")
+        elif field in self.REGRESSION_FIELDS:
+            try:
+                label = float(label_value)
+            except (ValueError, TypeError):
+                raise ValueError(f"Could not convert '{label_value}' to float for field '{field}'")
+        elif field == 'Mitosis':
+            mitosis_text = label_value
+            try:
+                match = re.search(r'\(score = (\d+)\)', mitosis_text)
+                label = float(match.group(1))
+            except Exception as e:
+                raise ValueError(f"Could not parse mitosis score from '{mitosis_text}': {str(e)}")
+        else:
+            raise ValueError(f"Unrecognized field '{field}'")
+
+        return torch.tensor([label], dtype=torch.float32)
+               
+    def normalize_features(
+            self,
+            features: torch.Tensor
+    ) -> torch.Tensor:
         """
         Normalize features to have zero mean and unit variance.
-        """
+
+        Args:
+            features: Tensor of shape (L, D)
+
+        Returns:
+            Normalized features
+        """        
         return (features - self.feature_stats['mean']) / self.feature_stats['std']
     
     def __getitem__(
@@ -826,8 +858,6 @@ class RiskFormerDataset(Dataset):
             max_dim=self.max_dim,
             overlap=self.overlap,
         )
-
-        # TODO: dataset-wide normalization
         
         # Create metadata dictionary with patch info and patient ID
         example_data = {
@@ -836,16 +866,15 @@ class RiskFormerDataset(Dataset):
             'labels': {},  # Dictionary to store multiple labels for different tasks
         }
         
-        # Process all field types using the helper methods
-        self.process_special_binary_fields(patient_data, example_data)
-        self.process_binary_fields(patient_data, example_data)
-        self.process_regression_fields(patient_data, example_data)
-        self.process_mitosis_field(patient_data, example_data)
-                
-        # Return patches in channels-first format
+        # Process all label fields using the unified method
+        labels = self.process_label_values(patient_data)
+        
+        # Add labels to example_data
+        for field, value in labels.items():
+            example_data['labels'][field] = value
+
+        # Produce channels-first tensor batch
         example_features = example_features.permute(0, 3, 1, 2)
-        if self.normalize_features:
-            example_features = self.normalize_features(example_features)
         return example_features, example_data
     
 
@@ -885,7 +914,6 @@ class RiskFormerDataModule(pl.LightningDataModule):
             cache_dir=config.get('cache_dir'),
             profile_name=config.get('profile_name'),
             region_name=config.get('region_name'),
-            batch_size=config.get('batch_size', 32),
             num_workers=config.get('num_workers', 4),
             val_split=config.get('val_split', 0.2),
             test_split=config.get('test_split', 0.1),
@@ -918,7 +946,6 @@ class RiskFormerDataModule(pl.LightningDataModule):
         cache_dir: Optional[str] = None,
         profile_name: Optional[str] = None,
         region_name: Optional[str] = None,
-        batch_size: int = 32,
         num_workers: int = 4,
         val_split: float = 0.2,
         test_split: float = 0.1,
@@ -938,7 +965,6 @@ class RiskFormerDataModule(pl.LightningDataModule):
             cache_dir: Directory to cache S3 files
             profile_name: AWS profile name
             region_name: AWS region name
-            batch_size: Batch size for dataloaders
             num_workers: Number of workers for dataloaders
             val_split: Fraction of data to use for validation
             test_split: Fraction of data to use for testing
@@ -963,7 +989,6 @@ class RiskFormerDataModule(pl.LightningDataModule):
         # Dataset tunable parameters
         self.max_dim = max_dim
         self.overlap = overlap
-        self.batch_size = batch_size
 
         # DataLoader configuration parameters
         self.num_workers = num_workers
@@ -990,7 +1015,6 @@ class RiskFormerDataModule(pl.LightningDataModule):
 
         # Will feature stats to disk upon downloading files from s3
         self.feature_stats_path = os.path.join(self.cache_dir, "feature_stats.json")
-        self.feature_stats = None
 
     def setup_patient_examples(self):
         """
@@ -1054,12 +1078,7 @@ class RiskFormerDataModule(pl.LightningDataModule):
         
         Args:
             stage: Either 'fit', 'validate', 'test', or 'predict'
-        """
-        # Load feature stats from disk
-        if self.feature_stats is None:
-            with open(self.feature_stats_path, "r") as f:
-                self.feature_stats = json.load(f)
-                            
+        """                            
         # Split dataset for training and validation only if not already split
         if not hasattr(self, '_train_data') or not hasattr(self, '_test_data'):
             self._train_data, self._test_data = split_riskformer_data(
@@ -1075,6 +1094,7 @@ class RiskFormerDataModule(pl.LightningDataModule):
                 patient_examples=self._train_data,
                 max_dim=self.max_dim,
                 overlap=self.overlap,
+                feature_stats_path=self.feature_stats_path,
                 s3_cache=self.s3_cache,
                 include_labels=self.include_labels,
             )
@@ -1090,6 +1110,7 @@ class RiskFormerDataModule(pl.LightningDataModule):
         elif stage == "test":
             self.test_dataset = RiskFormerDataset(
                 patient_examples=self._test_data,
+                feature_stats_path=self.feature_stats_path,
                 max_dim=self.max_dim,
                 overlap=self.overlap,
                 s3_cache=self.s3_cache,
@@ -1107,13 +1128,11 @@ class RiskFormerDataModule(pl.LightningDataModule):
             self.val_dataset = None
         elif stage == "test":
             self.test_dataset = None
-        self.feature_stats = None
 
     def train_dataloader(self):
         """Return the training dataloader."""
         return DataLoader(
             self.train_dataset,
-            batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
@@ -1124,7 +1143,6 @@ class RiskFormerDataModule(pl.LightningDataModule):
         """Return the validation dataloader."""
         return DataLoader(
             self.val_dataset,
-            batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
@@ -1135,7 +1153,6 @@ class RiskFormerDataModule(pl.LightningDataModule):
         """Return the test dataloader."""
         return DataLoader(
             self.test_dataset,
-            batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
