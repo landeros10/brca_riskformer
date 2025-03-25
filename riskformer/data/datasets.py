@@ -1064,6 +1064,7 @@ class RiskFormerDataModule(pl.LightningDataModule):
             collect_stats=True,
             num_workers=prefetch_num_workers,
         )
+        self.patient_examples = patient_examples_local
 
         # Save feature stats (mean and std) to disk using cache_dir
         with open(self.feature_stats_path, "w") as f:
