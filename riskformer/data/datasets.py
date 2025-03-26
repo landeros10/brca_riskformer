@@ -34,6 +34,24 @@ from riskformer.utils.logger_config import log_event
 
 logger = logging.getLogger(__name__)
 
+SPECIAL_BINARY_FIELDS = {
+    'odx85': {'H': 1.0, 'L': 0.0},
+    'mphr': {'H': 1.0, 'L': 0.0}
+}
+
+BINARY_FIELDS = {
+    'ER_Status_By_IHC': {'positive': 1.0, 'negative': 0.0},
+    'pr_status_by_ihc': {'positive': 1.0, 'negative': 0.0},
+    'HER2Calc': {'positive': 1.0, 'negative': 0.0},
+    'Necrosis': {'Present': 1.0, 'Absent': 0.0},
+    'Lymphovascular Invasion (LVI)': {'Present': 1.0, 'Absent': 0.0},
+    'Overall_Survival_Status': {'dead': 1.0, 'alive': 0.0}
+}
+
+REGRESSION_FIELDS = [
+    'odx_train', 'Grade', 'tumor_size', 'Overall_Survival_Months', 
+    'Disease_Free_Months', 'Epithelial', 'Pleomorph', 'Grade.1', 'age_at_diagnosis'
+]
 
 class SingleSlideDataset(Dataset):
     """
@@ -309,26 +327,6 @@ class RiskFormerDataset(Dataset):
         dataset = RiskFormerDataset(pairs)
         sparse_tensor = dataset[0]  # Get sparse tensor for first slide
     """
-    # Class-level constants for field definitions
-    SPECIAL_BINARY_FIELDS = {
-        'odx85': {'H': 1.0, 'L': 0.0},
-        'mphr': {'H': 1.0, 'L': 0.0}
-    }
-    
-    BINARY_FIELDS = {
-        'ER_Status_By_IHC': {'positive': 1.0, 'negative': 0.0},
-        'pr_status_by_ihc': {'positive': 1.0, 'negative': 0.0},
-        'HER2Calc': {'positive': 1.0, 'negative': 0.0},
-        'Necrosis': {'Present': 1.0, 'Absent': 0.0},
-        'Lymphovascular Invasion (LVI)': {'Present': 1.0, 'Absent': 0.0},
-        'Overall_Survival_Status': {'dead': 1.0, 'alive': 0.0}
-    }
-    
-    REGRESSION_FIELDS = [
-        'odx_train', 'Grade', 'tumor_size', 'Overall_Survival_Months', 
-        'Disease_Free_Months', 'Epithelial', 'Pleomorph', 'Grade.1', 'age_at_diagnosis'
-    ]
-    
     def __init__(
         self,
         patient_examples: Dict[str, Dict[str, Any]],
@@ -782,19 +780,23 @@ class RiskFormerDataset(Dataset):
         if label_value is None:
             raise ValueError(f"Null value for field {field}")
         
-        if field in self.SPECIAL_BINARY_FIELDS:
-            mapping = self.SPECIAL_BINARY_FIELDS.get(field)
+        # Handle case where value is already numeric (previously converted)
+        if isinstance(label_value, (int, float)):
+            return torch.tensor([float(label_value)], dtype=torch.float32)
+            
+        if field in SPECIAL_BINARY_FIELDS:
+            mapping = SPECIAL_BINARY_FIELDS.get(field)
             if label_value in mapping:
                 label = mapping[label_value]
             else:
                 raise ValueError(f"Unrecognized value '{label_value}' for field '{field}'")
-        elif field in self.BINARY_FIELDS:
+        elif field in BINARY_FIELDS:
             mapping = self.BINARY_FIELDS.get(field)
             if label_value in mapping:
                 label = mapping[label_value]
             else:
                 raise ValueError(f"Unrecognized value '{label_value}' for field '{field}'")
-        elif field in self.REGRESSION_FIELDS:
+        elif field in REGRESSION_FIELDS:
             try:
                 label = float(label_value)
             except (ValueError, TypeError):
@@ -941,15 +943,19 @@ class RiskFormerDataModule(pl.LightningDataModule):
             config: Dict[str, Any]
     ) -> 'RiskFormerDataModule':
         """
-        Create a RiskFormerDataModule from a config.
+        Create a RiskFormerDataModule from a configuration dictionary.
         
         Args:
             config: Dictionary containing configuration parameters.
-        
+            
         Returns:
             A new RiskFormerDataModule instance configured with the parameters from the config.
         """
         include_labels = list(config['tasks'].keys())
+
+        # Validate split ratios
+        val_split = config.get('val_split', 0.2)
+        test_split = config.get('test_split', 0.1)
 
         # Create the data module with parameters from config
         return cls(
@@ -962,11 +968,12 @@ class RiskFormerDataModule(pl.LightningDataModule):
             profile_name=config.get('profile_name'),
             region_name=config.get('region_name'),
             num_workers=config.get('num_workers', 4),
-            val_split=config.get('val_split', 0.2),
-            test_split=config.get('test_split', 0.1),
+            val_split=val_split,
+            test_split=test_split,
             seed=config.get('seed', 42),
             pin_memory=config.get('pin_memory', True),
             include_labels=include_labels,
+            batch_size=config.get('batch_size', 32),
         )
 
     @classmethod
@@ -999,6 +1006,7 @@ class RiskFormerDataModule(pl.LightningDataModule):
         seed: int = 42,
         pin_memory: bool = True,
         include_labels: Optional[List[str]] = None,
+        batch_size: int = 32,
     ):
         """
         Initialize the RiskFormer DataModule.
@@ -1018,6 +1026,7 @@ class RiskFormerDataModule(pl.LightningDataModule):
             seed: Random seed for reproducibility
             pin_memory: Whether to pin memory for dataloaders
             include_labels: List of label names to include in the dataset (optional)
+            batch_size: Batch size for dataloaders
         """
         super().__init__()
         self.save_hyperparameters()
@@ -1032,6 +1041,7 @@ class RiskFormerDataModule(pl.LightningDataModule):
         self.val_split = val_split
         self.test_split = test_split
         self.include_labels = include_labels
+        self.batch_size = batch_size
         
         # Dataset tunable parameters
         self.max_dim = max_dim
@@ -1126,7 +1136,8 @@ class RiskFormerDataModule(pl.LightningDataModule):
         
         Args:
             stage: Either 'fit', 'validate', 'test', or 'predict'
-        """                            
+        """    
+
         # Split dataset for training and validation only if not already split
         if not hasattr(self, '_train_data') or not hasattr(self, '_test_data'):
             self._train_data, self._test_data = split_riskformer_data(
@@ -1149,7 +1160,7 @@ class RiskFormerDataModule(pl.LightningDataModule):
             
             if self.val_split > 0:
                 # random split train data into train and validation
-                num_val = int(len(self._train_data) * self.val_split)
+                num_val = max(int(len(self._train_data) * self.val_split), 1)
                 num_train = len(self._train_data) - num_val
                 self.train_dataset, self.val_dataset = random_split(
                     self.train_dataset, 
@@ -1176,11 +1187,13 @@ class RiskFormerDataModule(pl.LightningDataModule):
             self.val_dataset = None
         elif stage == "test":
             self.test_dataset = None
+            self.feature_stats = None
 
     def train_dataloader(self):
         """Return the training dataloader."""
         return DataLoader(
             self.train_dataset,
+            batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
@@ -1191,6 +1204,7 @@ class RiskFormerDataModule(pl.LightningDataModule):
         """Return the validation dataloader."""
         return DataLoader(
             self.val_dataset,
+            batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
@@ -1201,6 +1215,7 @@ class RiskFormerDataModule(pl.LightningDataModule):
         """Return the test dataloader."""
         return DataLoader(
             self.test_dataset,
+            batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
@@ -1241,7 +1256,7 @@ def create_slide_examples(
     s3_prefix: str,
     slide_ids: Optional[Set[str]] = None,
     slide_data: Optional[Dict[str, dict]] = None,
-) -> List[Tuple[str, str, str, str]]:
+) -> Dict[str, Dict[str, str]]:
     """
     Create a list of slide examples from the S3 bucket.
     
@@ -1253,7 +1268,7 @@ def create_slide_examples(
         slide_data (Optional[Dict[str, dict]]): Dictionary of slide metadata
     
     Returns:
-        examples (List[Tuple[str, str, str, str]]): List of slide examples
+        slide_examples (Dict[str, Dict[str, str]]): Dictionary of slide examples
     """
     # List all files in the prefix
     all_files = list_bucket_files(s3_client, s3_bucket, s3_prefix)
@@ -1285,7 +1300,8 @@ def create_slide_examples(
                   total_files=len(all_files),
                   total_slides_in_metadata=len(slide_ids),
                   preprocessed_slides_found=len(s3_slide_ids),
-                  missing_slides=len(slide_ids - {os.path.basename(b) for b in s3_slide_ids}))
+                  missing_slides=len(slide_ids) - len({os.path.basename(b) for b in s3_slide_ids}),
+                  )
     else:
         log_event("info", "find_complete_slide_sets", "success",
                   total_files=len(all_files),
@@ -1308,6 +1324,106 @@ def create_slide_examples(
     return slide_examples
 
 
+def slide_to_patient_examples(
+        slide_examples: Dict[str, Dict[str, str]],
+        slide_data: Dict[str, dict],
+) -> Dict[str, Dict[str, str]]:
+    """
+    Convert a dictionary of slide examples to a dictionary of patient examples.
+    Uses RiskFormerDataset field definitions to process clinical fields.
+    """
+    all_patients_slides = {}
+    for slide_id, data in slide_examples.items():
+        patient_id = data["patient_id"]
+        if patient_id not in all_patients_slides:
+            all_patients_slides[patient_id] = []
+        all_patients_slides[patient_id].append(slide_id)
+
+    # Get field definitions from RiskFormerDataset
+    binary_fields = list(BINARY_FIELDS.keys())
+    special_binary_fields = list(SPECIAL_BINARY_FIELDS.keys())
+    regression_fields = REGRESSION_FIELDS
+    
+    # All fields that need processing
+    all_fields = binary_fields + special_binary_fields + regression_fields
+
+    patient_examples = {}
+    for patient_id in all_patients_slides:
+        patient_slides = all_patients_slides[patient_id]
+        patient_coords_paths = [slide_examples[slide_id]["coords_path"] for slide_id in patient_slides]
+        patient_features_paths = [slide_examples[slide_id]["features_path"] for slide_id in patient_slides]
+
+        patient_examples[patient_id] = {}
+        patient_examples[patient_id]["coords_paths"] = patient_coords_paths
+        patient_examples[patient_id]["features_paths"] = patient_features_paths
+
+        # Process each field for the patient
+        for field in all_fields:
+            # Skip fields not present in slide_data
+            if not all(field in slide_data[slide_id] for slide_id in patient_slides):
+                continue
+                
+            # Convert values based on field type
+            if field in special_binary_fields:
+                # Convert string values to numeric using the mapping
+                mapping = SPECIAL_BINARY_FIELDS[field]
+                numeric_values = []
+                for slide_id in patient_slides:
+                    value = slide_data[slide_id].get(field)
+                    if value in mapping:
+                        numeric_values.append(mapping[value])
+                    elif value is not None:
+                        # Try to convert directly if not in mapping
+                        try:
+                            numeric_values.append(float(value))
+                        except (ValueError, TypeError):
+                            logger.warning(f"Could not convert value '{value}' for field '{field}'")
+                
+                # Take max as the patient-level value (assuming 1 is positive/high risk)
+                if numeric_values:
+                    patient_examples[patient_id][field] = max(numeric_values)
+                
+            elif field in binary_fields:
+                # Convert string values to numeric using the mapping
+                mapping = BINARY_FIELDS[field]
+                numeric_values = []
+                for slide_id in patient_slides:
+                    value = slide_data[slide_id].get(field)
+                    if value in mapping:
+                        numeric_values.append(mapping[value])
+                    elif value is not None:
+                        # Try to convert directly if not in mapping
+                        try:
+                            numeric_values.append(float(value))
+                        except (ValueError, TypeError):
+                            logger.warning(f"Could not convert value '{value}' for field '{field}'")
+                
+                # Take max as the patient-level value (assuming 1 is positive/high risk)
+                if numeric_values:
+                    patient_examples[patient_id][field] = max(numeric_values)
+                    
+            elif field in regression_fields:
+                # Convert to float
+                numeric_values = []
+                for slide_id in patient_slides:
+                    value = slide_data[slide_id].get(field)
+                    if value is not None:
+                        try:
+                            numeric_values.append(float(value))
+                        except (ValueError, TypeError):
+                            logger.warning(f"Could not convert value '{value}' for field '{field}'")
+                
+                # Determine aggregation method based on field
+                # Default to max; use min for survival/time data
+                if field in ['Disease_Free_Months', 'Overall_Survival_Months']:
+                    if numeric_values:
+                        patient_examples[patient_id][field] = min(numeric_values)
+                else:
+                    if numeric_values:
+                        patient_examples[patient_id][field] = max(numeric_values)
+            
+    return patient_examples
+
 def create_patient_examples(
     s3_client: boto3.client,
     s3_bucket: str,
@@ -1327,44 +1443,7 @@ def create_patient_examples(
         slide_data=slide_data
     )
 
-    all_patients_slides = {}
-    for slide_id, data in slide_examples.items():
-        patient_id = data["patient_id"]
-        if patient_id not in all_patients_slides:
-            all_patients_slides[patient_id] = []
-        all_patients_slides[patient_id].append(slide_id)
-
-    patient_examples = {}
-    for patient_id in all_patients_slides:
-        patient_slides = all_patients_slides[patient_id]
-        patient_coords_paths = [slide_examples[slide_id]["coords_path"] for slide_id in patient_slides]
-        patient_features_paths = [slide_examples[slide_id]["features_path"] for slide_id in patient_slides]
-
-        patient_examples[patient_id] = {}
-        patient_examples[patient_id]["coords_paths"] = patient_coords_paths
-        patient_examples[patient_id]["features_paths"] = patient_features_paths
-
-        slides_odx_train = [float(slide_data[slide_id]["odx_train"]) for slide_id in patient_slides]
-        slides_odx85 = [int(slide_data[slide_id]["odx85"] == "H") for slide_id in patient_slides]
-        slides_mphr = [int(slide_data[slide_id]["mphr"] == "H") for slide_id in patient_slides]
-        slides_dfm = [float(slide_data[slide_id]["Disease_Free_Months"]) for slide_id in patient_slides]
-        slides_necrosis = [int(slide_data[slide_id]["Necrosis"] == "Present") for slide_id in patient_slides]
-        slides_pleo = [int(slide_data[slide_id]["Pleomorph"]) for slide_id in patient_slides]
-
-        
-        patient_odx_train = max(slides_odx_train)
-        patient_odx85 = max(slides_odx85)
-        patient_mphr = max(slides_mphr)
-        patient_dfm = min(slides_dfm)
-        patient_necrosis = max(slides_necrosis)
-        patient_pleo = max(slides_pleo)
-
-        patient_examples[patient_id]["odx_train"] = patient_odx_train
-        patient_examples[patient_id]["odx85"] = patient_odx85
-        patient_examples[patient_id]["mphr"] = patient_mphr
-        patient_examples[patient_id]["dfm"] = patient_dfm
-        patient_examples[patient_id]["necrosis"] = patient_necrosis
-        patient_examples[patient_id]["pleo"] = patient_pleo
+    patient_examples = slide_to_patient_examples(slide_examples, slide_data)
 
     return patient_examples
 

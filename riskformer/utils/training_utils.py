@@ -467,8 +467,8 @@ def split_riskformer_data(
 
     num_pos = int(len(patient_ids) * (test_split_ratio) / 2)
     if num_pos == 0:
-        logger.error("Test split ratio too low, not enough samples.")
-        raise ValueError("Test split ratio too low, not enough samples.")
+        logger.warning("Test split ratio too low. Defaulting to minimum of 1 sample per class.")
+        num_pos = 1
 
     pos_samples = patient_ids[labels == positive_label]
     neg_samples = patient_ids[labels != positive_label]
