@@ -199,13 +199,18 @@ def main():
               local_input_dir=local_input_dir, 
               local_out_dir=local_out_dir)
     
-    os.environ["AWS_REGION"] = config['aws']['region']
+    # Set AWS region in environment
+    os.environ["AWS_DEFAULT_REGION"] = config['aws']['region']
+    
+    # Initialize S3 client using environment variables
     try:
         s3_client, _ = initialize_s3_client(
-            profile_name=None,  # Use environment variables instead of profile
+            profile_name=None,  # Use environment variables
             region_name=config['aws']['region'],
             return_session=True
         )
+        if s3_client is None:
+            raise Exception("Failed to initialize S3 client")
     except Exception as e:
         log_event("error", "initialize_s3_client", "error",
                   region=config['aws']['region'], 

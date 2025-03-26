@@ -5,10 +5,8 @@ import logging
 
 import boto3
 import botocore
-import sagemaker
 
 logger = logging.getLogger(__name__)
-
 
 def is_s3_path(path: str) -> bool:
     """
@@ -30,22 +28,26 @@ def is_s3_path(path: str) -> bool:
 
 
 def initialize_boto3_session(
-        profile_name: str,
+        profile_name: str = None,
         region_name: str = None,
     ) -> boto3.Session:
     """
     Initialize boto3 session.
     
     Args:
-        profile_name (str): AWS profile name.
-        region_name (str): AWS region name.
+        profile_name (str, optional): AWS profile name. If None, will use environment variables.
+        region_name (str, optional): AWS region name.
     
     Returns:
         boto3.Session: Boto3 session object.
     """
     session = None
     try:
-        session = boto3.Session(profile_name=profile_name, region_name=region_name)
+        # If profile_name is None, use environment variables
+        if profile_name is None:
+            session = boto3.Session(region_name=region_name)
+        else:
+            session = boto3.Session(profile_name=profile_name, region_name=region_name)
         logger.debug("Created boto3 session")
     except Exception as e:
         logger.error(f"Failed to create boto3 session: {e}")
@@ -255,18 +257,6 @@ def upload_large_files_to_bucket(
                 logger.error(f"Failed to upload {file_name}: {e}")
         else:
             logger.warning(f"Skipping: {file_path} (File not found or invalid)")
-
-
-def init_sagemaker_session(session):
-    sagemaker_session = sagemaker.Session(boto_session=session)
-    logger.debug(f"Using SageMaker session: {sagemaker_session}")
-    try:
-        role = sagemaker.get_execution_role(sagemaker_session=sagemaker_session)
-        logger.debug(f"Using IAM role from Sagemaker: {role}")
-    except Exception as e:
-        logger.warning(f"Failed to get IAM role from Sagemaker: {e}")
-        role = None
-    return sagemaker_session, role
 
 
 def isfile_s3_or_local(path, s3_client=None):

@@ -28,13 +28,12 @@ PROFILE=$(yq '.aws.profile' "$CONFIG_FILE")
 ECR_ID=$(yq '.aws.ecr_id' "$CONFIG_FILE")
 REGION=$(yq '.aws.region' "$CONFIG_FILE")
 
-if [ -z "$PROFILE" ] || [ -z "$ECR_ID" ] || [ -z "$REGION" ]; then
+if [ -z "$ECR_ID" ] || [ -z "$REGION" ]; then
     echo "Error: Required AWS configuration not found in $CONFIG_FILE"
     exit 1
 fi
 
-# Export AWS profile and region
-export AWS_PROFILE="$PROFILE"
+# Export AWS region
 export AWS_DEFAULT_REGION="$REGION"
 
 # Docker image name
@@ -53,9 +52,11 @@ LOGS_DIR="$PROJECT_ROOT/$(yq '.project.directories.logs' "$CONFIG_FILE")"
 # ==============================
 # Run the Docker Container
 # ==============================
-# Use the provided ECR token
+# Get ECR token using AWS CLI
+echo "Getting ECR token..."
+ECR_TOKEN=$(aws ecr get-login-password --region "$REGION")
 if [ -z "$ECR_TOKEN" ]; then
-    echo "Error: ECR_TOKEN environment variable not set"
+    echo "Error: Failed to get ECR token. Please ensure you are logged in to AWS CLI."
     exit 1
 fi
 
@@ -66,7 +67,13 @@ docker pull "$IMAGE_NAME"
 CONFIG_RELATIVE_PATH=$(realpath --relative-to="$CONFIGS_DIR" "$CONFIG_FILE")
 CONTAINER_CONFIG_PATH="$WORKSPACE_ROOT/configs/$CONFIG_RELATIVE_PATH"
 
-docker run --rm --gpus all --runtime=nvidia\
+# Mount AWS credentials directory if it exists
+AWS_CREDENTIALS_MOUNT=""
+if [ -d "$HOME/.aws" ]; then
+    AWS_CREDENTIALS_MOUNT="-v $HOME/.aws:/root/.aws"
+fi
+
+docker run --rm --gpus all --runtime=nvidia \
     --user root \
     --ipc=host \
     --memory=0 \
@@ -75,11 +82,8 @@ docker run --rm --gpus all --runtime=nvidia\
     --cap-add=SYS_ADMIN --cap-add=SYS_RAWIO \
     --device=/dev/nvidiactl --device=/dev/nvidia0 \
     --device=/dev/nvidia-modeset --device=/dev/nvidia-uvm \
-    -e AWS_PROFILE \
-    -e AWS_DEFAULT_REGION \
-    -e AWS_ACCESS_KEY_ID \
-    -e AWS_SECRET_ACCESS_KEY \
-    -e AWS_SESSION_TOKEN \
+    -e AWS_DEFAULT_REGION="$REGION" \
+    $AWS_CREDENTIALS_MOUNT \
     -v "$RISKFORMER_DIR":"$WORKSPACE_ROOT/riskformer" \
     -v "$ENTRYPOINTS_DIR":"$WORKSPACE_ROOT/entrypoints" \
     -v "$ORCHESTRATORS_DIR":"$WORKSPACE_ROOT/orchestrators" \
