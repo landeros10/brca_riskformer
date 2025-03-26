@@ -21,7 +21,8 @@ from pathlib import Path
 from entrypoints.preprocess import preprocess_one_slide
 from riskformer.utils.logger_config import logger_setup, log_event
 from riskformer.utils.aws_utils import initialize_s3_client, list_bucket_files, upload_large_files_to_bucket
-from riskformer.utils.preprocess_utils import load_preprocessing_config
+from riskformer.utils.preprocess_utils import load_preprocessing_config, load_yaml_config
+from riskformer.data.data_preprocess import TilingConfigSchema
 
 logger = logging.getLogger(__name__)
 
@@ -104,12 +105,17 @@ def download_s3_model_files(s3_client, config, model_dir):
     return model_files
 
 
-def upload_preprocessing_results(s3_client, config, local_out_dir):
+def upload_preprocessing_results(s3_client, config, local_out_dir, tile_size=None):
     """Upload preprocessing results to S3."""
+    s3_bucket = config['s3']['data_bucket']
+    s3_prefix = f"{config['s3']['output_dir']}/{config['model']['key']}"
+    if tile_size:
+        s3_prefix = f"{s3_prefix}/{tile_size}"
+
     log_event("debug", "upload_preprocessing_results", "started",
               local_dir=local_out_dir, 
-              s3_bucket=config['s3']['data_bucket'], 
-              s3_prefix=f"{config['s3']['output_dir']}/{config['model']['key']}")
+              s3_bucket=s3_bucket, 
+              s3_prefix=s3_prefix)
     
     local_files = []
     for filename in os.listdir(local_out_dir):
@@ -123,22 +129,22 @@ def upload_preprocessing_results(s3_client, config, local_out_dir):
     try:
         upload_large_files_to_bucket(
             s3_client,
-            bucket_name=config['s3']['data_bucket'],
+            bucket_name=s3_bucket,
             files_list=local_files,
-            prefix=f"{config['s3']['output_dir']}/{config['model']['key']}",
+            prefix=s3_prefix,
             reupload=False,
         )
         log_event("info", "upload_preprocessing_results", "success",
                   local_dir=local_out_dir, 
-                  s3_bucket=config['s3']['data_bucket'],
-                  s3_prefix=f"{config['s3']['output_dir']}/{config['model']['key']}", 
+                  s3_bucket=s3_bucket,
+                  s3_prefix=s3_prefix, 
                   file_count=len(local_files))
     except Exception as e:
         raise e
     log_event("debug", "upload_preprocessing_results", "success",
               local_dir=local_out_dir, 
-              s3_bucket=config['s3']['data_bucket'], 
-              s3_prefix=f"{config['s3']['output_dir']}/{config['model']['key']}")
+              s3_bucket=s3_bucket, 
+              s3_prefix=s3_prefix)
     return
 
 
@@ -227,14 +233,14 @@ def main():
               model_files_count=len(model_files))
 
     # Set up Arguments
-    foreground_config = os.path.join(project_root, config['config_files']['foreground'])
-    foreground_cleanup_config = os.path.join(project_root, config['config_files']['foreground_cleanup'])
-    tiling_config = os.path.join(project_root, config['config_files']['tiling'])
+    foreground_config_path = os.path.join(project_root, config['config_files']['foreground'])
+    foreground_cleanup_config_path = os.path.join(project_root, config['config_files']['foreground_cleanup'])
+    tiling_config_path = os.path.join(project_root, config['config_files']['tiling'])
 
     log_event("info", "preprocessing_parameters", "info",
-              foreground_config=foreground_config, 
-              foreground_cleanup_config=foreground_cleanup_config,
-              tiling_config=tiling_config, 
+              foreground_config=foreground_config_path, 
+              foreground_cleanup_config=foreground_cleanup_config_path,
+              tiling_config=tiling_config_path, 
               model_dir=model_dir, 
               model_type=config['model']['type'],
               num_workers=config['processing']['num_workers'], 
@@ -275,9 +281,9 @@ def main():
                 output_dir=local_out_dir,
                 model_dir=model_dir,
                 model_type=config['model']['type'],
-                foreground_config_path=foreground_config,
-                foreground_cleanup_config_path=foreground_cleanup_config,
-                tiling_config_path=tiling_config,
+                foreground_config_path=foreground_config_path,
+                foreground_cleanup_config_path=foreground_cleanup_config_path,
+                tiling_config_path=tiling_config_path,
                 num_workers=config['processing']['num_workers'],
                 batch_size=config['processing']['batch_size'],
                 prefetch_factor=config['processing']['prefetch_factor'],
@@ -294,7 +300,9 @@ def main():
                 continue
 
         try:
-            upload_preprocessing_results(s3_client, config, local_out_dir)
+            tiling_config = load_yaml_config(tiling_config_path, TilingConfigSchema)
+            tile_size = tiling_config.tile_size
+            upload_preprocessing_results(s3_client, config, local_out_dir, tile_size=tile_size)
         except Exception as e:
             log_event("error", "upload_preprocessing_results", "error",
                       error=str(e), 

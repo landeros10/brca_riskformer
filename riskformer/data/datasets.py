@@ -290,6 +290,7 @@ class S3Cache:
                  file_count=sum(len(patient_examples[p]["coords_paths"]) * 2 for p in patient_examples))
         return patient_examples_local
 
+
 class RiskFormerDataset(Dataset):
     """
     PyTorch dataset for RiskFormer model training. Takes a list of (coordinates, features) pairs

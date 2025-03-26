@@ -99,7 +99,7 @@ def preprocess_one_slide(
     ### Collect sample points for svs file ###
     logger.info("Collecting sample points for svs file...")
     try:
-        sample_coords, slide_obj, slide_metadata, sampling_size, heatmap, thumb = preprocessor.get_svs_samplepoints(
+        sample_coords, slide_obj, slide_metadata, sampling_crop_size, heatmap, thumb = preprocessor.get_svs_samplepoints(
             input_filename,
             foreground_config=foreground_config,
             foreground_cleanup_config=foreground_cleanup_config,
@@ -133,7 +133,7 @@ def preprocess_one_slide(
             slide_obj=slide_obj,
             slide_metadata=slide_metadata,
             sample_coords=sample_coords,
-            sample_size=sampling_size,
+            sample_size=sampling_crop_size,
             transform=transform
         )
     except Exception as e:
@@ -174,7 +174,7 @@ def preprocess_one_slide(
             normalize=True)
         save_sparse_feature_array(
             sample_coords=sample_coords,
-            sampling_size=sampling_size,
+            sampling_size=sampling_crop_size,
             tile_overlap=tiling_config.tile_overlap,
             slide_features=slide_features,
             output_dir=output_dir,

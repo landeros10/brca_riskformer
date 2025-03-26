@@ -407,8 +407,11 @@ def extract_features(slide_dataset, model, device, num_workers=16, batch_size=25
     Returns:
         features_array (np.ndarray): The extracted features of shape (len(slide_dataset), feature_dim).
     """
-    sampler = DistributedSampler(slide_dataset) if torch.cuda.device_count() > 1 else None
-
+    # Use DataParallel if multiple GPUs are available
+    if torch.cuda.device_count() > 1:
+        logger.info(f"Using {torch.cuda.device_count()} GPUs with DataParallel")
+        model = torch.nn.DataParallel(model)
+    
     dataloader = DataLoader(
         slide_dataset,
         batch_size=batch_size,
@@ -416,7 +419,7 @@ def extract_features(slide_dataset, model, device, num_workers=16, batch_size=25
         pin_memory=True,
         persistent_workers=num_workers > 0,
         prefetch_factor=prefetch_factor,
-        sampler=sampler,
+        shuffle=False  # No need to shuffle for feature extraction
     )
     logger.debug(f"DataLoader initialized with {num_workers} workers and batch size {batch_size}")
 
@@ -435,9 +438,11 @@ def extract_features(slide_dataset, model, device, num_workers=16, batch_size=25
     count = 0
     start_time = time.time()
 
+    # Get feature dimension using a single sample
     feature_dim = model(torch.randn(1, *slide_dataset[0].shape).to(device)).shape[1]
-    start_idx = 0
     features = np.empty((len(slide_dataset), feature_dim), dtype=np.float32)
+    
+    start_idx = 0
     with torch.inference_mode(), torch.cuda.amp.autocast():
         for count, batch_images in enumerate(dataloader):
             batch_images = batch_images.to(device, dtype=torch.float32)
@@ -450,6 +455,7 @@ def extract_features(slide_dataset, model, device, num_workers=16, batch_size=25
             if count % 10 == 0:
                 current_time = time.time()
                 logger.debug(f"({(current_time - start_time)/60:.2f}m) -Processed batch {count}/{n_batches} ({(count/n_batches)*100:.2f}%)")
+    
     logger.info(f"Feature extraction completed in {(time.time() - start_time)/60:.2f} minutes.")
     return features
 
